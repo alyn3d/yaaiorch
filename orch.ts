@@ -206,7 +206,7 @@ type RunCtx = { budget: Budget; timeoutMs: number };
 class BudgetExceeded extends Error {}
 
 /**
- * The Claude subscription's usage limit ("You've hit your 5-hour limit · resets 1:30am (Europe/Bucharest)").
+ * The Claude subscription's usage limit ("You've hit your 5-hour limit · resets 1:30am (Europe/London)").
  * The CLI reports it as an error result with subtype "success". It ends the goal: retrying before the reset
  * only fails again, and counting it as a task failure would trigger stuck detection for nothing.
  */
@@ -244,7 +244,7 @@ function nextWallTime(h: number, min: number, zone: string | undefined, now = Da
   return target;
 }
 
-/** "resets 1:30am (Europe/Bucharest)", "resets 14:00" -> epoch ms; undefined if there is no time in the text. */
+/** "resets 1:30am (Europe/London)", "resets 14:00" -> epoch ms; undefined if there is no time in the text. */
 function parseReset(text: string): number | undefined {
   const m = /resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?/i.exec(text);
   if (!m) return undefined;

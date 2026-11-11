@@ -1,0 +1,25 @@
+name: Feature or idea
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Check [ROADMAP.md](../blob/main/ROADMAP.md) and [TODO.md](../blob/main/TODO.md) first; if it is listed there, comment on that item's issue instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How you would solve it. Mention how it could be measured with the eval suite, if it changes agent behaviour.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to work on this

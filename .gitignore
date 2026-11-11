@@ -4,6 +4,14 @@ dist/
 orch-ui/src-tauri/target/
 *.log
 .DS_Store
+Thumbs.db
+
+# local config and secrets
+.env
+.env.*
+*.local
+.vscode/
+.idea/
 
 # eval output
 evals/results/

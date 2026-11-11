@@ -50,10 +50,11 @@ process exits without `goal_end`.
 - `node evals/run.ts --cases <ids> --power economy,heavy`: real runs (costs money), graded by hidden tests the agents never see. Results in `evals/results/` (git-ignored).
 - Use it to judge prompt, agent or tier changes: compare hidden pass rate, false passes and cost before and after, with `--repeat 3` or more.
 
+## Docs
+- `README.md` (users), `CONTRIBUTING.md` (setup, checks, conventions), `docs/ARCHITECTURE.md` (design, event table, data on disk).
+- `ROADMAP.md` (milestones), `TODO.md` (open tasks by milestone), `CHANGELOG.md` (what shipped; add to `[Unreleased]` in the same change).
+- `docs/review-2026-11.md` is the original code review, kept for history.
+- MIT licensed. Open source: never commit personal data, local paths, secrets or eval results.
+
 ## Backlog
-1. Baseline: full eval suite on all four tiers with `--repeat 3`; pick default tier from it.
-2. Project brief (`.orchestrator/brief.md`) reused by the architect, and session resume for fix rounds.
-3. Commit the fake `claude` and the scenario scripts as tests; CI.
-4. Queue: show the running goal, retry policy, `blocked` status, graceful "stop after current goal".
-5. Branch + PR per goal; backlog intake from `BACKLOG.md` or GitHub issues.
-See `TODO.md` and `IMPROVEMENTS.md` for the full lists.
+Next milestone is 0.2 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then hardening (browser CSRF, queue lock, retries, loop budget, graceful stop).

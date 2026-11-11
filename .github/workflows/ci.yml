@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Typecheck, build, eval suite self-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: orch-ui/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        working-directory: orch-ui
+        run: npm ci
+      - name: Typecheck and build the UI
+        working-directory: orch-ui
+        run: npm run build
+      - name: Typecheck orch.ts
+        working-directory: orch-ui
+        run: npx tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext --types node --skipLibCheck ../orch.ts
+      - name: Bundle orch.mjs
+        working-directory: orch-ui
+        run: npm run build:orch
+      - name: CLI smoke test
+        run: |
+          node orch-ui/src-tauri/resources/orch.mjs > usage.txt
+          grep -q "YAAIORCH" usage.txt
+      - name: Eval suite self-check (hidden tests fail before, pass with reference)
+        run: node evals/run.ts --reference
+
+  desktop:
+    name: Desktop backend (cargo check, Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: orch-ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: orch-ui/src-tauri
+      # tauri-build needs the built frontend and the bundled orch.mjs resource to exist.
+      - name: Build frontend and orch.mjs
+        working-directory: orch-ui
+        run: |
+          npm ci
+          npm run build:app
+      - name: cargo check
+        working-directory: orch-ui/src-tauri
+        run: cargo check --locked

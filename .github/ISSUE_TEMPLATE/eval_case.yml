@@ -1,0 +1,27 @@
+name: Eval case proposal
+description: Propose a new case for the eval suite
+labels: [evals]
+body:
+  - type: markdown
+    attributes:
+      value: Cases live in `evals/` (see evals/README.md). A good case has a goal a user would write, hidden tests that are fair to that goal, and a reference solution.
+  - type: input
+    id: fixture
+    attributes:
+      label: Fixture
+      description: An existing one (node-lib, node-api, python-lib) or a new one.
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal text
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What it tests
+      description: Why this case is useful, for example a skill the current cases do not cover, or a known failure mode.
+    validations:
+      required: true

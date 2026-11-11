@@ -1,73 +1,90 @@
-# YAAIORCH TODO
+# YAAIORCH tasks
 
-Priority: **P0** blocks real use, **P1** important, **P2** worthwhile, **P3** later.
+Open work, grouped by milestone (see [ROADMAP.md](ROADMAP.md) for the why). Items marked
+**good first issue** are small and self-contained. Want one? Open an issue or comment on the existing
+one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGELOG.md).
 
-## P0: verify before trusting it
+## 0.2: reliability and trust
 
-- [x] **First Windows build and run.** Done 2026-11-11 on Windows 11 (Tauri 2.12, WebView2 157, MSVC 2022):
-  - `cargo test` spawn/event test passes on Windows with a fake `claude`.
-  - `npm run tauri dev` opens the window in about 24 s; the Tauri transport connects.
-  - `npm run tauri build` produces the app exe (`yaaiorch.exe` since the rename, `orch-app.exe` at the time), an MSI and an NSIS setup. The release exe launches, and `resources/orch.mjs` is bundled next to it.
-  - A real goal ran end to end with the real `claude` from the CLI. The browser-mode UI was exercised with a fake `claude`: run, checks badge, checkpoint, Stop.
-  - Not done: a goal driven from the desktop window itself (the native folder picker needs a person), and installing from the MSI/NSIS.
-- [x] **Headless permissions.** Confirmed in a real run (claude 2.1.322): with `acceptEdits` in `-p` mode every Bash and PowerShell call is refused, so QA could never pass. Fixed: orch.ts runs the checks itself and passes an allow-list with `--settings`. Compound commands (`cd x && npm test; echo $?`) are still refused; that is expected.
-- [x] **Real-run check of the `claude` JSON output.** `result` and `is_error` work as read by `run()`, and `--agents <file>` + `--agent` resolve built-in agents. Smoke test (economy power, slugify goal in a throwaway repo) passed in one round.
+### Measure
+- [ ] **Finish the baseline.** Run the whole eval suite on all four tiers with `--repeat 3`
+  (`--parallel 2 --max-rounds 3 --max-cost 3 --wait-on-limit`) and choose the default power tier from
+  the data. A first partial run (21 runs) passed everything; economy cost about $0.30 a run,
+  balanced $0.65, heavy $0.85. Publish the summary in `docs/evals/`.
+- [ ] **Harder eval cases.** All early runs passed in one round, so the suite does not yet separate
+  the tiers. Add multi-file features, a cross-module refactor, a React app (with dependencies), Go or
+  Rust, and a case with a misleading bug report. **good first issue** (one case per PR)
 
-## P1: correctness and safety
+### Test the orchestrator itself
+- [ ] **Commit a fake `claude`** (`test/fake-claude/`) with switches for: QA verdict, crashing agent,
+  hanging agent, no-op implementer, cost per call, budget errors, usage-limit replies, bad plan once.
+  The behaviour is described in [CONTRIBUTING.md](CONTRIBUTING.md#testing-without-spending-tokens).
+  **good first issue**
+- [ ] **Scenario tests** on top of it, runnable on any OS (Node, not bash): happy path, QA sees new
+  files, loop parks a failed goal, crashing build task, timeout kills the tree, budget stop, stuck
+  escalation then stop, rollback after a stray edit, prune, doctor, usage limit in `run` and `loop`,
+  dirty-tree refusal, plan retry, input validation. Run them in CI.
+- [ ] **Unit tests** for `reduce.ts`, and for `validate`, `extractJson`, `parseReset`, `failureKey`
+  in `orch.ts` (export them or split helpers into a module). **good first issue**
+- [ ] **Rust spawn test in CI**: mark it `#[ignore]` and run it explicitly with the committed fake, so a
+  green run means it ran.
+- [ ] **Lint and format**: ESLint + Prettier for TS, `rustfmt` + `clippy` for Rust, wired into CI.
+  **good first issue**
 
-- [ ] **Local CSRF in browser mode.** `server.ts` accepts any request on localhost and parses the body as JSON without checking `Content-Type` or `Origin`. A web page can POST `/api/run` and start agents. Add an Origin/Host check and a per-session token.
-- [x] **Timeouts in `run()`.** `--agent-timeout` (30 min) kills the process tree; a failed call is a task error, not the end of the goal. Still open: one retry for transient failures (network, rate limit).
-- [x] **Architect JSON failures.** Bad JSON or a rejected plan is sent back once with the reason.
-- [x] **Stop mid-edit leaves a half-changed tree.** `orch rollback` and a UI button (two-step confirm) reset to the checkpoint; the discarded work is kept on `orchestrator/discarded-*`.
-- [x] **Checkpoint branches pile up.** Deleted on pass, park and rollback; `orch prune --older-than DAYS` removes old `orchestrator/*` branches; doctor warns about leftovers.
-- [ ] **Queue write races.** UI `add` and the loop both read-modify-write `queue.json`. Use a lock file or route all writes through one process.
-- [x] **Dirty working tree.** A run refuses to start on uncommitted changes (`.orchestrator/` excluded).
+### Correctness and safety
+- [ ] **Local CSRF in browser mode.** `server.ts` accepts any request on localhost and parses JSON
+  without checking `Origin` or `Content-Type`, so a web page could POST `/api/run`. Add an
+  Origin/Host check and a per-session token. **good first issue**
+- [ ] **Queue write races.** The UI's `add` and the loop both read-modify-write `queue.json`. Use a
+  lock file, or route every write through one process, and write through a temp file + rename.
+- [ ] **Retry transient failures** once (network errors, API overload), separately from the usage limit.
+- [ ] **Budget per loop session**, not only per goal (`--max-cost-total`).
+- [ ] **Graceful "stop after current goal"** for `loop` from the UI (a stop file checked between
+  goals). Today Stop kills the process tree.
+- [ ] **Ownership enforcement**: after the build phase, report files changed outside every task's
+  owned list to QA as a failure.
+- [ ] **Spawn `claude` without a shell on Windows** (resolve the executable once) to drop the
+  `DEP0190` warning and the quoting risk.
 
-## P1: UI gaps
+## 0.3: better results per dollar
 
-- [ ] Show which queue goal is currently running (use the `queue_item` event).
-- [ ] Graceful "stop after current goal" for `loop`. Today Stop kills the process tree.
-- [ ] Per-task agent output. The full report is not emitted; add a truncated `output` to `task_end` and show it expandable on the card.
-- [ ] Persist run history (events per goal) to `.orchestrator/runs/` and list past runs. Today only the latest `last-run.json` survives and live events vanish on restart.
-- [x] Cost per task, round and goal (from `total_cost_usd`), shown in the run panel and last-run card, with a `--max-cost` budget per goal. Tokens are not shown yet.
+Each item should show its effect in the evals before it becomes the default.
 
-## P2: features
+- [ ] **Project brief**: the architect writes `.orchestrator/brief.md` once (stack, conventions,
+  commands) and later rounds and goals reuse it instead of re-reading the repo.
+- [ ] **Context between rounds**: give the architect its previous plan, the diff and the check output,
+  not only the failure strings.
+- [ ] **Session resume for fix rounds**: continue the implementer's session (`session_id` from the CLI)
+  instead of starting cold.
+- [ ] **Memory between goals**: `.orchestrator/notes.md` with decisions and pitfalls, read by the
+  architect, appended by QA.
+- [ ] **Review lens**: optional reviewer pass on the diff for bugs and security, with the user's own
+  reviewer agents when present.
+- [ ] **Escalate per task**: on a stuck round, move only the failing tasks up a tier.
 
-- [ ] **Plan approval gate.** Optional pause after the architect plan so a human can approve or edit it before build (extends `--dry-run`).
-- [ ] Diff viewer per round (files changed, link to `git diff`).
-- [ ] Agent roster page: view and edit `.claude/agents/*.md`, show discovered skills.
-- [ ] Goal templates and a Figma link field that passes through to the `fe` task.
-- [ ] Notifications when a goal finishes or fails (desktop notification in Tauri).
-- [ ] Concurrency cap for parallel build tasks.
-- [ ] Per-repo settings (power, max rounds) remembered by the desktop app.
+## 0.4: autonomy
 
-## P2: quality
+- [ ] **Branch and pull request per goal**: run each goal on `orch/<id>-<slug>`, finish with
+  `gh pr create`, never touch the main branch.
+- [ ] **Backlog intake**: read goals from `BACKLOG.md` or GitHub issues with a label; priority and
+  `dependsOn` on queue items.
+- [ ] **Queue lifecycle**: show the running goal, retry policy, a `blocked` status for goals that need a
+  human, per-item power and max rounds.
+- [ ] **Plan approval gate**: optional pause after planning so a human can approve or edit the plan.
+- [ ] **Worktree per build task** so parallel agents cannot break each other's test runs.
+- [ ] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri).
 
-- [ ] Unit tests for `reduce.ts` and for `validate`, `extractJson`, `execute` in `orch.ts` (needs exports or a test seam).
-- [ ] CI: typecheck, `cargo check`, the Rust spawn test with the fake `claude` (keep a copy of the fake in the repo).
-- [ ] Make the fake `claude` a committed test fixture instead of living in `/tmp`. It must now accept `--agents <file>` (built-in agents are passed that way). The P0 fixes were checked with such a fake covering: happy path, QA seeing new files, loop parking a failed goal, a crashing build task, dirty-tree refusal, plan retry, and CLI input validation.
-- [ ] Share the event types between `orch.ts` and the UI instead of duplicating shapes.
-- [ ] Lint and format config (ESLint, Prettier, rustfmt, clippy).
+## 0.5: product and packaging
 
-## P3: packaging
-
-- [ ] Windows installer build and code signing.
-- [ ] Bundle Node as a sidecar so the app does not require Node on PATH.
-- [ ] Auto-update.
-- [x] First-run checks: `orch doctor` (node, claude installed and logged in, git, clean repo, leftover checkpoints, checks), shown as a banner in both UIs.
-
-## Next (from the baseline attempt, 2026-11-11)
-
-- [x] **Usage-limit handling.** Detected in `run()` as `UsageLimit` (reset time parsed in the reply's time zone); ends the goal, `orch run` exits 3, `loop` requeues and waits for the reset, the eval runner never records it and can `--resume` or `--wait-on-limit`.
-- [ ] **Finish the baseline.** Stopped at 23/120 runs when the limit hit; 21 are valid (all passed; economy ≈ $0.30, balanced ≈ $0.65, heavy ≈ $0.85 per run), 2 were spoiled by the limit. After the reset: `node evals/run.ts --resume 2026-11-11T19-31-56 --power economy,balanced,heavy,max --repeat 3 --parallel 2 --max-rounds 3 --max-cost 3 --wait-on-limit`.
-
-## Done
-
-- [x] Eval suite (`evals/`): 10 cases over 3 dependency-free fixtures (Node lib, Node API, Python), hidden tests plus reference solutions, `--reference` self-check, runner with per-tier tables and false-pass count. First real run (economy, 3 cases): 3/3 hidden pass, 1 round each, $0.92 total.
-
-- [x] `orch.ts` loop: architect, foundation, parallel build, QA, rounds, queue, power tiers.
-- [x] Phantom-completion detection and checkpoint branches.
-- [x] Structured event protocol (`ORCH_EVENTS`).
-- [x] Browser UI with live task cards (`server.ts`).
-- [x] Tauri v2 desktop app with repo picker, shared transport layer.
-- [x] Rust spawn/event test with fake `claude`.
+- [ ] **Run history**: append events to `.orchestrator/runs/<id>.jsonl`, list and replay past runs.
+- [ ] **Per-task output** on the task cards (truncated report in `task_end`), and a diff viewer per round.
+- [ ] **Token counts** next to cost.
+- [ ] **Agent roster page**: view and edit agents, show discovered skills.
+- [ ] **Per-repo settings** (power, max rounds, budget) remembered by the desktop app.
+- [ ] **One backend**: share line parsing and event buffering instead of keeping `server.ts` and
+  `main.rs` in sync (or let the desktop app start `server.ts`).
+- [ ] **Shared event types** between `orch.ts` and the UI (one discriminated union). **good first issue**
+- [ ] **Packaging**: bundle Node as a sidecar, sign the Windows installer, auto-update, release builds
+  for Windows, macOS and Linux from CI.
+- [ ] **Verify on macOS and Linux** (CLI, browser mode, desktop build). **good first issue** if you
+  have the machine.
