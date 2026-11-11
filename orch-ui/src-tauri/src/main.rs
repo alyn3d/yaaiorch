@@ -224,10 +224,14 @@ fn kill_tree(pid: u32) {
     }
 }
 
-fn flags(power: &str, max_rounds: u32, dry_run: bool) -> Vec<String> {
+fn flags(power: &str, max_rounds: u32, dry_run: bool, max_cost: Option<f64>) -> Vec<String> {
     let mut v = vec!["--power".into(), power.into(), "--max-rounds".into(), max_rounds.to_string()];
     if dry_run {
         v.push("--dry-run".into());
+    }
+    if let Some(c) = max_cost.filter(|c| *c > 0.0) {
+        v.push("--max-cost".into());
+        v.push(c.to_string());
     }
     v
 }
@@ -257,21 +261,35 @@ fn set_repo(app: AppHandle, state: State<AppState>, path: String) -> Result<(), 
 }
 
 #[tauri::command]
-fn run_goal(app: AppHandle, goal: String, power: String, max_rounds: u32, dry_run: Option<bool>) -> Result<(), String> {
+fn run_goal(
+    app: AppHandle,
+    goal: String,
+    power: String,
+    max_rounds: u32,
+    dry_run: Option<bool>,
+    max_cost: Option<f64>,
+) -> Result<(), String> {
     if goal.trim().is_empty() {
         return Err("goal required".into());
     }
     let mut args = vec!["run".to_string()];
-    args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false)));
+    args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), max_cost));
     let label = format!("run: {}", goal.chars().take(60).collect::<String>());
     args.push(goal);
     spawn_orch(&app, args, label)
 }
 
 #[tauri::command]
-fn run_loop(app: AppHandle, power: String, max_rounds: u32, dry_run: Option<bool>, until_empty: Option<bool>) -> Result<(), String> {
+fn run_loop(
+    app: AppHandle,
+    power: String,
+    max_rounds: u32,
+    dry_run: Option<bool>,
+    until_empty: Option<bool>,
+    max_cost: Option<f64>,
+) -> Result<(), String> {
     let mut args = vec!["loop".to_string()];
-    args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false)));
+    args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), max_cost));
     if until_empty.unwrap_or(false) {
         args.push("--until-empty".into());
     }
@@ -299,6 +317,24 @@ fn agents(app: AppHandle) -> Result<String, String> {
         .output()
         .map_err(|e| format!("{NODE_HINT}: {e}"))?;
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Runs as a normal orch process: refused while a goal runs, output streams to the log.
+#[tauri::command]
+fn rollback(app: AppHandle) -> Result<(), String> {
+    spawn_orch(&app, vec!["rollback".into()], "rollback".into())
+}
+
+/// `orch doctor --json`. Async so starting node does not freeze the window.
+#[tauri::command(async)]
+fn doctor(app: AppHandle) -> Value {
+    let fail = |detail: String| json!([{ "name": "orchestrator", "level": "fail", "detail": detail }]);
+    let out = match node_cmd(&app, &["doctor".into(), "--json".into()]).and_then(|mut c| c.output().map_err(|e| format!("{NODE_HINT}: {e}"))) {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    // exit 1 just means a "fail" finding; the JSON is still on stdout
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|_| fail(String::from_utf8_lossy(&out.stderr).trim().to_string()))
 }
 
 #[tauri::command]
@@ -330,7 +366,9 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![snapshot, set_repo, run_goal, run_loop, add_goal, agents, stop, clear_log])
+        .invoke_handler(tauri::generate_handler![
+            snapshot, set_repo, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
@@ -359,7 +397,7 @@ mod tests {
         h.state::<AppState>().0.lock().unwrap().repo = Some(PathBuf::from(repo));
 
         let mut args = vec!["run".to_string()];
-        args.extend(flags("heavy", 5, false));
+        args.extend(flags("heavy", 5, false, None));
         args.push("hello".into());
         spawn_orch(&h, args, "test".into()).unwrap();
         assert!(spawn_orch(&h, vec!["agents".into()], "x".into()).is_err(), "second run must be refused");

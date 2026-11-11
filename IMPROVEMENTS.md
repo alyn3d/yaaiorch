@@ -64,6 +64,9 @@ Priority: **P0** breaks the loop or gives wrong results, **P1** needed before ru
 ## P1: needed before running unattended
 
 ### Loop resilience
+
+**Status (2026-11-11):** done: stuck `running` items, stuck detection with one-tier escalation (on the first stuck round rather than round 3), budget cap per goal (not yet per loop session), agent timeout. Open: retry policy, `blocked` status, graceful Ctrl+C/stop file.
+
 - **Stuck `running` items.** After a crash or Stop, the item stays `running` and `loop` only picks `pending` (`orch.ts:258`). On startup, reset `running` items to `pending` (or `failed`), since only one run exists at a time.
 - **Retry policy.** A failed goal is never retried and there is no UI to retry it. Add `attempts` to the item, retry up to N times, then park it as `failed` with the last QA failures stored on the item.
 - **Blocked state.** Add a `blocked` status for goals that need a human answer, so the loop skips them instead of burning rounds.
@@ -90,6 +93,9 @@ Priority: **P0** breaks the loop or gives wrong results, **P1** needed before ru
 - A validation failure throws and ends the goal. Send the error back to the architect once before giving up.
 
 ### Read-only roles are not read-only
+
+**Status (2026-11-11): done.** Architect and verifiers run with `--permission-mode default` and an edit-tool deny; deny alone was not enough (a real agent wrote via a shell redirect under `acceptEdits`).
+
 - Every agent, including `architect` and `qa`, runs with `--permission-mode acceptEdits` (`orch.ts:89`). "Verify never edits" depends on the agent prompt. Run the architect and verify phases with a read-only permission mode or with edit tools disallowed.
 
 ### Configuration

@@ -16,10 +16,10 @@ Priority: **P0** blocks real use, **P1** important, **P2** worthwhile, **P3** la
 ## P1: correctness and safety
 
 - [ ] **Local CSRF in browser mode.** `server.ts` accepts any request on localhost and parses the body as JSON without checking `Content-Type` or `Origin`. A web page can POST `/api/run` and start agents. Add an Origin/Host check and a per-session token.
-- [ ] **Timeouts and failure handling in `run()`.** No timeout, no retry. A hung agent blocks the loop. A failed CLI call throws and ends the goal. Add per-agent timeouts and one retry for transient failures.
+- [x] **Timeouts in `run()`.** `--agent-timeout` (30 min) kills the process tree; a failed call is a task error, not the end of the goal. Still open: one retry for transient failures (network, rate limit).
 - [x] **Architect JSON failures.** Bad JSON or a rejected plan is sent back once with the reason.
-- [ ] **Stop mid-edit leaves a half-changed tree.** Confirmed in the UI test: after Stop the next run is refused (dirty tree) until a manual reset. Offer "Roll back to checkpoint" in the UI (`git reset --hard <checkpoint>`, with confirmation). The checkpoint name is already emitted (`checkpoint` event) and shown on the run panel.
-- [ ] **Checkpoint branches pile up.** The checkpoint is now deleted when a goal passes or is parked. Still to do: prune old `orchestrator/checkpoint-*` from failed `run`s and old `orchestrator/failed-*`.
+- [x] **Stop mid-edit leaves a half-changed tree.** `orch rollback` and a UI button (two-step confirm) reset to the checkpoint; the discarded work is kept on `orchestrator/discarded-*`.
+- [x] **Checkpoint branches pile up.** Deleted on pass, park and rollback; `orch prune --older-than DAYS` removes old `orchestrator/*` branches; doctor warns about leftovers.
 - [ ] **Queue write races.** UI `add` and the loop both read-modify-write `queue.json`. Use a lock file or route all writes through one process.
 - [x] **Dirty working tree.** A run refuses to start on uncommitted changes (`.orchestrator/` excluded).
 
@@ -29,7 +29,7 @@ Priority: **P0** blocks real use, **P1** important, **P2** worthwhile, **P3** la
 - [ ] Graceful "stop after current goal" for `loop`. Today Stop kills the process tree.
 - [ ] Per-task agent output. The full report is not emitted; add a truncated `output` to `task_end` and show it expandable on the card.
 - [ ] Persist run history (events per goal) to `.orchestrator/runs/` and list past runs. Today only the latest `last-run.json` survives and live events vanish on restart.
-- [ ] Cost and token usage per task and per run. The CLI JSON output includes usage and cost; capture it in `run()` and emit it.
+- [x] Cost per task, round and goal (from `total_cost_usd`), shown in the run panel and last-run card, with a `--max-cost` budget per goal. Tokens are not shown yet.
 
 ## P2: features
 
@@ -54,7 +54,7 @@ Priority: **P0** blocks real use, **P1** important, **P2** worthwhile, **P3** la
 - [ ] Windows installer build and code signing.
 - [ ] Bundle Node as a sidecar so the app does not require Node on PATH.
 - [ ] Auto-update.
-- [ ] Clear first-run checks in the app: Node found, `claude` found and logged in, repo is git.
+- [x] First-run checks: `orch doctor` (node, claude installed and logged in, git, clean repo, leftover checkpoints, checks), shown as a banner in both UIs.
 
 ## Done
 

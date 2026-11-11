@@ -13,17 +13,23 @@ const updTask = (r: RoundView, id: number, fn: (t: TaskView) => TaskView): Round
 export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
   switch (ev.type) {
     case "goal_start":
-      return { goal: ev.goal, maxRounds: ev.maxRounds, dryRun: ev.dryRun, status: "running", startedAt: ev.t, rounds: [] };
+      return {
+        goal: ev.goal, maxRounds: ev.maxRounds, dryRun: ev.dryRun, maxCost: ev.maxCost,
+        status: "running", startedAt: ev.t, rounds: [], cost: 0,
+      };
     case "goal_end":
-      return run && { ...run, status: ev.passed ? "passed" : "failed", error: ev.error };
+      return run && { ...run, status: ev.passed ? "passed" : "failed", error: ev.error, cost: ev.cost ?? run.cost };
     case "round_start":
-      return run && { ...run, rounds: [...run.rounds, { round: ev.round, architect: "running", summary: "", tasks: [], failures: [] }] };
+      return (
+        run && { ...run, rounds: [...run.rounds, { round: ev.round, power: ev.power, architect: "running", summary: "", tasks: [], failures: [] }] }
+      );
     case "plan":
       return (
         run &&
-        upd(run, ev.round, (r) => ({
+        upd({ ...run, cost: run.cost + (ev.cost ?? 0) }, ev.round, (r) => ({
           ...r,
           architect: "done",
+          architectCost: ev.cost,
           summary: ev.summary,
           tasks: ev.tasks.map((t: any): TaskView => ({
             id: t.id, agent: t.agent, phase: t.phase, task: t.task, files: t.files ?? [],
@@ -36,14 +42,25 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
     case "task_end":
       return (
         run &&
-        upd(run, ev.round, (r) =>
+        upd({ ...run, cost: run.cost + (ev.cost ?? 0) }, ev.round, (r) =>
           updTask(r, ev.id, (t) => ({
-            ...t, status: ev.status, touched: ev.touched ?? [], failures: ev.failures ?? [], error: ev.error, endedAt: ev.t,
+            ...t, status: ev.status, touched: ev.touched ?? [], failures: ev.failures ?? [], error: ev.error, cost: ev.cost, endedAt: ev.t,
           })),
         )
       );
     case "round_end":
-      return run && upd(run, ev.round, (r) => ({ ...r, passed: ev.passed, failures: ev.failures }));
+      return run && upd(run, ev.round, (r) => ({ ...r, passed: ev.passed, failures: ev.failures, cost: ev.cost }));
+    case "stuck":
+      return (
+        run &&
+        upd(run, ev.round, (r) => ({
+          ...r,
+          note:
+            ev.action === "stop" ? `No progress again (${ev.reason}): stopped the goal.`
+            : ev.action === "escalate" ? `No progress (${ev.reason}): next round runs at power ${ev.power}.`
+            : `No progress (${ev.reason}): already at max power, retrying with a different approach.`,
+        }))
+      );
     case "checks":
       return run && upd(run, ev.round, (r) => ({ ...r, checks: ev.results }));
     case "checkpoint":

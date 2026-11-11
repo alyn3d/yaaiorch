@@ -27,8 +27,11 @@ Three layers:
     orch loop             process the queue (--until-empty to stop when drained)
     orch status           print the queue
     orch agents           list discovered agents and skills
+    orch doctor [--json]  first-run checks: node, claude installed and logged in, git, clean repo, leftover checkpoints, checks
+    orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work kept on orchestrator/discarded-*
+    orch prune [--older-than DAYS]  delete orchestrator/* branches older than DAYS (14)
 
-Options: `--max-rounds N` (5), `--power max|heavy|balanced|economy` (heavy), `--poll S` (15), `--until-empty`, `--dry-run`. It runs in the target repo (current working directory).
+Options: `--max-rounds N` (5), `--power max|heavy|balanced|economy` (heavy), `--max-cost USD` (per goal, none by default), `--agent-timeout MIN` (30), `--poll S` (15), `--until-empty`, `--dry-run`. It runs in the target repo (current working directory). Errors print one line; set `ORCH_DEBUG=1` for stack traces.
 
 ### Power tiers
 
@@ -52,7 +55,17 @@ Map each role to a model. The architect and QA get the strongest models; impleme
 7. **Checks.** The orchestrator runs the repo's check commands itself (10 min timeout each) and emits `checks`. Commands come from `.orchestrator/config.json` `checks`, else from the package.json scripts `typecheck`, `lint`, `test`, `build` (npm's placeholder test is skipped).
 8. **Verify** tasks run sequentially, never edit. Each returns `{passed, failures[]}`. They receive the implementer reports, the diff stat against the checkpoint, any uncommitted new files, and the check results with output tails. A verify call that errors counts as a failure.
 9. Write `.orchestrator/last-run.json`. The round passes only if no task errored, every check exited 0, and every verdict passed. A failed check is a failure whatever QA says. Otherwise feed the failures to the next architect round.
-10. **Finish** (git only). On pass, delete the checkpoint. On failure in `loop`, move the goal's commits to `orchestrator/failed-<ts>` and reset the branch to the checkpoint, so the next goal starts clean. On failure in `run`, leave the commits and print the rollback command.
+10. **Stuck detection.** A failed round that changed no files, or ended with the same failures as the round before (compared ignoring case, spacing and numbers), counts as stuck. The first time, the next round runs one power tier up (economy → balanced → heavy → max) and the architect is told not to repeat its plan (emits `stuck` with action `escalate`, or `retry` at max). Two stuck rounds in a row stop the goal (`stuck`, action `stop`).
+11. **Finish** (git only). On pass, delete the checkpoint. On failure in `loop`, move the goal's commits to `orchestrator/failed-<ts>` and reset the branch to the checkpoint, so the next goal starts clean. On failure in `run`, leave the commits; `orch rollback` (or the UI button) undoes them.
+
+### Limits
+
+- **Agent timeout** (`--agent-timeout`, 30 min): a call that runs longer is killed with its whole process tree (`taskkill /T` on Windows) and becomes a task error.
+- **Budget** (`--max-cost`): every call's `total_cost_usd` is added to the goal's total, also for failed calls. Each call gets `--max-budget-usd` set to what is left (at least $0.01). When the CLI reports `error_max_budget_usd`, or the total reaches the cap before a call, the goal stops with `Stopped: budget of $X used up`. The CLI checks its limit after each turn, and parallel calls each get the full remainder, so a goal can overshoot the cap by up to one turn per parallel call.
+
+### Rollback and pruning
+
+`orch rollback` picks the newest `orchestrator/checkpoint-*` (or the given branch), refuses if it is not an ancestor of the current branch, commits whatever is left (including uncommitted edits from a stopped run), keeps that on `orchestrator/discarded-<ts>`, resets to the checkpoint, deletes the checkpoint and clears it from `last-run.json`. Nothing is lost. `orch prune` deletes `orchestrator/*` branches whose timestamp is older than `--older-than` days, never the current branch.
 
 ### Plan shape
 
@@ -68,9 +81,10 @@ Agent reports are not trusted. `execute()` hashes each owned file (`git hash-obj
 
 Each agent is a one-shot headless call:
 
-    claude -p [--agents .orchestrator/builtin-agents.json] --settings .orchestrator/agent-settings.json --agent <name> --model <m> --output-format json --permission-mode acceptEdits
+    claude -p [--agents .orchestrator/builtin-agents.json] --settings <settings> --agent <name> --model <m>
+              --output-format json --permission-mode <mode> [--max-budget-usd <left>]
 
-`--agents` is added for built-in agents. In `-p` mode with `acceptEdits`, every shell command is refused unless allowed (confirmed in a real run), so `agent-settings.json` allows the check commands (`Bash(...)` and `PowerShell(...)`), `npm test` and read-only git, plus anything in `.orchestrator/config.json` `allow`. Compound commands (`cd x && npm test; echo $?`) still do not match those rules, which is why the orchestrator runs the checks itself rather than relying on QA. The prompt goes through stdin (no quoting problems on Windows). A reply with `is_error` or without a string `result` is an error. `extractJson` prefers a fenced `json` block, then the outermost `{...}`. On Windows the process is spawned through a shell with `windowsHide`.
+`--agents` is added for built-in agents. Implementers run with `acceptEdits` and `agent-settings.json`. The architect and verifiers are read-only: permission mode `default` with `readonly-settings.json`, which adds a deny on Edit/Write/MultiEdit/NotebookEdit. Denying the edit tools alone is not enough: under `acceptEdits` an agent wrote a file with a shell redirect instead (confirmed with the real CLI), while `default` refuses that and still runs allow-listed commands. In `-p` mode with `acceptEdits`, every shell command is refused unless allowed (confirmed in a real run), so `agent-settings.json` allows the check commands (`Bash(...)` and `PowerShell(...)`), `npm test` and read-only git, plus anything in `.orchestrator/config.json` `allow`. Compound commands (`cd x && npm test; echo $?`) still do not match those rules, which is why the orchestrator runs the checks itself rather than relying on QA. The prompt goes through stdin (no quoting problems on Windows). The JSON reply is parsed even on a non-zero exit, so the cost and the reason (`subtype`) are kept. A reply with `is_error`, a non-zero exit or no string `result` is an error. `extractJson` prefers a fenced `json` block, then the outermost `{...}`. On Windows the process is spawned through a shell with `windowsHide`.
 
 ### Reply contracts
 
@@ -86,16 +100,20 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 
 | type | fields |
 |---|---|
-| `goal_start` | goal, maxRounds, dryRun |
+| `goal_start` | goal, maxRounds, dryRun, power, maxCost? |
 | `queue_item` | id, goal (loop only) |
 | `checkpoint` | branch (git only, not on dry run) |
-| `round_start`, `architect_start` | round |
-| `plan` | round, summary, tasks[] (each with `id`) |
+| `round_start` | round, power |
+| `architect_start` | round |
+| `plan` | round, summary, cost, tasks[] (each with `id`) |
 | `checks` | round, results[] ({name, command, ok, code, ms}) |
 | `task_start` | round, id, agent, phase |
-| `task_end` | round, id, agent, phase, status, touched[], failures?, error? |
-| `round_end` | round, passed, failures[] |
-| `goal_end` | passed, error? |
+| `task_end` | round, id, agent, phase, status, touched[], cost?, failures?, error? |
+| `round_end` | round, passed, failures[], cost |
+| `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power? |
+| `goal_end` | passed, cost, error? |
+
+Costs are USD from the CLI's `total_cost_usd`, rounded to 4 decimals.
 
 Task `status` is `COMPLETE`, `PARTIAL`, `FAILED`, `PHANTOM`, `UNKNOWN`, `ERROR`, `SKIPPED` (implementers), `PASS`/`FAIL`/`ERROR`/`SKIPPED` (QA). The UI adds `STOPPED` for tasks unfinished when the process exits without `goal_end`. Plain log lines are unchanged, so CLI use is unaffected.
 
@@ -106,10 +124,10 @@ Task `status` is `COMPLETE`, `PARTIAL`, `FAILED`, `PHANTOM`, `UNKNOWN`, `ERROR`,
 | File | Role |
 |---|---|
 | `transport.ts` | The only place that knows how to reach the backend. Browser: `fetch` + `EventSource`. Desktop: Tauri `invoke` + `listen`. Chosen at startup via `__TAURI_INTERNALS__`. |
-| `useOrch.ts` | Hook: `state`, `log`, `run`, `error`, `call()`, `pickRepo()`. |
+| `useOrch.ts` | Hook: `state`, `log`, `run`, `error`, `call()`, `pickRepo()`, `findings` (doctor, refreshed on connect, repo change and after every process exit). |
 | `reduce.ts` | Pure fold of `OrchEvent`s into a `RunView` (rounds → tasks). A reload replays the stored events through it. |
 | `RunView.tsx` | Task cards grouped Foundation / Build / Verify, with status, elapsed time, owned and changed files, failures. |
-| `App.tsx`, `App.scss` | Goal form, queue, run panel, live log. |
+| `App.tsx`, `App.scss` | Goal form (power, max rounds, max $, plan only), doctor banner, rollback offer (from `lastRun.checkpoint`, two-step confirm), queue, run panel, live log. |
 | `types.ts` | Shared types. |
 
 State flow: backend pushes `init` (full snapshot: state + log + events), then `state`, `log`, `ev` deltas.
@@ -122,7 +140,8 @@ Node `http` server on `127.0.0.1:4317`. Spawns `orch.ts` through tsx in `ORCH_RE
 |---|---|
 | `GET /api/events` | SSE: `init`, `state`, `log`, `ev` |
 | `GET /api/state`, `/api/agents` | Snapshot, roster |
-| `POST /api/run`, `/add`, `/loop`, `/stop`, `/clear-log` | Actions |
+| `GET /api/doctor` | `orch doctor --json` |
+| `POST /api/run`, `/add`, `/loop`, `/stop`, `/clear-log`, `/rollback` | Actions (`run`/`loop` take `maxCost`; `rollback` runs `orch rollback` as a normal process) |
 | static | serves `dist/` |
 
 ### Backend B: desktop mode (`src-tauri/src/main.rs`)
@@ -133,7 +152,8 @@ Tauri v2. Replaces the Node server. Runs the compiled `orch.mjs` with `node` in 
 |---|---|
 | `snapshot` | Full init payload |
 | `set_repo(path)` | Validate folder, persist to `<app config>/repo.txt`, emit `orch-init` |
-| `run_goal`, `run_loop`, `add_goal`, `stop`, `clear_log`, `agents` | Same actions as the HTTP API |
+| `run_goal`, `run_loop`, `add_goal`, `stop`, `clear_log`, `agents`, `rollback` | Same actions as the HTTP API (`max_cost: Option<f64>` on run/loop) |
+| `doctor` | `orch doctor --json` (async command, so starting node does not freeze the window) |
 
 Events to the UI: `orch-init`, `orch-state`, `orch-log`, `orch-ev`.
 
@@ -144,7 +164,9 @@ Internals: one `Mutex<Inner>` holds repo, running process, log ring (5000 lines)
 | Path | Owner | Content |
 |---|---|---|
 | `<target>/.orchestrator/queue.json` | orch.ts / UI | Queue |
-| `<target>/.orchestrator/last-run.json` | orch.ts | Rounds of the latest goal |
+| `<target>/.orchestrator/last-run.json` | orch.ts | Latest goal: status, total cost, `checkpoint` (only while that branch exists; drives the UI's rollback offer), and per round power, plan, touched files, checks, failures, cost |
+| `<target>/.orchestrator/readonly-settings.json` | orch.ts | Allow-list plus edit-tool deny for the architect and verifiers |
+| `<target>` git branches `orchestrator/discarded-*` | orch.ts | Work thrown away by `orch rollback` |
 | `<target>/.orchestrator/builtin-agents.json` | orch.ts | Built-in agent definitions passed to `claude --agents` |
 | `<target>/.orchestrator/agent-settings.json` | orch.ts | Permission allow-list passed to `claude --settings` |
 | `<target>/.orchestrator/config.json` | user | Optional: `{"checks": {"name": "command"}, "allow": ["Bash(...)"]}` |

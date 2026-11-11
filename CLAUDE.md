@@ -20,7 +20,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks, task_start, task_end, round_end, goal_end. Keep `server.ts`, `main.rs` and `reduce.ts`
+architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, goal_end. Keep `server.ts`, `main.rs` and `reduce.ts`
 in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
 process exits without `goal_end`.
 
@@ -37,14 +37,17 @@ process exits without `goal_end`.
 - Windows is the primary target. `orch.ts` spawns `claude` through a shell on win32; children use `windowsHide`.
 - Only one run at a time. Stop kills the whole process tree (taskkill on Windows).
 - `.orchestrator/` (queue.json, last-run.json, builtin-agents.json) lives in the target repo and is never committed by the orchestrator.
-- Git: a run refuses a dirty tree, creates `orchestrator/checkpoint-*`, and commits each round on the current branch. On pass the checkpoint is deleted. On failure in `loop`, the work moves to `orchestrator/failed-*` and the branch is reset to the checkpoint.
-- Headless agents get no shell unless allowed: `claude -p` with `acceptEdits` refuses every Bash/PowerShell call. So orch.ts runs the repo's checks itself (`.orchestrator/config.json` `checks`, else package.json `typecheck`/`lint`/`test`/`build`) and a non-zero exit fails the round. Agents get an allow-list for those commands via `--settings .orchestrator/agent-settings.json`.
-- Testing without spending tokens: point `CLAUDE_BIN` at a fake `claude` that reads the prompt on stdin and prints `{"result": "...", "is_error": false}`. It must accept `--agents <file>`.
+- Git: a run refuses a dirty tree, creates `orchestrator/checkpoint-*`, and commits each round on the current branch. On pass the checkpoint is deleted. On failure in `loop`, the work moves to `orchestrator/failed-*` and the branch is reset to the checkpoint. `orch rollback` (and the UI button) resets to the checkpoint and keeps the discarded work on `orchestrator/discarded-*`; `orch prune` deletes old `orchestrator/*` branches.
+- Headless agents get no shell unless allowed: `claude -p` with `acceptEdits` refuses every Bash/PowerShell call. So orch.ts runs the repo's checks itself (`.orchestrator/config.json` `checks`, else package.json `typecheck`/`lint`/`test`/`build`) and a non-zero exit fails the round. Agents get an allow-list for those commands via `--settings`.
+- Read-only roles (architect, verifiers) run with `--permission-mode default` and `readonly-settings.json` (edit tools denied). Deny rules alone are not enough: under `acceptEdits` an agent writes files with a shell redirect instead.
+- Limits: `--agent-timeout` (30 min, kills the process tree), `--max-cost` per goal (passed on as `--max-budget-usd`; CLI reports `error_max_budget_usd`). Stuck rounds (no file changed, or same failures again) move up one power tier; two in a row stop the goal.
+- `orch doctor --json` is the first-run check both UIs show as a banner.
+- Testing without spending tokens: point `CLAUDE_BIN` at a fake `claude` that reads the prompt on stdin and prints `{"result": "...", "is_error": false, "total_cost_usd": 0.05}`. It must accept `--agents <file>`, `--settings`, `--max-budget-usd`, and answer `--version` and `auth status --json` for `doctor`.
 
 ## Backlog
-1. "Roll back to checkpoint" in the UI, and pruning of old checkpoint/failed branches.
-2. Unattended-loop safety: per-agent timeout, budget cap (`claude --max-budget-usd`), stuck detection, retry policy.
-3. Read-only architect and QA (deny Edit/Write through the `--settings` file).
-4. Show cost/token usage per run (same data as the budget cap).
-5. Show which queue goal is currently running; graceful "stop after current goal".
+1. Eval suite: ~10 goals over 2–3 sample repos, run per power tier, tracking pass rate, rounds, minutes and cost.
+2. Project brief (`.orchestrator/brief.md`) reused by the architect, and session resume for fix rounds.
+3. Commit the fake `claude` and the scenario scripts as tests; CI.
+4. Queue: show the running goal, retry policy, `blocked` status, graceful "stop after current goal".
+5. Branch + PR per goal; backlog intake from `BACKLOG.md` or GitHub issues.
 See `TODO.md` and `IMPROVEMENTS.md` for the full lists.

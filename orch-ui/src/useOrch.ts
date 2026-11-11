@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { OrchEvent, RunView, State } from "./types";
+import type { Finding, OrchEvent, RunView, State } from "./types";
 import { reduce } from "./reduce";
 import { transport } from "./transport";
 
@@ -43,6 +43,20 @@ export function useOrch() {
     }
   }, []);
 
+  // First-run checks: on connect, on repo change, and whenever a process ends (a run or rollback may
+  // have changed the tree or left a checkpoint behind).
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const repo = state?.repo;
+  const busy = !!state?.running;
+  useEffect(() => {
+    if (!repo || busy) return;
+    let live = true;
+    transport.doctor().then((f) => live && setFindings(f), (e) => live && setFindings([{ name: "doctor", level: "fail", detail: String(e) }]));
+    return () => {
+      live = false;
+    };
+  }, [repo, busy]);
+
   const pickRepo = useCallback(async () => {
     setError("");
     try {
@@ -52,5 +66,5 @@ export function useOrch() {
     }
   }, []);
 
-  return { state, log, run, error, connected, call, pickRepo, canPickRepo: transport.canPickRepo };
+  return { state, log, run, error, connected, call, pickRepo, canPickRepo: transport.canPickRepo, findings };
 }

@@ -6,11 +6,13 @@ import { RunPanel } from "./RunView";
 const POWERS: Power[] = ["max", "heavy", "balanced", "economy"];
 
 export function App() {
-  const { state, log, run, error, connected, call, pickRepo, canPickRepo } = useOrch();
+  const { state, log, run, error, connected, call, pickRepo, canPickRepo, findings } = useOrch();
   const [goal, setGoal] = useState("");
   const [power, setPower] = useState<Power>("heavy");
   const [maxRounds, setMaxRounds] = useState(5);
+  const [maxCost, setMaxCost] = useState("");
   const [dryRun, setDryRun] = useState(false);
+  const [confirmRollback, setConfirmRollback] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
@@ -21,8 +23,13 @@ export function App() {
   const busy = !!state?.running;
   const noRepo = !state?.repo;
   // An empty or out-of-range field must not reach orch.ts as 0 or NaN.
-  const opts = { power, maxRounds: Math.min(20, Math.max(1, Math.round(maxRounds) || 1)), dryRun };
+  const cap = Number(maxCost);
+  const opts = { power, maxRounds: Math.min(20, Math.max(1, Math.round(maxRounds) || 1)), dryRun, maxCost: cap > 0 ? cap : undefined };
   const rounds = state?.lastRun?.state ?? [];
+  // last-run.json names the checkpoint only while that branch exists, so this survives restarts.
+  const checkpoint = busy ? undefined : state?.lastRun?.checkpoint;
+  const problems = findings.filter((f) => f.level !== "ok");
+  useEffect(() => setConfirmRollback(false), [checkpoint]);
 
   return (
     <div className="app">
@@ -33,6 +40,36 @@ export function App() {
         {canPickRepo && <button disabled={busy} onClick={pickRepo}>{state?.repo ? "Change repo…" : "Choose repo…"}</button>}
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "disconnected"} />
       </header>
+
+      {problems.length > 0 && (
+        <section className="card notice">
+          {problems.map((f) => (
+            <p key={f.name} className={`finding ${f.level}`}>
+              <span className={`badge ${f.level === "fail" ? "failed" : "warn"}`}>{f.level}</span> <strong>{f.name}</strong>: {f.detail}
+            </p>
+          ))}
+        </section>
+      )}
+
+      {checkpoint && (
+        <section className="card notice">
+          <div className="row">
+            <span>
+              The last goal ({state?.lastRun?.status ?? "unfinished"}) left changes on top of <code>{checkpoint}</code>.
+            </span>
+            <span className="spacer" />
+            {confirmRollback ? (
+              <>
+                <span className="muted">Discard them? They stay on an orchestrator/discarded-* branch.</span>
+                <button className="danger" onClick={() => { setConfirmRollback(false); call("rollback"); }}>Roll back</button>
+                <button onClick={() => setConfirmRollback(false)}>Cancel</button>
+              </>
+            ) : (
+              <button className="danger" onClick={() => setConfirmRollback(true)}>Roll back to checkpoint…</button>
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <textarea
@@ -51,6 +88,10 @@ export function App() {
           <label>
             Max rounds
             <input type="number" min={1} max={20} value={maxRounds} onChange={(e) => setMaxRounds(Number(e.target.value))} />
+          </label>
+          <label title="Stop the goal once agent calls have cost this much (USD). Empty: no limit.">
+            Max $
+            <input type="number" min={0} step={0.5} placeholder="none" value={maxCost} onChange={(e) => setMaxCost(e.target.value)} />
           </label>
           <label className="check">
             <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} /> Plan only
@@ -87,12 +128,20 @@ export function App() {
 
       {run ? <RunPanel run={run} /> : (
         <section className="card">
-          <h2>Last run{state?.lastRun ? `: ${state.lastRun.goal.slice(0, 60)}` : ""}</h2>
+          <div className="row">
+            <h2>Last run{state?.lastRun ? `: ${state.lastRun.goal.slice(0, 60)}` : ""}</h2>
+            {state?.lastRun?.status && <span className={`badge ${state.lastRun.status === "passed" ? "done" : state.lastRun.status === "running" ? "running" : "failed"}`}>{state.lastRun.status}</span>}
+            <span className="spacer" />
+            {state?.lastRun?.cost !== undefined && <span className="muted">${state.lastRun.cost.toFixed(2)}</span>}
+          </div>
           {rounds.length ? rounds.map((r) => (
             <div key={r.round} className="round">
               <div className="row">
                 <strong>Round {r.round}</strong>
+                {r.power && <span className="badge">{r.power}</span>}
                 <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>
+                <span className="spacer" />
+                {r.cost !== undefined && <span className="muted">${r.cost.toFixed(2)}</span>}
               </div>
               <p>{r.plan}</p>
               {r.touched.length > 0 && <p className="muted">Touched: {r.touched.join(", ")}</p>}

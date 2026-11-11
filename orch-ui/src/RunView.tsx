@@ -6,6 +6,8 @@ const fmt = (ms: number) => {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 };
 
+const money = (n?: number) => (n === undefined ? "" : `$${n.toFixed(2)}`);
+
 const tone = (s: string) =>
   s === "running" ? "running"
   : ["COMPLETE", "PASS"].includes(s) ? "done"
@@ -30,6 +32,7 @@ function Task({ t, now }: { t: TaskView; now: number }) {
         <span className="agent">{t.agent}</span>
         <span className={`badge ${tone(t.status)}`}>{t.status.toLowerCase()}</span>
         <span className="spacer" />
+        {t.cost !== undefined && <span className="cost">{money(t.cost)}</span>}
         <span className="muted">{elapsed}</span>
       </div>
       <p className="desc">{t.task}</p>
@@ -57,21 +60,26 @@ export function RunPanel({ run }: { run: Run }) {
           {run.dryRun && run.status === "passed" ? "plan only" : run.status}
         </span>
         <span className="spacer" />
+        <span className="cost" title="Cost of agent calls in this goal">
+          {money(run.cost)}{run.maxCost !== undefined ? ` / ${money(run.maxCost)}` : ""}
+        </span>
         <span className="muted">{fmt((run.status === "running" ? now : run.rounds.at(-1)?.tasks.at(-1)?.endedAt ?? now) - run.startedAt)}</span>
       </div>
-      {/* orch.ts deletes the checkpoint branch when the goal passes */}
-      {run.checkpoint && run.status !== "passed" && (
-        <p className="muted">Checkpoint: {run.checkpoint} (roll back with <code>git reset --hard {run.checkpoint}</code>)</p>
-      )}
+      {/* The checkpoint and its rollback offer are shown by App from last-run.json, which stays correct after a rollback. */}
+      {run.checkpoint && run.status === "running" && <p className="muted">Checkpoint: {run.checkpoint}</p>}
       {run.error && <p className="error">{run.error}</p>}
       {run.rounds.map((r) => (
         <div key={r.round} className="round">
           <div className="row">
             <strong>Round {r.round}/{run.maxRounds}</strong>
+            {r.power && <span className="badge" title="Power tier for this round">{r.power}</span>}
             {r.architect === "running" && <span className="badge running">architect planning</span>}
             {r.passed !== undefined && <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>}
+            <span className="spacer" />
+            {r.cost !== undefined && <span className="cost" title="Cost of this round">{money(r.cost)}</span>}
           </div>
-          {r.summary && <p>{r.summary}</p>}
+          {r.summary && <p>{r.summary}{r.architectCost !== undefined && <span className="cost"> (plan {money(r.architectCost)})</span>}</p>}
+          {r.note && <p className="note">{r.note}</p>}
           {r.checks && (
             <div className="row">
               <p className="phase">Checks</p>

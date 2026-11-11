@@ -50,3 +50,9 @@ button { cursor: pointer; &:hover:not(:disabled) { border-color: $accent; } &:di
   .desc { margin: 4px 0 0; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .files { margin: 2px 0 0; font-size: 12px; font-family: ui-monospace, monospace; word-break: break-all; } }
 .badge.warn { color: $warn; border-color: $warn; }
+.cost { font-family: ui-monospace, monospace; font-size: 12px; color: $muted; }
+
+// Doctor findings and the rollback offer: things that need attention before the next run.
+.notice { border-color: $warn; gap: 6px; code { font-size: 12px; } }
+.finding { margin: 0; &.fail strong { color: $bad; } }
+.note { margin: 4px 0; color: $warn; font-size: 13px; }

@@ -5,7 +5,7 @@
  * and reads .orchestrator/queue.json + last-run.json for state.
  */
 import http from "node:http";
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { spawn, execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, createReadStream, statSync } from "node:fs";
 import { resolve, join, extname, dirname } from "node:path";
@@ -108,11 +108,25 @@ function stop() {
   }
 }
 
-const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean }) => [
+const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCost?: number }) => [
   "--power", b.power ?? "heavy",
   "--max-rounds", String(b.maxRounds ?? 5),
   ...(b.dryRun ? ["--dry-run"] : []),
+  ...(typeof b.maxCost === "number" && b.maxCost > 0 ? ["--max-cost", String(b.maxCost)] : []),
 ];
+
+/** `orch doctor --json`, without blocking the event loop (SSE keeps flowing). */
+const doctor = () =>
+  new Promise<unknown>((ok) =>
+    execFile(process.execPath, [TSX_CLI, ORCH, "doctor", "--json"], { cwd: REPO, encoding: "utf8", windowsHide: true }, (_err, stdout) => {
+      // exit 1 just means a "fail" finding; the JSON is still on stdout
+      try {
+        ok(JSON.parse(stdout));
+      } catch {
+        ok([{ name: "orchestrator", level: "fail", detail: "could not run orch doctor" }]);
+      }
+    }),
+  );
 
 function addGoal(goal: string) {
   const q = readJson<Item[]>(queuePath, []);
@@ -152,6 +166,7 @@ http
         return;
       }
       if (url.pathname === "/api/state") return json(200, snapshot());
+      if (url.pathname === "/api/doctor") return json(200, await doctor());
       if (url.pathname === "/api/agents") {
         const out = execFileSync(process.execPath, [TSX_CLI, ORCH, "agents"], { cwd: REPO, encoding: "utf8" });
         return json(200, { text: out });
@@ -171,6 +186,11 @@ http
         }
         if (url.pathname === "/api/loop") {
           spawnOrch(["loop", ...flags(b), ...(b.untilEmpty ? ["--until-empty"] : [])], "queue loop");
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/rollback") {
+          // Runs as a normal orch process: refused while a goal runs, output streams to the log.
+          spawnOrch(["rollback"], "rollback");
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/stop") {

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { OrchEvent, State } from "./types";
+import type { Finding, OrchEvent, State } from "./types";
 
 export type Init = { state: State; log: string[]; events: OrchEvent[] };
 export type Handlers = {
@@ -16,6 +16,8 @@ export interface Transport {
   subscribe(h: Handlers): () => void;
   call(path: string, body?: Record<string, unknown>): Promise<void>;
   pickRepo(): Promise<void>;
+  /** First-run checks (`orch doctor`) for the current repo. */
+  doctor(): Promise<Finding[]>;
 }
 
 // ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
@@ -37,6 +39,10 @@ const web: Transport = {
     if (!r.ok) throw new Error((await r.json()).error ?? r.statusText);
   },
   async pickRepo() {},
+  async doctor() {
+    const r = await fetch("/api/doctor");
+    return r.ok ? r.json() : [{ name: "server", level: "fail", detail: r.statusText }];
+  },
 };
 
 // ---------- desktop: Tauri commands + events ----------
@@ -46,6 +52,7 @@ const COMMANDS: Record<string, string> = {
   loop: "run_loop",
   stop: "stop",
   "clear-log": "clear_log",
+  rollback: "rollback",
 };
 
 const tauri: Transport = {
@@ -82,6 +89,9 @@ const tauri: Transport = {
   async pickRepo() {
     const p = await open({ directory: true, multiple: false, title: "Choose target repo" });
     if (typeof p === "string") await invoke("set_repo", { path: p });
+  },
+  async doctor() {
+    return invoke<Finding[]>("doctor");
   },
 };
 
