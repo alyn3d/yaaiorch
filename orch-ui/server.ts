@@ -193,7 +193,7 @@ http
       json(500, { error: (e as Error).message });
     }
   })
-  .listen(PORT, "127.0.0.1", () => console.log(`orch-ui  repo=${REPO}\n         http://localhost:${PORT}`));
+  .listen(PORT, "127.0.0.1", () => console.log(`YAAIORCH ui  repo=${REPO}\n             http://localhost:${PORT}`));
 
 process.on("exit", stop);
 process.on("SIGINT", () => process.exit(0));

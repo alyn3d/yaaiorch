@@ -1,4 +1,4 @@
-# Improvements
+# YAAIORCH improvements
 
 Review of `orch.ts`, `orch-ui/` (React, `server.ts`, Tauri `main.rs`) and the docs, done 2026-11-11 by reading the code. Nothing here was run, so each item is a finding from the source, not a reproduced failure.
 

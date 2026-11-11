@@ -1,5 +1,5 @@
 {
-  "name": "orch-ui",
+  "name": "yaaiorch-ui",
   "private": true,
   "type": "module",
   "scripts": {

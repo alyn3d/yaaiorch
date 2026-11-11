@@ -1,6 +1,7 @@
 [package]
-name = "orch-app"
+name = "yaaiorch"
 version = "0.1.0"
+description = "YAAIORCH - Yet Another AI Orchestrator"
 edition = "2021"
 
 [build-dependencies]

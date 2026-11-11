@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-// Orchestrator CLI. Run from the target repo root. Usage: see USAGE below.
+// YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root. Usage: see USAGE below.
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -7,7 +7,7 @@ import { join, basename } from "node:path";
 import { parseArgs } from "node:util";
 import { BUILTIN_AGENTS } from "./orch-agents";
 
-const USAGE = `Orchestrator CLI. Run from the target repo root.
+const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root.
   orch run "<goal>"     one goal, loops architect -> build -> QA until QA passes
   orch add "<goal>"     queue a goal
   orch loop             process the queue continuously (Ctrl+C stops after current goal)

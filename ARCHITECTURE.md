@@ -1,8 +1,8 @@
-# Architecture
+# YAAIORCH architecture
 
 ## Overview
 
-An orchestrator that turns a goal into working code by looping specialist agents until QA passes.
+YAAIORCH (Yet Another AI Orchestrator) turns a goal into working code by looping specialist agents until QA passes.
 
     goal ──► architect ──► foundation ──► build (parallel) ──► verify (QA)
                 ▲                                                   │
@@ -12,7 +12,7 @@ Three layers:
 
 | Layer | Path | Role |
 |---|---|---|
-| Orchestrator CLI | `orch.ts` | The loop. Spawns `claude` per agent, validates plans, checks diffs, keeps the queue. |
+| YAAIORCH CLI | `orch.ts` | The loop. Spawns `claude` per agent, validates plans, checks diffs, keeps the queue. |
 | Agents | `orch-agents.ts` | Built-in `architect` (read-only planner), `fe`, `be` (implementers), `qa` (verifier). Agents in `~/.claude/agents` or the target repo's `.claude/agents` are discovered automatically and override built-ins of the same name. |
 | UI | `orch-ui/` | React + TS + SCSS. Runs in a browser (Node server) or as a Tauri v2 desktop app. |
 

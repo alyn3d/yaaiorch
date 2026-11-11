@@ -27,7 +27,8 @@ export function App() {
   return (
     <div className="app">
       <header>
-        <h1>Orchestrator</h1>
+        <h1 title="Yet Another AI Orchestrator">YAAIORCH</h1>
+        <span className="tagline">Yet Another AI Orchestrator</span>
         <span className="repo" title={state?.repo ?? ""}>{state?.repo ?? "No repo selected"}</span>
         {canPickRepo && <button disabled={busy} onClick={pickRepo}>{state?.repo ? "Change repo…" : "Choose repo…"}</button>}
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "disconnected"} />

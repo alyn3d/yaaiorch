@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Orchestrator",
+  "productName": "YAAIORCH",
   "version": "0.1.0",
-  "identifier": "dev.alinion.orchestrator",
+  "identifier": "dev.alinion.yaaiorch",
   "build": {
     "beforeDevCommand": "npm run build:orch && vite",
     "devUrl": "http://localhost:5173",
@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "label": "main", "title": "Orchestrator", "width": 1100, "height": 820, "minWidth": 700, "minHeight": 500 }],
+    "windows": [{ "label": "main", "title": "YAAIORCH - Yet Another AI Orchestrator", "width": 1100, "height": 820, "minWidth": 700, "minHeight": 500 }],
     "security": { "csp": null }
   },
   "bundle": {

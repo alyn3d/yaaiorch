@@ -1,4 +1,8 @@
-# Orchestrator
+# YAAIORCH (Yet Another AI Orchestrator)
+
+Display name: **YAAIORCH**. Desktop exe `yaaiorch.exe`, Tauri identifier `dev.alinion.yaaiorch`. Internal names stay short
+and unchanged on purpose: `orch.ts`, `orch-ui/`, the `.orchestrator/` state dir and `orchestrator/*` git branches in target
+repos, `ORCH_*` env vars and the `@@ORCH@@` event marker. Renaming those would break existing target repos and the protocol.
 
 `orch.ts` is a CLI loop: an architect agent plans a goal, then F/E, B/E and other agents build in parallel,
 then QA verifies. It repeats until QA passes or max rounds is reached. Built-in agents (`architect`, `fe`,

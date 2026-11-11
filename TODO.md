@@ -1,4 +1,4 @@
-# TODO
+# YAAIORCH TODO
 
 Priority: **P0** blocks real use, **P1** important, **P2** worthwhile, **P3** later.
 
@@ -7,7 +7,7 @@ Priority: **P0** blocks real use, **P1** important, **P2** worthwhile, **P3** la
 - [x] **First Windows build and run.** Done 2026-11-11 on Windows 11 (Tauri 2.12, WebView2 157, MSVC 2022):
   - `cargo test` spawn/event test passes on Windows with a fake `claude`.
   - `npm run tauri dev` opens the window in about 24 s; the Tauri transport connects.
-  - `npm run tauri build` produces `orch-app.exe`, an MSI and an NSIS setup. The release exe launches, and `resources/orch.mjs` is bundled next to it.
+  - `npm run tauri build` produces the app exe (`yaaiorch.exe` since the rename, `orch-app.exe` at the time), an MSI and an NSIS setup. The release exe launches, and `resources/orch.mjs` is bundled next to it.
   - A real goal ran end to end with the real `claude` from the CLI. The browser-mode UI was exercised with a fake `claude`: run, checks badge, checkpoint, Stop.
   - Not done: a goal driven from the desktop window itself (the native folder picker needs a person), and installing from the MSI/NSIS.
 - [x] **Headless permissions.** Confirmed in a real run (claude 2.1.322): with `acceptEdits` in `-p` mode every Bash and PowerShell call is refused, so QA could never pass. Fixed: orch.ts runs the checks itself and passes an allow-list with `--settings`. Compound commands (`cd x && npm test; echo $?`) are still refused; that is expected.

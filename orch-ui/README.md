@@ -1,6 +1,6 @@
-# orch-ui
+# YAAIORCH UI (orch-ui)
 
-Web UI and Tauri desktop app for `../orch.ts`. Layout: `orch.ts` and `orch-ui/` side by side.
+Web UI and Tauri desktop app for YAAIORCH (Yet Another AI Orchestrator), driving `../orch.ts`. Layout: `orch.ts` and `orch-ui/` side by side.
 
 ## Desktop app (Tauri v2)
 Needs Node on PATH (runs the orchestrator), Rust (MSVC toolchain on Windows), and the `claude` CLI.
