@@ -78,5 +78,61 @@
     "difficulty": "easy",
     "goal": "Bug report: textstats.words.word_count gives wrong answers. word_count(\"hello   world\") returns 4 and word_count(\"\") returns 1. A word is a run of letters, digits and apostrophes, so \"it's\" is one word, \"well-known\" is two, and punctuation on its own (\"--\", \"...\") is not a word. Whitespace of any kind (spaces, tabs, newlines) separates words. Fix word_count and add tests.",
     "grade": "python -m unittest hidden_test_wordcount tests.test_words -v"
+  },
+  {
+    "id": "shop-coupons",
+    "fixture": "node-shop",
+    "kind": "feature",
+    "difficulty": "hard",
+    "goal": "Add coupon support to the shop. Put the coupon definitions in src/coupons.js: SAVE10 takes 10% off the subtotal; FLAT500 takes 500 cents off when the subtotal is at least 2000 cents (otherwise it gives no discount). Cart gets applyCoupon(code), which throws an Error for an unknown code; applying a coupon replaces any earlier one (one coupon per cart). Cart also gets coupon() returning the applied code or null, and discount() returning the discount in cents for the current subtotal, rounded half up to a whole cent and never more than the subtotal. placeOrder returns { id, lines, subtotal, discount, tax, total, coupon }: tax is computed on the discounted subtotal and total is subtotal - discount + tax; orders without a coupon have discount 0 and coupon null. salesReport adds `discounts` (the sum of order discounts) and `byCoupon` (number of orders per coupon code, {} when none). Add tests.",
+    "grade": "node --test test/__hidden__/coupons.test.js test/shop.test.js"
+  },
+  {
+    "id": "shop-misleading-bug",
+    "fixture": "node-shop",
+    "kind": "bugfix",
+    "difficulty": "medium",
+    "goal": "Bug report from accounting: the sales report undercounts units. A customer added 2 mugs to their cart, then added 1 more mug before checking out, and salesReport shows MUG-01: 1 instead of 3. The order total was too low as well. Find the real cause and fix it, and add a regression test.",
+    "grade": "node --test test/__hidden__/double-add.test.js test/shop.test.js"
+  },
+  {
+    "id": "shop-isolated-state",
+    "fixture": "node-shop",
+    "kind": "refactor",
+    "difficulty": "hard",
+    "goal": "The shop keeps its state in module-level variables (stock in src/catalog.js, the order list and next order id in src/orders.js), so two shops, or two tests, share stock and order ids. Add src/shop.js exporting createShop(products) that returns an independent shop object: { getProduct(sku), listProducts(), newCart(), placeOrder(cart), listOrders(), salesReport() }. products is optional and has the same shape as the standard catalog ({ SKU: { name, price, stock } }); when omitted, the shop starts from a fresh copy of the standard catalog. Each shop has its own stock, its own orders and its own order ids starting at 1, and carts from newCart() use that shop's products. Keep the existing exports of src/index.js working as before, acting on one default shop. Add tests.",
+    "grade": "node --test test/__hidden__/isolated.test.js test/shop.test.js"
+  },
+  {
+    "id": "api-pagination",
+    "fixture": "node-api",
+    "kind": "feature",
+    "difficulty": "medium",
+    "goal": "Add filtering and pagination to GET /todos. Optional query parameters: done=true or done=false filters by the done flag; limit (an integer from 1 to 100) and offset (an integer of 0 or more, default 0) select a page of the filtered list. Todos are always returned in ascending id order, even if the store was seeded in another order. The body stays a JSON array, and every GET /todos response sets the X-Total-Count header to the number of todos matching the filter before pagination. Any invalid value (done not true/false, limit or offset not an integer or out of range) or any unknown query parameter gets 400 with {\"error\": \"<message>\"}. Add tests.",
+    "grade": "node --test test/__hidden__/pagination.test.js test/server.test.js"
+  },
+  {
+    "id": "node-sortby",
+    "fixture": "node-lib",
+    "kind": "feature",
+    "difficulty": "medium",
+    "goal": "Add src/sort.js exporting sortBy(items, spec). spec is a comma-separated list of property names, each optionally followed by :asc or :desc (default asc), for example \"lastName,age:desc\". Return a new array sorted by the first key, ties broken by the next key and so on; items equal on every key keep their original relative order, and the input array is not modified. Numbers compare numerically. Strings compare case-insensitively and numeric-aware, so \"file2\" comes before \"file10\" and \"a\" equals \"A\". null and undefined values always sort last, whatever the direction. Throw an Error for an empty spec or a direction other than asc or desc. Add tests.",
+    "grade": "node --test test/__hidden__/sortby.test.js test/array.test.js test/stats.test.js"
+  },
+  {
+    "id": "py-csv",
+    "fixture": "python-lib",
+    "kind": "feature",
+    "difficulty": "hard",
+    "goal": "Add textstats/csvparse.py with parse_csv(text) returning a list of rows, each a list of strings, following RFC 4180, without using the csv module. Fields are separated by commas and records by \\n or \\r\\n. A field may be enclosed in double quotes; inside quotes, two double quotes stand for one, and commas and line breaks are part of the field. Fields are returned exactly as written (no trimming). A line break at the very end of the text does not create an extra row, an empty line elsewhere is a row with one empty field, and empty text gives []. Raise ValueError for a quote that is never closed, for a double quote inside an unquoted field, and for characters after a closing quote other than a comma or a line break. Add tests in tests/test_csvparse.py.",
+    "grade": "python -m unittest hidden_test_csv tests.test_words -v"
+  },
+  {
+    "id": "go-semver",
+    "fixture": "go-lib",
+    "kind": "feature",
+    "difficulty": "hard",
+    "goal": "Add a package semver (directory semver/) with func Valid(v string) bool and func Compare(a, b string) (int, error) implementing Semantic Versioning 2.0.0. A version is MAJOR.MINOR.PATCH with an optional -prerelease and an optional +build, with no leading \"v\". Numeric identifiers (the three core numbers and numeric prerelease identifiers) must not have leading zeros; identifiers use only [0-9A-Za-z-] and must not be empty. Compare returns -1, 0 or 1 by precedence: core numbers compared numerically; a version with a prerelease is lower than the same version without one; prerelease identifiers are compared left to right, numeric ones numerically, alphanumeric ones in ASCII order, numeric ones lower than alphanumeric ones, and when all shared identifiers are equal the shorter list is lower; build metadata is ignored. Compare returns an error if either version is invalid. Add tests.",
+    "grade": "go test ./..."
   }
 ]

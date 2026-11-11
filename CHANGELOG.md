@@ -8,6 +8,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ### Added
 - Fake `claude` (`test/fake-claude/`) and 16 end-to-end scenario tests (`npm test` in `orch-ui`),
   run in CI on Linux and Windows, plus the desktop backend's spawn test.
+- 7 harder eval cases and two fixtures (`node-shop`, `go-lib`); the suite now has 17 cases.
+- Single-agent control group in the eval runner (`--single <models>`): the same goals as one
+  `claude -p` call with the same permissions, checks and budget, in the same tables.
+- CI: job and step timeouts, Go for the eval self-check.
 
 ### Fixed
 - Windows: a `CLAUDE_BIN` path containing spaces (for example under `C:\Program Files`) broke every

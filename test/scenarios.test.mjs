@@ -74,7 +74,8 @@ const writeConfig = (dir, cfg) => {
   writeFileSync(join(dir, ".orchestrator", "config.json"), JSON.stringify(cfg));
 };
 
-describe("orch scenarios (fake claude)", { concurrency: 4 }, () => {
+// spawnSync blocks, so the scenarios run one after another; the timeout makes a hang fail instead of stalling CI.
+describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
   test("happy path: roles, permissions, costs, commit, checkpoint removed", () => {
     const dir = repo();
     const r = orch(dir, ["run", "build it", "--max-rounds", "2"], { FAKE_QA: "needs-new" });

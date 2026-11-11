@@ -13,9 +13,17 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   balanced $0.65, heavy $0.85. Publish the summary in `docs/evals/` and link it from the README:
   other orchestrators mostly show star counts, so public pass-rate and false-pass numbers are a
   differentiator.
-- [ ] **Harder eval cases.** All early runs passed in one round, so the suite does not yet separate
-  the tiers. Add multi-file features, a cross-module refactor, a React app (with dependencies), Go or
-  Rust, and a case with a misleading bug report. **good first issue** (one case per PR)
+- [x] 7 harder cases (multi-file feature, misleading bug, state refactor, pagination, multi-key sort,
+  RFC 4180 CSV, SemVer in Go) and a single-agent control group (`--single`).
+- [ ] **Longer-horizon cases.** First head-to-head (7 hard cases, 1 run each): orch economy 7/7 at
+  $0.35 and 1.5 min per case; a single Sonnet call 7/7 at $0.24 and 0.7 min. On tasks this size the
+  loop adds cost, not pass rate. Its advantage should show on work one call cannot hold: features
+  spanning many files and layers, several dependent changes in one goal, larger fixture repos, and
+  tasks whose first attempt usually fails checks. Build those next, then repeat the head-to-head with
+  `--repeat 3`. **good first issue** (one case per PR)
+- [ ] **Cheaper path for small goals**: if the evals keep showing a single call is enough for small
+  tasks, let the architect answer "single task" plans that skip the separate verify call, or add a
+  `--fast` mode, and measure it.
 
 ### Test the orchestrator itself
 - [x] Fake `claude` (`test/fake-claude/`) and 16 scenario tests (`npm test`), run in CI on Linux and

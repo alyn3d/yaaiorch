@@ -10,7 +10,7 @@ The grade command also re-runs the fixture's original tests to catch regressions
 
 ## Run
 
-Needs Node 22.18+ (runs `.ts` directly), Python 3.10+ for the `py-*` cases, git, and `npm install` done in
+Needs Node 22.18+ (runs `.ts` directly), Python 3.10+ for the `py-*` cases, Go 1.21+ for `go-*`, git, and `npm install` done in
 `orch-ui` (the runner starts `../orch.ts` through tsx).
 
 ```bash
@@ -29,7 +29,8 @@ Runs orch for real (this spends money). Options:
 | option | default | meaning |
 |---|---|---|
 | `--cases a,b` | all | case ids from `cases.json` |
-| `--power economy,heavy` | economy | tiers to compare |
+| `--power economy,heavy` | economy | orch tiers to compare (`none` to skip orch) |
+| `--single sonnet,opus` | | also run the **control group**: one `claude -p` call per case with this model, the same goal, permissions, check commands and budget |
 | `--repeat N` | 1 | runs per case and tier (LLM runs vary; use 3+ for decisions) |
 | `--parallel N` | 1 | runs at once |
 | `--max-rounds N` | 4 | passed to orch |
@@ -44,6 +45,19 @@ Runs orch for real (this spends money). Options:
 A run cut short by the usage limit (orch exits 3) is never recorded. Without `--wait-on-limit` the runner
 starts no new runs, writes the summary with an "Stopped early" note and the exact `--resume` command, and
 exits 3.
+
+## Head-to-head with a single agent
+
+The question users care about is whether the loop beats simply asking Claude once. `--single` answers it
+on the same cases and hidden tests:
+
+```bash
+node evals/run.ts --power economy,heavy --single sonnet,opus --repeat 3 --parallel 2
+```
+
+The single agent is told the goal and the repo's check commands, may run those commands, gets the same
+budget (`--max-budget-usd`) and timeout, and "claims done" when it ends with `Status: COMPLETE`, so
+false passes are counted the same way for both. Its rows appear as `single:<model>` in the tables.
 
 ## Output
 
@@ -72,8 +86,17 @@ means QA or the checks are too lenient.
 | api-delete | node-api | feature | easy |
 | py-roman | python-lib | feature | medium |
 | py-wordcount-bug | python-lib | bugfix | easy |
+| shop-coupons | node-shop | feature | hard: spans cart, pricing, orders and report; rounding and tax order |
+| shop-misleading-bug | node-shop | bugfix | medium: symptom in the report, cause in the cart |
+| shop-isolated-state | node-shop | refactor | hard: module state into a factory, old API kept |
+| api-pagination | node-api | feature | medium: strict validation, header, unsorted seed data |
+| node-sortby | node-lib | feature | medium: multi-key stable sort, collation, nulls last |
+| py-csv | python-lib | feature | hard: RFC 4180 by hand, error cases |
+| go-semver | go-lib | feature | hard: SemVer 2.0 precedence and validation |
 
-Fixtures have no dependencies, so runs work offline apart from the agents themselves.
+Fixtures have no dependencies (Go 1.21+ for `go-lib`), so runs work offline apart from the agents
+themselves. Fixtures with non-npm checks carry them in `.orchestrator/config.json`, which is
+git-ignored elsewhere, so add it with `git add -f`.
 
 ## Adding a case
 
