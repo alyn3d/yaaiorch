@@ -38,6 +38,12 @@ Runs orch for real (this spends money). Options:
 | `--eval-timeout MIN` | 30 | kills a whole run |
 | `--claude-bin PATH` | | a different `claude`, e.g. a fake, to test the runner for free |
 | `--orch PATH` | | run a built `orch.mjs` instead of `../orch.ts` |
+| `--wait-on-limit` | off | on a Claude usage limit, pause until the reset and carry on (for overnight runs) |
+| `--resume STAMP` | | finish `results/STAMP.jsonl`: skip recorded runs, drop runs a usage limit spoiled |
+
+A run cut short by the usage limit (orch exits 3) is never recorded. Without `--wait-on-limit` the runner
+starts no new runs, writes the summary with an "Stopped early" note and the exact `--resume` command, and
+exits 3.
 
 ## Output
 

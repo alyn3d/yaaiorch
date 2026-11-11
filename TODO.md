@@ -56,6 +56,11 @@ Priority: **P0** blocks real use, **P1** important, **P2** worthwhile, **P3** la
 - [ ] Auto-update.
 - [x] First-run checks: `orch doctor` (node, claude installed and logged in, git, clean repo, leftover checkpoints, checks), shown as a banner in both UIs.
 
+## Next (from the baseline attempt, 2026-11-11)
+
+- [x] **Usage-limit handling.** Detected in `run()` as `UsageLimit` (reset time parsed in the reply's time zone); ends the goal, `orch run` exits 3, `loop` requeues and waits for the reset, the eval runner never records it and can `--resume` or `--wait-on-limit`.
+- [ ] **Finish the baseline.** Stopped at 23/120 runs when the limit hit; 21 are valid (all passed; economy ≈ $0.30, balanced ≈ $0.65, heavy ≈ $0.85 per run), 2 were spoiled by the limit. After the reset: `node evals/run.ts --resume 2026-11-11T19-31-56 --power economy,balanced,heavy,max --repeat 3 --parallel 2 --max-rounds 3 --max-cost 3 --wait-on-limit`.
+
 ## Done
 
 - [x] Eval suite (`evals/`): 10 cases over 3 dependency-free fixtures (Node lib, Node API, Python), hidden tests plus reference solutions, `--reference` self-check, runner with per-tier tables and false-pass count. First real run (economy, 3 cases): 3/3 hidden pass, 1 round each, $0.92 total.

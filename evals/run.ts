@@ -11,12 +11,16 @@
 //   --agent-timeout MIN  passed to orch (15)              --eval-timeout MIN     kill a whole run after (30)
 //   --claude-bin PATH    use another claude (a fake, to test the runner without spending tokens)
 //   --orch PATH          run this orch.mjs instead of ../orch.ts through tsx
+//   --wait-on-limit      on a Claude usage limit, pause until the reset and carry on (default: stop)
+//   --resume STAMP       finish results/STAMP.jsonl: skip runs already recorded, drop ones a usage limit spoiled
+//
+// A run cut short by the usage limit (orch exit code 3) is never recorded as a failure.
 //
 // Each run copies a fixture into a fresh git repo under the OS temp dir, runs `orch run "<goal>"` there,
 // then copies the case's hidden tests in (agents never see them) and runs the case's grade command.
 // Results: evals/results/<stamp>.jsonl (one line per run) and <stamp>.md (summary). Work dirs are kept.
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,8 +50,12 @@ const { values: a } = parseArgs({
     "eval-timeout": { type: "string", default: "30" },
     "claude-bin": { type: "string" },
     orch: { type: "string" },
+    "wait-on-limit": { type: "boolean", default: false },
+    resume: { type: "string" },
   },
 });
+/** Same wording orch.ts matches; also catches records an older orch wrote as plain failures. */
+const LIMIT_RE = /\b(?:hit|reached) your [^\n.]{0,40}?limit\b/i;
 
 const allCases: Case[] = JSON.parse(readFileSync(join(EVALS, "cases.json"), "utf8"));
 const wanted = a.cases?.split(",").map((s) => s.trim()).filter(Boolean);
@@ -57,7 +65,7 @@ const cases = wanted ? allCases.filter((c) => wanted.includes(c.id)) : allCases;
 const powers = a.power!.split(",").map((s) => s.trim());
 for (const p of powers) if (!TIERS.includes(p)) fail(`unknown power "${p}"; use ${TIERS.join(", ")}`);
 
-const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+const stamp = a.resume ?? new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const workRoot = join(tmpdir(), "yaaiorch-evals", stamp);
 
 function fail(message: string): never {
@@ -126,6 +134,8 @@ function killTree(pid?: number) {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 function runOrch(dir: string, c: Case, power: string): Promise<{ exit: number | null; events: any[]; seconds: number; timedOut: boolean }> {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -172,12 +182,46 @@ const resultsDir = join(EVALS, "results");
 mkdirSync(resultsDir, { recursive: true });
 const jsonl = join(resultsDir, `${stamp}.jsonl`);
 const runs: Run[] = [];
+const key = (caseId: string, power: string, rep: number) => `${caseId}|${power}|${rep}`;
 
-async function one(c: Case, power: string, rep: number) {
+// --resume: keep the finished runs, drop the ones a usage limit spoiled, and run only what is missing.
+if (a.resume) {
+  if (!existsSync(jsonl)) fail(`no results to resume: ${jsonl}`);
+  const old: Run[] = readFileSync(jsonl, "utf8").split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+  const kept = old.filter((r) => !LIMIT_RE.test(r.error ?? ""));
+  writeFileSync(jsonl, kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
+  runs.push(...kept);
+  console.log(`resuming ${stamp}: ${kept.length} run(s) kept, ${old.length - kept.length} spoiled by the usage limit dropped`);
+}
+const done = new Set(runs.map((r) => key(r.case, r.power, r.rep)));
+
+type Job = { c: Case; power: string; rep: number };
+const jobs: Job[] = [];
+/** Set when the usage limit stops the eval (without --wait-on-limit). */
+let stoppedBy = "";
+/** With --wait-on-limit: no new run starts before this time. */
+let pausedUntil = 0;
+
+async function one({ c, power, rep }: Job) {
   const dir = join(workRoot, `${c.id}-${power}-${rep}`);
+  rmSync(dir, { recursive: true, force: true }); // a retried run starts from a clean copy
   setupRepo(dir, c);
   const r = await runOrch(dir, c, power);
   const end = [...r.events].reverse().find((e) => e.type === "goal_end");
+  if (r.exit === 3 || end?.usageLimit) {
+    // Not the orchestrator's fault and not a result: never record it.
+    const resetAt: number | undefined = end?.resetAt;
+    if (a["wait-on-limit"]) {
+      pausedUntil = Math.max(pausedUntil, (resetAt ?? Date.now() + 29 * 60_000) + 60_000);
+      jobs.unshift({ c, power, rep });
+      console.log(`limit ${c.id} ${power} #${rep}: usage limit; pausing until ${new Date(pausedUntil).toLocaleString()}, then retrying`);
+    } else {
+      if (!stoppedBy) stoppedBy = `Claude usage limit${resetAt ? ` (resets ${new Date(resetAt).toLocaleString()})` : ""}`;
+      jobs.unshift({ c, power, rep }); // counted as not done
+      console.log(`limit ${c.id} ${power} #${rep}: usage limit; stopping (no new runs start)`);
+    }
+    return;
+  }
   const g = grade(dir, c);
   const rounds = r.events.filter((e) => e.type === "round_start");
   const run: Run = {
@@ -198,13 +242,19 @@ async function one(c: Case, power: string, rep: number) {
   );
 }
 
-const jobs: (() => Promise<void>)[] = [];
-for (const c of cases) for (const p of powers) for (let rep = 1; rep <= Number(a.repeat); rep++) jobs.push(() => one(c, p, rep));
-console.log(`${jobs.length} run(s): ${cases.length} case(s) x ${powers.join("/")} x ${a.repeat}, ${a.parallel} at a time`);
+for (const c of cases)
+  for (const power of powers)
+    for (let rep = 1; rep <= Number(a.repeat); rep++) if (!done.has(key(c.id, power, rep))) jobs.push({ c, power, rep });
+console.log(`${jobs.length} run(s) to do: ${cases.length} case(s) x ${powers.join("/")} x ${a.repeat}, ${a.parallel} at a time`);
 console.log(`work dirs: ${workRoot}\nresults:   ${jsonl}\n`);
 
 const workers = Array.from({ length: Math.max(1, Number(a.parallel)) }, async () => {
-  for (let job = jobs.shift(); job; job = jobs.shift()) await job();
+  while (!stoppedBy && jobs.length) {
+    while (pausedUntil > Date.now() && !stoppedBy) await sleep(Math.min(5000, pausedUntil - Date.now()));
+    const job = jobs.shift();
+    if (!job) break;
+    await one(job);
+  }
 });
 await Promise.all(workers);
 
@@ -215,6 +265,11 @@ const lines: string[] = [];
 lines.push(`# Eval ${stamp}`, "");
 lines.push(`Cases: ${cases.map((c) => c.id).join(", ")}  `);
 lines.push(`Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}`, "");
+if (stoppedBy)
+  lines.push(
+    `**Stopped early: ${stoppedBy}.** ${jobs.length} run(s) not done. Finish with:`, "",
+    "```", `node evals/run.ts --resume ${stamp} --power ${powers.join(",")} --repeat ${a.repeat}${wanted ? ` --cases ${wanted.join(",")}` : ""}`, "```", "",
+  );
 lines.push("## By power tier", "");
 lines.push("| power | runs | hidden pass | claimed pass | false pass | avg rounds | avg cost | avg time | total cost |");
 lines.push("|---|---|---|---|---|---|---|---|---|");
@@ -250,3 +305,4 @@ const md = lines.join("\n");
 writeFileSync(join(resultsDir, `${stamp}.md`), md + "\n");
 console.log("\n" + md.split("\n## Failures")[0]);
 console.log(`\nsummary: ${join(resultsDir, `${stamp}.md`)}`);
+process.exit(stoppedBy ? 3 : 0);

@@ -63,6 +63,8 @@ Map each role to a model. The architect and QA get the strongest models; impleme
 - **Agent timeout** (`--agent-timeout`, 30 min): a call that runs longer is killed with its whole process tree (`taskkill /T` on Windows) and becomes a task error.
 - **Budget** (`--max-cost`): every call's `total_cost_usd` is added to the goal's total, also for failed calls. Each call gets `--max-budget-usd` set to what is left (at least $0.01). When the CLI reports `error_max_budget_usd`, or the total reaches the cap before a call, the goal stops with `Stopped: budget of $X used up`. The CLI checks its limit after each turn, and parallel calls each get the full remainder, so a goal can overshoot the cap by up to one turn per parallel call.
 
+- **Usage limit**: the Claude subscription limit comes back as an error result with subtype `success` and text like `You've hit your 5-hour limit · resets 1:30am (Europe/Bucharest)`. `run()` turns it into a `UsageLimit` error (reset time parsed in the named IANA zone) that ends the goal instead of becoming a task failure, so it never triggers stuck detection. It emits `usage_limit`, then `goal_end` with `usageLimit: true, resetAt`, and `orch run` exits with **code 3**. In `loop` the goal's work moves to `orchestrator/interrupted-*`, the item goes back to `pending` with a `note`, and the loop waits until a minute after the reset (30 min if the reply has no time; `ORCH_LIMIT_WAIT_MS` overrides it for tests), then retries.
+
 ### Rollback and pruning
 
 `orch rollback` picks the newest `orchestrator/checkpoint-*` (or the given branch), refuses if it is not an ancestor of the current branch, commits whatever is left (including uncommitted edits from a stopped run), keeps that on `orchestrator/discarded-<ts>`, resets to the checkpoint, deletes the checkpoint and clears it from `last-run.json`. Nothing is lost. `orch prune` deletes `orchestrator/*` branches whose timestamp is older than `--older-than` days, never the current branch.
@@ -92,7 +94,7 @@ Each agent is a one-shot headless call:
 
 ### Queue and loop
 
-`.orchestrator/queue.json` holds `{id, goal, status: pending|running|done|failed}`. On start, `loop` resets items left `running` by a crash or Stop to `pending`. It picks the first pending item, runs it, then re-reads the queue before writing the result, so goals added meanwhile are kept. SIGINT finishes the current goal and exits. `loop` refuses `--dry-run`, since a planned-only goal would stay pending forever.
+`.orchestrator/queue.json` holds `{id, goal, status: pending|running|done|failed, note?}` (`note` explains a wait, shown in the UI queue). On start, `loop` resets items left `running` by a crash or Stop to `pending`. It picks the first pending item, runs it, then re-reads the queue before writing the result, so goals added meanwhile are kept. SIGINT finishes the current goal and exits. `loop` refuses `--dry-run`, since a planned-only goal would stay pending forever.
 
 ### Structured events
 
@@ -111,7 +113,9 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `task_end` | round, id, agent, phase, status, touched[], cost?, failures?, error? |
 | `round_end` | round, passed, failures[], cost |
 | `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power? |
-| `goal_end` | passed, cost, error? |
+| `usage_limit` | message, resetAt? (epoch ms) |
+| `goal_end` | passed, cost, error?, usageLimit?, resetAt? |
+| `waiting` | reason (`usage_limit`), until (loop only, between goals) |
 
 Costs are USD from the CLI's `total_cost_usd`, rounded to 4 decimals.
 

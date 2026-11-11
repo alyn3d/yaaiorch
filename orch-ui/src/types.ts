@@ -1,4 +1,5 @@
-export type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed" };
+/** `note`: why a pending goal is waiting, e.g. "usage limit: retrying after …". */
+export type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed"; note?: string };
 export type Round = { round: number; plan: string; touched: string[]; passed: boolean; failures: string[]; power?: Power; cost?: number };
 /** .orchestrator/last-run.json, written by orch.ts. `checkpoint` is set only while that branch still exists. */
 export type LastRun = { goal: string; status?: "running" | "passed" | "failed"; checkpoint?: string; cost?: number; state: Round[] } | null;

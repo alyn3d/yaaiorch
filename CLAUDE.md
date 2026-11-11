@@ -20,7 +20,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, goal_end. Keep `server.ts`, `main.rs` and `reduce.ts`
+architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, usage_limit, goal_end, waiting. Keep `server.ts`, `main.rs` and `reduce.ts`
 in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
 process exits without `goal_end`.
 
@@ -42,6 +42,7 @@ process exits without `goal_end`.
 - Read-only roles (architect, verifiers) run with `--permission-mode default` and `readonly-settings.json` (edit tools denied). Deny rules alone are not enough: under `acceptEdits` an agent writes files with a shell redirect instead.
 - Limits: `--agent-timeout` (30 min, kills the process tree), `--max-cost` per goal (passed on as `--max-budget-usd`; CLI reports `error_max_budget_usd`). Stuck rounds (no file changed, or same failures again) move up one power tier; two in a row stop the goal.
 - `orch doctor --json` is the first-run check both UIs show as a banner.
+- Usage limit ("You've hit your … limit · resets …"): ends the goal as `UsageLimit` (never a task failure or stuck round), `orch run` exits 3, `loop` requeues the goal and waits for the reset. The eval runner never records such runs: it stops (or waits with `--wait-on-limit`), and `--resume <stamp>` finishes later.
 - Testing without spending tokens: point `CLAUDE_BIN` at a fake `claude` that reads the prompt on stdin and prints `{"result": "...", "is_error": false, "total_cost_usd": 0.05}`. It must accept `--agents <file>`, `--settings`, `--max-budget-usd`, and answer `--version` and `auth status --json` for `doctor`.
 
 ## Evals (`evals/`, see its README)

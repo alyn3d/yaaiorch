@@ -28,16 +28,19 @@ else the package.json scripts typecheck, lint, test, build. Agents may run those
 In a git repo the working tree must be clean. Each round's changes are committed on the current
 branch on top of a checkpoint branch (orchestrator/checkpoint-*) that is deleted when QA passes.
 A round that changes nothing or repeats the same failures moves one power tier up; two such
-rounds in a row stop the goal.`;
+rounds in a row stop the goal.
+When the Claude usage limit is hit, the goal stops (exit code 3); loop puts it back to pending and
+waits until the reset time from the CLI's message.`;
 
 const PHASES = ["foundation", "build", "verify"] as const;
 type Phase = (typeof PHASES)[number];
 type Task = { agent: string; phase: Phase; task: string; files?: string[]; heavy?: boolean; figma?: string; skills?: string[] };
 type Plan = { summary: string; tasks: Task[] };
 type Verdict = { passed: boolean; failures: string[] };
-type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed" };
+/** `note` says why a pending goal is waiting (for example a usage-limit reset). */
+type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed"; note?: string };
 type Entry = { name: string; description: string; builtin?: boolean };
-type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; budget?: boolean };
+type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error };
 
 const POWER = {
   max: { arch: "opus", impl: "opus", heavy: "opus", qa: "opus" },
@@ -202,6 +205,62 @@ type RunCtx = { budget: Budget; timeoutMs: number };
 /** Ends the goal instead of becoming a task failure. */
 class BudgetExceeded extends Error {}
 
+/**
+ * The Claude subscription's usage limit ("You've hit your 5-hour limit · resets 1:30am (Europe/Bucharest)").
+ * The CLI reports it as an error result with subtype "success". It ends the goal: retrying before the reset
+ * only fails again, and counting it as a task failure would trigger stuck detection for nothing.
+ */
+class UsageLimit extends Error {
+  resetAt?: number;
+  constructor(message: string, resetAt?: number) {
+    super(message);
+    this.resetAt = resetAt;
+  }
+}
+const LIMIT_RE = /\b(?:hit|reached) your [^\n.]{0,40}?limit\b/i;
+/** Fatal errors end the whole goal; anything else is a task failure for the next round. */
+const isFatal = (e: unknown): e is BudgetExceeded | UsageLimit => e instanceof BudgetExceeded || e instanceof UsageLimit;
+
+/** Wall-clock time h:mm in an IANA zone, as epoch ms, today or tomorrow (whichever is next). */
+function nextWallTime(h: number, min: number, zone: string | undefined, now = Date.now()): number {
+  let offset = (_t: number) => -new Date(_t).getTimezoneOffset() * 60_000; // local zone
+  if (zone) {
+    try {
+      const fmt = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+      });
+      offset = (t: number) => {
+        const p = Object.fromEntries(fmt.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+        return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - Math.floor(t / 1000) * 1000;
+      };
+    } catch {
+      /* unknown zone: use the local one */
+    }
+  }
+  const off = offset(now);
+  const wall = new Date(now + off); // UTC fields of this are the wall time in the zone
+  let target = Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate(), h, min) - off;
+  if (target <= now) target += 86_400_000;
+  return target;
+}
+
+/** "resets 1:30am (Europe/Bucharest)", "resets 14:00" -> epoch ms; undefined if there is no time in the text. */
+function parseReset(text: string): number | undefined {
+  const m = /resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?/i.exec(text);
+  if (!m) return undefined;
+  let h = Number(m[1]);
+  const min = Number(m[2] ?? 0);
+  if (m[3]) h = (h % 12) + (m[3].toLowerCase() === "pm" ? 12 : 0);
+  if (h > 23 || min > 59) return undefined;
+  return nextWallTime(h, min, m[4]?.trim());
+}
+
+function usageLimit(text: string): UsageLimit | null {
+  if (!LIMIT_RE.test(text)) return null;
+  return new UsageLimit(`Claude usage limit reached: ${text.trim().slice(0, 160)}`, parseReset(text));
+}
+const when = (t?: number) => (t ? new Date(t).toLocaleString() : "unknown");
+
 /** Kill a child and everything it started (claude runs under a shell on Windows). */
 function killTree(p: ChildProcess) {
   if (!p.pid) return;
@@ -256,6 +315,9 @@ function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly:
       }
       if (r?.subtype === "error_max_budget_usd")
         return reject(new BudgetExceeded(`budget of ${usd(budget.cap ?? 0)} used up (${usd(budget.spent)} spent)`));
+      const failed = !r || r.is_error || code !== 0;
+      const limit = failed && usageLimit(typeof r?.result === "string" ? r.result : out.slice(0, 2000));
+      if (limit) return reject(limit);
       if (!r) return reject(new Error(code !== 0 ? `${agent.name} exited ${code}` : `${agent.name}: unparsable CLI output: ${out.slice(0, 200)}`));
       if (r.is_error || code !== 0 || typeof r.result !== "string") {
         const detail = typeof r.result === "string" ? `: ${r.result.slice(0, 200)}` : "";
@@ -406,7 +468,7 @@ function diffSummary(cp: string) {
 }
 
 /** Commit what is left, keep HEAD on a side branch, and reset the current branch to `cp`. */
-function moveWorkAside(cp: string, kind: "failed" | "discarded", message: string): string | null {
+function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string): string | null {
   commitAll(message); // throws if it cannot commit: never reset over uncommitted work
   if (dirtyFiles()) throw new Error("could not commit the changes; leaving the tree as is");
   if (git("rev-parse", "HEAD") === git("rev-parse", cp)) return null;
@@ -418,9 +480,10 @@ function moveWorkAside(cp: string, kind: "failed" | "discarded", message: string
 
 /**
  * After a goal: on pass, drop the checkpoint. On failure in loop mode, move the goal's commits to
- * orchestrator/failed-* and reset to the checkpoint, so the next goal starts from a clean base.
+ * orchestrator/failed-* (or interrupted-* when a usage limit cut it short, since loop retries it later)
+ * and reset to the checkpoint, so the next goal starts from a clean base.
  */
-function finishGit(cp: string, goal: string, passed: boolean, park: boolean) {
+function finishGit(cp: string, goal: string, passed: boolean, park: boolean, interrupted = false) {
   try {
     if (passed) {
       tryCommit(`orch: ${short(goal)} (unfinished)`);
@@ -432,8 +495,8 @@ function finishGit(cp: string, goal: string, passed: boolean, park: boolean) {
       console.log(`goal not done; its commits sit on top of ${cp}. Roll back with: orch rollback`);
       return;
     }
-    const saved = moveWorkAside(cp, "failed", `orch: ${short(goal)} (unfinished)`);
-    if (saved) console.log(`goal failed; its work is on branch ${saved}, working tree reset to the checkpoint`);
+    const saved = moveWorkAside(cp, interrupted ? "interrupted" : "failed", `orch: ${short(goal)} (unfinished)`);
+    if (saved) console.log(`goal ${interrupted ? "interrupted" : "failed"}; its work is on branch ${saved}, working tree reset to the checkpoint`);
     git("branch", "-D", cp);
   } catch (e) {
     console.warn(`warning: git cleanup failed (checkpoint ${cp} kept): ${msg(e)}`);
@@ -595,6 +658,7 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
   const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
   let cp = "";
   let passed = false;
+  let interrupted = false;
   try {
     cp = o.dryRun ? "" : prepareGit();
     lr.checkpoint = cp || undefined;
@@ -603,10 +667,17 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
     emit("goal_end", { passed, cost: round4(ctx.budget.spent) });
     return passed;
   } catch (e) {
-    emit("goal_end", { passed: false, error: msg(e), cost: round4(ctx.budget.spent) });
+    if (e instanceof UsageLimit) {
+      interrupted = true;
+      emit("usage_limit", { message: e.message, resetAt: e.resetAt });
+    }
+    emit("goal_end", {
+      passed: false, error: msg(e), cost: round4(ctx.budget.spent),
+      ...(e instanceof UsageLimit ? { usageLimit: true, resetAt: e.resetAt } : {}),
+    });
     throw e;
   } finally {
-    if (cp) finishGit(cp, goal, passed, o.park);
+    if (cp) finishGit(cp, goal, passed, o.park, interrupted);
     console.log(`cost: ${usd(ctx.budget.spent)}${o.maxCost !== undefined ? ` of ${usd(o.maxCost)}` : ""}`);
     if (!o.dryRun) {
       lr.status = passed ? "passed" : "failed";
@@ -658,7 +729,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         return r;
       } catch (e) {
         emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: "ERROR", error: msg(e), touched: [] });
-        return { agent: t.agent, out: `ERROR: ${msg(e)}`, touched: [], cost: 0, error: msg(e), budget: e instanceof BudgetExceeded };
+        return { agent: t.agent, out: `ERROR: ${msg(e)}`, touched: [], cost: 0, error: msg(e), fatal: isFatal(e) ? e : undefined };
       }
     };
 
@@ -679,10 +750,11 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
     const committed = cp ? tryCommit(`orch: ${short(goal)} (round ${round})`) : null;
     const progressed = cp ? !!committed || !!dirtyFiles() : results.some((r) => r.touched.length > 0);
-    const outOfBudget = results.find((r) => r.budget);
-    if (outOfBudget) {
+    // Budget or usage limit: siblings have finished and the work is committed; end the goal.
+    const fatal = results.find((r) => r.fatal)?.fatal;
+    if (fatal) {
       verify.forEach(skip);
-      throw new BudgetExceeded(outOfBudget.error!);
+      throw fatal;
     }
 
     const verdicts: Verdict[] = [];
@@ -703,7 +775,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
           verdicts.push(v);
         } catch (e) {
           emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: "ERROR", error: msg(e), touched: [] });
-          if (e instanceof BudgetExceeded) throw e;
+          if (isFatal(e)) throw e;
           verdicts.push({ passed: false, failures: [`${t.agent} could not verify: ${msg(e)}`] });
         }
       }
@@ -779,14 +851,41 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       continue;
     }
     item.status = "running";
+    delete item.note;
     writeQueue(q);
     console.log(`\n##### goal #${item.id}: ${item.goal}`);
     emit("queue_item", { id: item.id, goal: item.goal });
-    const ok = await runGoal(item.goal, o).catch((e) => (console.error(e), false));
+    let outcome: "done" | "failed" | "limit" = "failed";
+    let resetAt: number | undefined;
+    try {
+      outcome = (await runGoal(item.goal, o)) ? "done" : "failed";
+    } catch (e) {
+      if (e instanceof UsageLimit) {
+        outcome = "limit";
+        resetAt = e.resetAt;
+      } else console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
+    }
+    // Wait one minute past the reset (the CLI rounds the time); if the reply had no time, retry in 30 min.
+    const until = outcome === "limit" ? Number(process.env.ORCH_LIMIT_WAIT_MS) > 0 ? Date.now() + Number(process.env.ORCH_LIMIT_WAIT_MS) : (resetAt ?? Date.now() + 29 * 60_000) + 60_000 : 0;
     const q2 = readQueue(); // re-read: user may have added goals meanwhile
     const cur = q2.find((i) => i.id === item.id);
-    if (cur) cur.status = ok ? "done" : "failed";
+    if (cur) {
+      // A usage limit is not the goal's fault: put it back and try again after the reset.
+      cur.status = outcome === "limit" ? "pending" : outcome;
+      if (outcome === "limit") cur.note = `usage limit: retrying after ${new Date(until).toLocaleString()}`;
+    }
     writeQueue(q2);
+    if (outcome === "limit") {
+      console.log(`usage limit reached; goal #${item.id} is pending again. Waiting until ${new Date(until).toLocaleString()} (Ctrl+C to stop).`);
+      emit("waiting", { reason: "usage_limit", until });
+      while (!stop && Date.now() < until) await sleep(Math.min(5000, until - Date.now()));
+      const q3 = readQueue();
+      const again = q3.find((i) => i.id === item.id);
+      if (again?.note) {
+        delete again.note;
+        writeQueue(q3);
+      }
+    }
   }
 }
 
@@ -864,6 +963,11 @@ async function main() {
 
 main().catch((e) => {
   // Stack traces only on request: most errors here are expected ("dirty tree", "nothing to roll back").
+  if (e instanceof UsageLimit) {
+    // Exit 3 lets callers (the eval runner, scripts) tell "wait and retry" apart from a real failure.
+    console.error(`Stopped: ${e.message}${e.resetAt ? `\nresets at ${when(e.resetAt)}` : ""}`);
+    process.exit(3);
+  }
   if (e instanceof BudgetExceeded) console.error(`Stopped: ${e.message}`);
   else console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
   process.exit(1);

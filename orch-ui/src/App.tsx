@@ -118,6 +118,7 @@ export function App() {
                 <li key={i.id}>
                   <span className={`badge ${i.status}`}>{i.status}</span>
                   <span>#{i.id} {i.goal}</span>
+                  {i.note && <span className="note">{i.note}</span>}
                 </li>
               ))}
             </ul>

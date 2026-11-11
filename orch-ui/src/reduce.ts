@@ -18,7 +18,14 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
         status: "running", startedAt: ev.t, rounds: [], cost: 0,
       };
     case "goal_end":
-      return run && { ...run, status: ev.passed ? "passed" : "failed", error: ev.error, cost: ev.cost ?? run.cost };
+      return (
+        run && {
+          ...run,
+          status: ev.passed ? "passed" : "failed",
+          error: ev.usageLimit && ev.resetAt ? `${ev.error} (resets ${new Date(ev.resetAt).toLocaleString()})` : ev.error,
+          cost: ev.cost ?? run.cost,
+        }
+      );
     case "round_start":
       return (
         run && { ...run, rounds: [...run.rounds, { round: ev.round, power: ev.power, architect: "running", summary: "", tasks: [], failures: [] }] }
