@@ -10,7 +10,9 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
 - [ ] **Finish the baseline.** Run the whole eval suite on all four tiers with `--repeat 3`
   (`--parallel 2 --max-rounds 3 --max-cost 3 --wait-on-limit`) and choose the default power tier from
   the data. A first partial run (21 runs) passed everything; economy cost about $0.30 a run,
-  balanced $0.65, heavy $0.85. Publish the summary in `docs/evals/`.
+  balanced $0.65, heavy $0.85. Publish the summary in `docs/evals/` and link it from the README:
+  other orchestrators mostly show star counts, so public pass-rate and false-pass numbers are a
+  differentiator.
 - [ ] **Harder eval cases.** All early runs passed in one round, so the suite does not yet separate
   the tiers. Add multi-file features, a cross-module refactor, a React app (with dependencies), Go or
   Rust, and a case with a misleading bug report. **good first issue** (one case per PR)
@@ -50,6 +52,12 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
 
 Each item should show its effect in the evals before it becomes the default.
 
+- [ ] **Plan critic** (seen in LoopDex and oh-my-claudecode): after the architect, a read-only `critic`
+  agent reviews the plan against the goal and the repo and returns `{approved, issues[]}`; issues go back
+  to the architect once. It sees only artifacts (goal, plan, file list), never the architect's
+  reasoning. Behind a flag first (`--critic`), compared with and without on the eval suite.
+- [ ] **Diff critic**: the same agent reviews the diff before QA, so QA and the critic are independent
+  opinions; a failed check still wins over both.
 - [ ] **Project brief**: the architect writes `.orchestrator/brief.md` once (stack, conventions,
   commands) and later rounds and goals reuse it instead of re-reading the repo.
 - [ ] **Context between rounds**: give the architect its previous plan, the diff and the check output,
@@ -71,7 +79,11 @@ Each item should show its effect in the evals before it becomes the default.
 - [ ] **Queue lifecycle**: show the running goal, retry policy, a `blocked` status for goals that need a
   human, per-item power and max rounds.
 - [ ] **Plan approval gate**: optional pause after planning so a human can approve or edit the plan.
-- [ ] **Worktree per build task** so parallel agents cannot break each other's test runs.
+- [ ] **Worktree per build task** so parallel agents cannot break each other's test runs (Conductor,
+  Baton and others isolate this way). Merge back after the phase; exclusive file ownership keeps it
+  conflict-free.
+- [ ] **Sandboxed runs** (optional): run the agents in a container or VM for repos you do not fully
+  trust them with.
 - [ ] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri).
 
 ## 0.5: product and packaging
@@ -84,6 +96,9 @@ Each item should show its effect in the evals before it becomes the default.
 - [ ] **One backend**: share line parsing and event buffering instead of keeping `server.ts` and
   `main.rs` in sync (or let the desktop app start `server.ts`).
 - [ ] **Shared event types** between `orch.ts` and the UI (one discriminated union). **good first issue**
+- [ ] **More agent runtimes**: put Codex CLI, Gemini CLI and OpenCode behind the `run()` contract
+  (prompt in, `{text, cost}` out, permission mode mapped per runtime), choosable per role, and add
+  `--runtime` to the eval runner to compare them.
 - [ ] **Packaging**: bundle Node as a sidecar, sign the Windows installer, auto-update, release builds
   for Windows, macOS and Linux from CI.
 - [ ] **Verify on macOS and Linux** (CLI, browser mode, desktop build). **good first issue** if you
