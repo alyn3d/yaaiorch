@@ -93,6 +93,13 @@ means QA or the checks are too lenient.
 | node-sortby | node-lib | feature | medium: multi-key stable sort, collation, nulls last |
 | py-csv | python-lib | feature | hard: RFC 4180 by hand, error cases |
 | go-semver | go-lib | feature | hard: SemVer 2.0 precedence and validation |
+| tickets-workflow | node-tickets | feature | long: state machine + history + rule, across service, errors and API |
+| tickets-sla | node-tickets | feature | long: business-hours due dates, recompute on priority change, overdue filter |
+| tickets-import | node-tickets | feature | long: CSV import, all-or-nothing validation with per-row errors, dedupe |
+| shop-refunds | node-shop | feature | long: partial refunds, restock, proportional tax with exact remainder, net report |
+
+The `long` cases are meant to be more than one model call can comfortably hold: several dependent
+changes across layers in one goal. They are where the loop should beat the single-agent control.
 
 Fixtures have no dependencies (Go 1.21+ for `go-lib`), so runs work offline apart from the agents
 themselves. Fixtures with non-npm checks carry them in `.orchestrator/config.json`, which is

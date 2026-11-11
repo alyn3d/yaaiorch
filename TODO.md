@@ -15,12 +15,26 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   differentiator.
 - [x] 7 harder cases (multi-file feature, misleading bug, state refactor, pagination, multi-key sort,
   RFC 4180 CSV, SemVer in Go) and a single-agent control group (`--single`).
-- [ ] **Longer-horizon cases.** First head-to-head (7 hard cases, 1 run each): orch economy 7/7 at
-  $0.35 and 1.5 min per case; a single Sonnet call 7/7 at $0.24 and 0.7 min. On tasks this size the
-  loop adds cost, not pass rate. Its advantage should show on work one call cannot hold: features
-  spanning many files and layers, several dependent changes in one goal, larger fixture repos, and
-  tasks whose first attempt usually fails checks. Build those next, then repeat the head-to-head with
-  `--repeat 3`. **good first issue** (one case per PR)
+- [x] 4 long-horizon cases (`tickets-workflow`, `tickets-sla`, `tickets-import`, `shop-refunds`) on a
+  new layered fixture (`node-tickets`).
+- Head-to-head so far (hidden-test pass, avg cost, avg time per case):
+
+  | cases | orch economy | single Sonnet call |
+  |---|---|---|
+  | 7 hard, 1 run each | 7/7, $0.35, 1.5 min | 7/7, $0.24, 0.7 min |
+  | 4 long, 2 runs each | 8/8, $0.44, 2.5 min | 8/8, $0.40, 1.6 min |
+
+  No false passes on either side; the loop always finished in one round. Up to multi-file, multi-layer
+  features, one Sonnet call is enough, and the loop's cost overhead shrinks as tasks grow (+45% to
+  +10%) but it does not yet win on pass rate.
+- [ ] **Repo-scale cases**, where a single context should break down: a whole small app from a spec
+  (15+ files), a goal that is really a backlog of 4-6 dependent features, a migration across a larger
+  fixture (2,000+ lines), and a task where the first attempt reliably fails the checks. Repeat the
+  head-to-head with `--repeat 3` and harder single-agent models (Opus) too. **good first issue**
+  (one case per PR)
+- [ ] **Fast path** (now well supported by data): when the plan is a single build task, skip the
+  separate verify call and rely on the orchestrator's checks plus a cheap review, to reach single-call
+  cost and time on small goals while keeping git safety, limits and the checks.
 - [ ] **Cheaper path for small goals**: if the evals keep showing a single call is enough for small
   tasks, let the architect answer "single task" plans that skip the separate verify call, or add a
   `--fast` mode, and measure it.
