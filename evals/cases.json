@@ -1,0 +1,82 @@
+[
+  {
+    "id": "node-slugify",
+    "fixture": "node-lib",
+    "kind": "feature",
+    "difficulty": "easy",
+    "goal": "Add src/slugify.js exporting slugify(text): lowercase the text, trim it, replace every run of characters that are not a-z or 0-9 with a single hyphen, and strip leading and trailing hyphens. Accented Latin letters are reduced to their base letter first (\"Crème Brûlée\" becomes \"creme-brulee\"). Add tests in test/slugify.test.js.",
+    "grade": "node --test test/__hidden__/slugify.test.js test/array.test.js test/stats.test.js"
+  },
+  {
+    "id": "node-duration",
+    "fixture": "node-lib",
+    "kind": "feature",
+    "difficulty": "medium",
+    "goal": "Add src/duration.js exporting parseDuration(text) that turns strings like \"1h30m\", \"45s\" or \"2d4h\" into a number of seconds. The input is one or more parts of <non-negative integer><unit> with units d, h, m, s, written in that order (d before h before m before s), each unit at most once, no spaces. Throw an Error for anything else: empty string, non-string input, unknown unit, a unit without a number, a number without a unit, units out of order, or a repeated unit. Add tests in test/duration.test.js.",
+    "grade": "node --test test/__hidden__/duration.test.js test/array.test.js test/stats.test.js"
+  },
+  {
+    "id": "node-chunk-bug",
+    "fixture": "node-lib",
+    "kind": "bugfix",
+    "difficulty": "easy",
+    "goal": "Bug report: chunk([1, 2, 3, 4, 5], 2) in src/array.js returns [[1, 2], [3, 4]] but should return [[1, 2], [3, 4], [5]]: the last, shorter group is dropped. Fix it. Also make chunk throw a RangeError when size is not a positive integer. Add tests for both.",
+    "grade": "node --test test/__hidden__/chunk.test.js test/array.test.js test/stats.test.js"
+  },
+  {
+    "id": "node-rename",
+    "fixture": "node-lib",
+    "kind": "refactor",
+    "difficulty": "easy",
+    "goal": "Rename the function sum in src/array.js to total. Keep sum exported as a deprecated alias that returns the same result (mark it with a @deprecated JSDoc tag). Update every internal caller in src/ to use total. Update the tests.",
+    "grade": "node --test test/__hidden__/rename.test.js test/stats.test.js"
+  },
+  {
+    "id": "node-lru",
+    "fixture": "node-lib",
+    "kind": "feature",
+    "difficulty": "medium",
+    "goal": "Add src/lru.js exporting a class LRUCache. new LRUCache(capacity) throws a RangeError unless capacity is a positive integer. Methods: get(key) returns the value or undefined and marks the key as most recently used; set(key, value) stores or updates the value, marks it most recently used and, when the cache holds more than capacity entries, evicts the least recently used one; has(key) returns a boolean and does not change recency; delete(key) removes the key and returns whether it existed. A size getter returns the number of entries. Add tests in test/lru.test.js.",
+    "grade": "node --test test/__hidden__/lru.test.js test/array.test.js test/stats.test.js"
+  },
+  {
+    "id": "node-cli",
+    "fixture": "node-lib",
+    "kind": "feature",
+    "difficulty": "medium",
+    "goal": "Add a command line tool bin/wc.js. Running `node bin/wc.js <file>` reads the file as UTF-8 and prints one line: `<lines> <words> <chars>` followed by a newline, where lines is the number of \\n characters, words is the number of runs of non-whitespace characters, and chars is the number of Unicode code points. With no argument, or if the file cannot be read, it prints an error message to stderr and exits with code 1. Put the counting in src/wc.js as an exported function count(text) returning { lines, words, chars }, and add tests.",
+    "grade": "node --test test/__hidden__/wc.test.js test/array.test.js test/stats.test.js"
+  },
+  {
+    "id": "api-post",
+    "fixture": "node-api",
+    "kind": "feature",
+    "difficulty": "medium",
+    "goal": "Add POST /todos to the API in src/server.js. The body is JSON {\"title\": string}. The title is trimmed; it must be a non-empty string of at most 200 characters after trimming. On success respond 201 with the created todo {\"id\", \"title\", \"done\": false}; ids are one higher than the highest existing id (1 for an empty store). A missing or invalid title, or a body that is not valid JSON, gets 400 with {\"error\": \"<message>\"}. The new todo appears in GET /todos. Add tests.",
+    "grade": "node --test test/__hidden__/post.test.js test/server.test.js"
+  },
+  {
+    "id": "api-delete",
+    "fixture": "node-api",
+    "kind": "feature",
+    "difficulty": "easy",
+    "goal": "Add DELETE /todos/:id to the API in src/server.js. If a todo with that id exists, remove it and respond 204 with an empty body. If the id is a positive integer but no todo has it, respond 404 with {\"error\": \"<message>\"}. If the id is not a positive integer (for example abc, 0, -1 or 1.5), respond 400 with {\"error\": \"<message>\"}. Add tests.",
+    "grade": "node --test test/__hidden__/delete.test.js test/server.test.js"
+  },
+  {
+    "id": "py-roman",
+    "fixture": "python-lib",
+    "kind": "feature",
+    "difficulty": "medium",
+    "goal": "Add textstats/roman.py with to_roman(n) and from_roman(s). to_roman converts an int from 1 to 3999 to an uppercase Roman numeral (1994 -> \"MCMXCIV\") and raises ValueError for anything else, including bools, floats and out-of-range ints. from_roman converts a numeral back and accepts only canonical uppercase numerals in that range (the exact strings to_roman produces); anything else, such as \"IIII\", \"IC\", \"mcm\" or \"\", raises ValueError. Add tests in tests/test_roman.py.",
+    "grade": "python -m unittest hidden_test_roman tests.test_words -v"
+  },
+  {
+    "id": "py-wordcount-bug",
+    "fixture": "python-lib",
+    "kind": "bugfix",
+    "difficulty": "easy",
+    "goal": "Bug report: textstats.words.word_count gives wrong answers. word_count(\"hello   world\") returns 4 and word_count(\"\") returns 1. A word is a run of letters, digits and apostrophes, so \"it's\" is one word, \"well-known\" is two, and punctuation on its own (\"--\", \"...\") is not a word. Whitespace of any kind (spaces, tabs, newlines) separates words. Fix word_count and add tests.",
+    "grade": "python -m unittest hidden_test_wordcount tests.test_words -v"
+  }
+]

@@ -44,8 +44,13 @@ process exits without `goal_end`.
 - `orch doctor --json` is the first-run check both UIs show as a banner.
 - Testing without spending tokens: point `CLAUDE_BIN` at a fake `claude` that reads the prompt on stdin and prints `{"result": "...", "is_error": false, "total_cost_usd": 0.05}`. It must accept `--agents <file>`, `--settings`, `--max-budget-usd`, and answer `--version` and `auth status --json` for `doctor`.
 
+## Evals (`evals/`, see its README)
+- `node evals/run.ts --reference`: checks every case's hidden tests fail on the fixture and pass with the reference. Run after editing a case.
+- `node evals/run.ts --cases <ids> --power economy,heavy`: real runs (costs money), graded by hidden tests the agents never see. Results in `evals/results/` (git-ignored).
+- Use it to judge prompt, agent or tier changes: compare hidden pass rate, false passes and cost before and after, with `--repeat 3` or more.
+
 ## Backlog
-1. Eval suite: ~10 goals over 2–3 sample repos, run per power tier, tracking pass rate, rounds, minutes and cost.
+1. Baseline: full eval suite on all four tiers with `--repeat 3`; pick default tier from it.
 2. Project brief (`.orchestrator/brief.md`) reused by the architect, and session resume for fix rounds.
 3. Commit the fake `claude` and the scenario scripts as tests; CI.
 4. Queue: show the running goal, retry policy, `blocked` status, graceful "stop after current goal".

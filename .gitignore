@@ -4,3 +4,6 @@ dist/
 orch-ui/src-tauri/target/
 *.log
 .DS_Store
+
+# eval output
+evals/results/

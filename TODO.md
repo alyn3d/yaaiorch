@@ -58,6 +58,8 @@ Priority: **P0** blocks real use, **P1** important, **P2** worthwhile, **P3** la
 
 ## Done
 
+- [x] Eval suite (`evals/`): 10 cases over 3 dependency-free fixtures (Node lib, Node API, Python), hidden tests plus reference solutions, `--reference` self-check, runner with per-tier tables and false-pass count. First real run (economy, 3 cases): 3/3 hidden pass, 1 round each, $0.92 total.
+
 - [x] `orch.ts` loop: architect, foundation, parallel build, QA, rounds, queue, power tiers.
 - [x] Phantom-completion detection and checkpoint branches.
 - [x] Structured event protocol (`ORCH_EVENTS`).
