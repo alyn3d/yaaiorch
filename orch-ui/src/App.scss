@@ -1,0 +1,51 @@
+$bg: #0f1115;
+$card: #181b22;
+$border: #2a2f3a;
+$text: #e6e8ee;
+$muted: #8b93a7;
+$accent: #5b8cff;
+$ok: #3ecf8e;
+$bad: #ff5d5d;
+$warn: #f5b84b;
+
+* { box-sizing: border-box; }
+body { margin: 0; background: $bg; color: $text; font: 14px/1.5 system-ui, sans-serif; }
+
+.app { max-width: 1100px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; align-items: center; gap: 12px; h1 { font-size: 20px; margin: 0; } }
+.repo { color: $muted; font-family: ui-monospace, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: $bad; &.on { background: $ok; } }
+
+.card { background: $card; border: 1px solid $border; border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; h2 { font-size: 14px; margin: 0; } }
+.cols { display: grid; grid-template-columns: 1fr; gap: 16px; @media (max-width: 800px) { grid-template-columns: 1fr; } }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.spacer { flex: 1; }
+
+textarea, input, select, button { font: inherit; color: $text; background: $bg; border: 1px solid $border; border-radius: 6px; padding: 6px 10px; }
+textarea { width: 100%; resize: vertical; }
+input[type="number"] { width: 70px; }
+label { display: flex; align-items: center; gap: 6px; color: $muted; &.check { color: $text; } }
+button { cursor: pointer; &:hover:not(:disabled) { border-color: $accent; } &:disabled { opacity: 0.4; cursor: default; }
+  &.primary { background: $accent; border-color: $accent; color: #fff; }
+  &.danger { border-color: $bad; color: $bad; } }
+
+.muted { color: $muted; margin: 0; }
+.error { color: $bad; margin: 0; }
+
+.queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; li { display: flex; gap: 8px; align-items: baseline; } }
+.badge { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid $border; color: $muted; white-space: nowrap;
+  &.running { color: $warn; border-color: $warn; } &.done { color: $ok; border-color: $ok; } &.failed { color: $bad; border-color: $bad; } }
+
+.round { border-top: 1px solid $border; padding-top: 8px; p { margin: 4px 0; } }
+.failures { margin: 4px 0; padding-left: 18px; color: $bad; font-family: ui-monospace, monospace; font-size: 12px; }
+
+.log { margin: 0; height: 320px; overflow: auto; background: #0a0c10; border-radius: 6px; padding: 10px; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; }
+
+.phase { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: $muted; }
+.tasks { display: flex; flex-direction: column; gap: 6px; }
+.task { border: 1px solid $border; border-left-width: 3px; border-radius: 6px; padding: 8px 10px; background: $bg;
+  &.running { border-left-color: $warn; } &.done { border-left-color: $ok; } &.warn { border-left-color: $warn; } &.failed { border-left-color: $bad; }
+  .agent { font-weight: 600; font-family: ui-monospace, monospace; }
+  .desc { margin: 4px 0 0; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .files { margin: 2px 0 0; font-size: 12px; font-family: ui-monospace, monospace; word-break: break-all; } }
+.badge.warn { color: $warn; border-color: $warn; }

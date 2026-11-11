@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.orchestrator/
+orch-ui/src-tauri/target/
+*.log
+.DS_Store
