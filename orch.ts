@@ -53,6 +53,11 @@ type Power = keyof typeof POWER;
 const TIERS: Power[] = ["economy", "balanced", "heavy", "max"];
 
 const CLAUDE = process.env.CLAUDE_BIN ?? "claude";
+/**
+ * On Windows `claude` is spawned through cmd.exe (so .cmd shims resolve), which joins the command line
+ * unquoted: a CLAUDE_BIN like "C:\Program Files\...\claude.cmd" must be quoted or cmd splits it.
+ */
+const shellCmd = (cmd: string) => (process.platform === "win32" && /\s/.test(cmd) && !cmd.startsWith('"') ? `"${cmd}"` : cmd);
 const DIR = ".orchestrator";
 const QUEUE = join(DIR, "queue.json");
 const LAST_RUN = join(DIR, "last-run.json");
@@ -288,7 +293,7 @@ function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly:
       // Checked by the CLI after each turn, so a call can overshoot a little; parallel calls each get the full remainder.
       ...(budget.cap !== undefined ? ["--max-budget-usd", Math.max(0.01, budget.cap - budget.spent).toFixed(2)] : []),
     ];
-    const p = spawn(CLAUDE, args, { stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32", windowsHide: true });
+    const p = spawn(shellCmd(CLAUDE), args, { stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32", windowsHide: true });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -549,7 +554,7 @@ type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };
 
 function cli(cmd: string, args: string[]) {
   // shell on Windows so claude.cmd shims resolve; arguments here are fixed and safe
-  return spawnSync(cmd, args, { encoding: "utf8", shell: process.platform === "win32", windowsHide: true, timeout: 30_000 });
+  return spawnSync(shellCmd(cmd), args, { encoding: "utf8", shell: process.platform === "win32", windowsHide: true, timeout: 30_000 });
 }
 
 function doctor(): Finding[] {

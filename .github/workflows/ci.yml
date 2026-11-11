@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Typecheck, build, eval suite self-check
+    name: Linux - build, scenarios, eval self-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,11 +42,14 @@ jobs:
         run: |
           node orch-ui/src-tauri/resources/orch.mjs > usage.txt
           grep -q "YAAIORCH" usage.txt
+      - name: Scenario tests (fake claude)
+        working-directory: orch-ui
+        run: npm test
       - name: Eval suite self-check (hidden tests fail before, pass with reference)
         run: node evals/run.ts --reference
 
-  desktop:
-    name: Desktop backend (cargo check, Windows)
+  windows:
+    name: Windows - scenarios, cargo check and test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +68,18 @@ jobs:
         run: |
           npm ci
           npm run build:app
+      - name: Scenario tests (fake claude)
+        working-directory: orch-ui
+        run: npm test
       - name: cargo check
         working-directory: orch-ui/src-tauri
         run: cargo check --locked
+      - name: Rust spawn test (desktop backend runs orch.mjs with the fake claude)
+        working-directory: orch-ui/src-tauri
+        shell: pwsh
+        run: |
+          $repo = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "spawn-test-repo")
+          $env:TEST_REPO = $repo.FullName
+          $env:ORCH_PATH = (Resolve-Path ../src-tauri/resources/orch.mjs).Path
+          $env:CLAUDE_BIN = (Resolve-Path ../../test/fake-claude/claude.cmd).Path
+          cargo test --locked -- --ignored

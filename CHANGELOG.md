@@ -5,6 +5,14 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Fake `claude` (`test/fake-claude/`) and 16 end-to-end scenario tests (`npm test` in `orch-ui`),
+  run in CI on Linux and Windows, plus the desktop backend's spawn test.
+
+### Fixed
+- Windows: a `CLAUDE_BIN` path containing spaces (for example under `C:\Program Files`) broke every
+  agent call and `orch doctor`, because cmd.exe received it unquoted.
+
 ## [0.1.0] - 2026-11-11
 
 First public version.

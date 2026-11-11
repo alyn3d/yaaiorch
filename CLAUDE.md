@@ -31,7 +31,8 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- Rust test (skipped unless env is set): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<fake claude script> cargo test`
+- `npm test`: 16 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
+- Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
 - Windows is the primary target. `orch.ts` spawns `claude` through a shell on win32; children use `windowsHide`.
@@ -43,7 +44,7 @@ process exits without `goal_end`.
 - Limits: `--agent-timeout` (30 min, kills the process tree), `--max-cost` per goal (passed on as `--max-budget-usd`; CLI reports `error_max_budget_usd`). Stuck rounds (no file changed, or same failures again) move up one power tier; two in a row stop the goal.
 - `orch doctor --json` is the first-run check both UIs show as a banner.
 - Usage limit ("You've hit your … limit · resets …"): ends the goal as `UsageLimit` (never a task failure or stuck round), `orch run` exits 3, `loop` requeues the goal and waits for the reset. The eval runner never records such runs: it stops (or waits with `--wait-on-limit`), and `--resume <stamp>` finishes later.
-- Testing without spending tokens: point `CLAUDE_BIN` at a fake `claude` that reads the prompt on stdin and prints `{"result": "...", "is_error": false, "total_cost_usd": 0.05}`. It must accept `--agents <file>`, `--settings`, `--max-budget-usd`, and answer `--version` and `auth status --json` for `doctor`.
+- Testing without spending tokens: `CLAUDE_BIN=test/fake-claude/claude` (`claude.cmd` on Windows); switches are documented at the top of `fake-claude.mjs`. On Windows `claude` is spawned through cmd.exe, so `shellCmd()` quotes a `CLAUDE_BIN` with spaces; keep that for any new spawn of it.
 
 ## Evals (`evals/`, see its README)
 - `node evals/run.ts --reference`: checks every case's hidden tests fail on the fixture and pass with the reference. Run after editing a case.

@@ -50,6 +50,7 @@ Run what your change touches:
 cd orch-ui
 npm run build                 # typecheck + build the UI (also typechecks server.ts)
 npm run build:orch            # bundle orch.ts; fails on syntax errors
+npm test                      # scenario tests with the fake claude
 npx tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext --types node --skipLibCheck ../orch.ts
 cd src-tauri && cargo check   # if you touched main.rs
 cd ../..
@@ -60,18 +61,28 @@ CI runs the same checks on every pull request.
 
 ## Testing without spending tokens
 
-Point `CLAUDE_BIN` at a fake `claude` script. It receives the prompt on stdin and must print one JSON
-object like the real `claude -p --output-format json`:
-
-```json
-{ "type": "result", "subtype": "success", "is_error": false, "result": "…", "total_cost_usd": 0.05 }
+```bash
+cd orch-ui
+npm test        # scenario tests: real orch.ts, fake claude, throwaway git repos (~40 s)
 ```
 
-It must accept `--agents`, `--settings`, `--agent`, `--model`, `--permission-mode` and
-`--max-budget-usd`, and answer `--version` and `auth status --json` for `orch doctor`. A fake that
-returns a plan for prompts containing "Produce the plan", `{"passed": true, "failures": []}` for
-verify prompts, and writes each listed file for build prompts is enough to drive a whole goal.
-Committing a ready-made fake plus scenario tests is on the [TODO list](TODO.md) (good first issue).
+`test/scenarios.test.mjs` runs `orch` end to end against [`test/fake-claude/`](test/fake-claude/fake-claude.mjs),
+a stand-in for `claude -p --output-format json` that never calls a model. The scenarios cover the
+happy path, plan retry, a crashing or hanging agent, failed checks beating QA, the budget cap, stuck
+escalation, rollback, loop parking, the usage limit in `run` and `loop`, prune, doctor and input
+validation. Set `KEEP_TEST_REPOS=1` to keep the temp repos for inspection.
+
+The fake is controlled with environment variables (`FAKE_QA`, `FAKE_FAIL_AGENT`, `FAKE_HANG_AGENT`,
+`FAKE_NOWRITE`, `FAKE_COST`, `FAKE_LIMIT_ON`, …, documented at the top of the file). To try `orch` by
+hand with it:
+
+```bash
+CLAUDE_BIN=/path/to/yaaiorch/test/fake-claude/claude orch run "anything"        # POSIX
+set "CLAUDE_BIN=C:\path\to\yaaiorch\test\fake-claude\claude.cmd" && orch run "anything"   # Windows cmd
+```
+
+New behaviour in the loop should come with a scenario. The desktop backend has its own spawn test,
+run with the same fake: `TEST_REPO=<empty dir> ORCH_PATH=<orch.mjs> CLAUDE_BIN=<fake> cargo test -- --ignored`.
 
 For a change that affects agent behaviour (prompts, reply formats, power tiers), run a few real eval
 cases before and after and put both summaries in the PR:

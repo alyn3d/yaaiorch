@@ -15,7 +15,8 @@
     "start": "tsx server.ts",
     "build:orch": "esbuild ../orch.ts --bundle --platform=node --format=esm --target=node20 --outfile=src-tauri/resources/orch.mjs",
     "build:app": "npm run build:orch && npm run build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node --test \"../test/*.test.mjs\""
   },
   "dependencies": {
     "react": "^19.0.0",

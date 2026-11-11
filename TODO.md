@@ -18,18 +18,13 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   Rust, and a case with a misleading bug report. **good first issue** (one case per PR)
 
 ### Test the orchestrator itself
-- [ ] **Commit a fake `claude`** (`test/fake-claude/`) with switches for: QA verdict, crashing agent,
-  hanging agent, no-op implementer, cost per call, budget errors, usage-limit replies, bad plan once.
-  The behaviour is described in [CONTRIBUTING.md](CONTRIBUTING.md#testing-without-spending-tokens).
-  **good first issue**
-- [ ] **Scenario tests** on top of it, runnable on any OS (Node, not bash): happy path, QA sees new
-  files, loop parks a failed goal, crashing build task, timeout kills the tree, budget stop, stuck
-  escalation then stop, rollback after a stray edit, prune, doctor, usage limit in `run` and `loop`,
-  dirty-tree refusal, plan retry, input validation. Run them in CI.
+- [x] Fake `claude` (`test/fake-claude/`) and 16 scenario tests (`npm test`), run in CI on Linux and
+  Windows; the Rust spawn test is `#[ignore]`d and run explicitly in CI.
+- [ ] **More scenarios**: phantom completion and its re-dispatch, foundation failure skipping the
+  round, a commit hook that fails, a pre-existing `.orchestrator/config.json` allow-list reaching the
+  agents, `--wait-on-limit` and `--resume` in the eval runner. **good first issue**
 - [ ] **Unit tests** for `reduce.ts`, and for `validate`, `extractJson`, `parseReset`, `failureKey`
   in `orch.ts` (export them or split helpers into a module). **good first issue**
-- [ ] **Rust spawn test in CI**: mark it `#[ignore]` and run it explicitly with the committed fake, so a
-  green run means it ran.
 - [ ] **Lint and format**: ESLint + Prettier for TS, `rustfmt` + `clippy` for Rust, wired into CI.
   **good first issue**
 

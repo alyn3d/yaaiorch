@@ -385,10 +385,15 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// Needs TEST_REPO (empty dir), ORCH_PATH (built orch.mjs) and CLAUDE_BIN (fake claude); skipped otherwise.
+    /// Spawns the real orch.mjs with the fake claude. Ignored by default because it needs:
+    /// TEST_REPO (an empty dir), ORCH_PATH (built orch.mjs) and CLAUDE_BIN (test/fake-claude/claude[.cmd]).
+    /// Run with `cargo test -- --ignored` (CI does).
     #[test]
+    #[ignore]
     fn spawns_orch_and_captures_events() {
-        let Ok(repo) = std::env::var("TEST_REPO") else { return };
+        let repo = std::env::var("TEST_REPO").expect("set TEST_REPO, ORCH_PATH and CLAUDE_BIN to run this test");
+        assert!(std::env::var("ORCH_PATH").is_ok(), "set ORCH_PATH to the built orch.mjs");
+        assert!(std::env::var("CLAUDE_BIN").is_ok(), "set CLAUDE_BIN to test/fake-claude/claude.cmd (or claude on POSIX)");
         let app = tauri::test::mock_builder()
             .manage(AppState(Mutex::new(Inner::default())))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
