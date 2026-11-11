@@ -242,6 +242,39 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.ok(queue.every((i) => !i.note), "waiting note cleared");
   });
 
+  test("fast path: one dev call, judged by the checks, no architect or QA", () => {
+    const dir = repo();
+    writeConfig(dir, { checks: { ok: 'node -e "process.exit(0)"' } });
+    const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "2"]);
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]), ["dev"]);
+    assert.equal(r.ev("round_start")[0].mode, "direct");
+    assert.equal(r.ev("architect_start").length, 0);
+    assert.equal(r.last("goal_end").cost, 0.05);
+    assert.match(r.calls.find((c) => c.startsWith("call agent=dev")), /mode=acceptEdits/);
+    assert.ok(existsSync(join(dir, "src", "direct.txt")));
+  });
+
+  test("fast path falls back to the full loop when the direct attempt fails its checks", () => {
+    const dir = repo();
+    // Passes only once the full loop's plan has written src/api.ts.
+    writeConfig(dir, { checks: { api: "node -e \"process.exit(require('fs').existsSync('src/api.ts') ? 0 : 1)\"" } });
+    const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "3"]);
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(r.ev("round_start").map((e) => e.mode ?? "full"), ["direct", "full"]);
+    assert.equal(r.ev("round_end")[0].passed, false);
+    assert.ok(r.ev("round_end")[0].failures.some((f) => /check "api" failed/.test(f)));
+    const agents = r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]);
+    assert.deepEqual(agents, ["dev", "architect", "fe", "be", "fe", "qa"]);
+  });
+
+  test("fast path without checks still runs QA", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "1"]);
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]), ["dev", "qa"]);
+  });
+
   test("prune deletes only old orchestrator branches", () => {
     const dir = repo();
     const old = Date.now() - 20 * 86_400_000;

@@ -20,6 +20,8 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
 Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
          --max-cost USD (per goal, no limit by default)  --agent-timeout MINUTES (30)
          --poll SECONDS (15)  --until-empty  --dry-run (plan only; not with loop)
+         --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
+                  are no checks); if that fails, later rounds run the full architect/build/QA loop
 Agents: built-in (architect, fe, be, qa), overridden by ~/.claude/agents and ./.claude/agents.
 The architect and verifiers run read-only; implementers may edit.
 Checks: after each build phase the orchestrator runs the repo's checks itself and a non-zero exit
@@ -602,12 +604,13 @@ function doctor(): Finding[] {
 
 const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 
-type Opts = { maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number };
+/** `fast`: round 1 is one generalist agent doing the whole goal, verified by the checks; later rounds are the full loop. */
+type Opts = { maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
 async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx): Promise<Result> {
   const prompt =
-    `${t.task}\n\nYour files (touch only these):\n${(t.files ?? []).map((f) => `- ${f}`).join("\n")}` +
+    (t.files?.length ? `${t.task}\n\nYour files (touch only these):\n${t.files.map((f) => `- ${f}`).join("\n")}` : t.task) +
     (t.figma ? `\n\nFigma: ${t.figma}` : "") +
     (t.skills?.length ? `\n\nBefore starting, load these skills with the Skill tool: ${t.skills.join(", ")}` : "") +
     TASK_FORMAT;
@@ -647,6 +650,27 @@ async function makePlan(architect: Entry, workers: Entry[], skills: Entry[], goa
       prompt = `${base}\n\nYour previous reply was rejected: ${msg(e)}\nFix that and reply with the JSON plan only.`;
     }
   }
+}
+
+/**
+ * Fast-path plan: one `dev` task for the whole goal on the tier's strong model (heavy), no file list.
+ * Verified by the repo's checks; when there are none, a QA task is added so something still verifies.
+ */
+function directPlan(goal: string, checks: Record<string, string>): Plan {
+  const commands = Object.values(checks);
+  const task =
+    `Goal: ${goal}\n\nYou are doing this goal alone: read the relevant code, then make the complete change ` +
+    `(code and tests) following the repository's conventions.` +
+    (commands.length
+      ? ` Afterwards the orchestrator runs these checks and they must pass (you can run them yourself): ${commands.join(", ")}.`
+      : " No automated checks are configured, so a reviewer will check the result.");
+  return {
+    summary: "Direct attempt (fast path): one agent does the whole goal",
+    tasks: [
+      { agent: "dev", phase: "build", task, heavy: true },
+      ...(commands.length ? [] : [{ agent: "qa", phase: "verify" as Phase, task: "Check that the goal is fully met and nothing is broken." }]),
+    ],
+  };
 }
 
 /** Failures compared across rounds: case, spacing and numbers (timings, line counts) ignored. */
@@ -713,10 +737,17 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   for (let round = 1; round <= o.maxRounds; round++) {
     const models = POWER[power];
     const spentBefore = ctx.budget.spent;
-    console.log(`\n=== round ${round}/${o.maxRounds} (${power}) ===`);
-    emit("round_start", { round, power });
-    emit("architect_start", { round });
-    const { plan, cost: planCost } = await makePlan(architect, workers, skills, goal, failures, note, models.arch, ctx);
+    // Fast path: the first round skips the architect; one generalist agent does the whole goal.
+    const direct = o.fast && round === 1 && byName.has("dev");
+    console.log(`\n=== round ${round}/${o.maxRounds} (${power}${direct ? ", direct attempt" : ""}) ===`);
+    emit("round_start", { round, power, ...(direct ? { mode: "direct" } : {}) });
+    let plan: Plan;
+    let planCost = 0;
+    if (direct) plan = directPlan(goal, checks);
+    else {
+      emit("architect_start", { round });
+      ({ plan, cost: planCost } = await makePlan(architect, workers, skills, goal, failures, note, models.arch, ctx));
+    }
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
     emit("plan", { round, summary: plan.summary, cost: round4(planCost), tasks: plan.tasks.map((t, id) => ({ id, ...t })) });
     if (o.dryRun) return true;
@@ -790,7 +821,9 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const checkFailures = checkResults
       .filter((c) => !c.ok)
       .map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
-    const passed = !errors.length && !checkFailures.length && verdicts.length > 0 && verdicts.every((v) => v.passed);
+    // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
+    const verifiedBy = verify.length ? verdicts.length > 0 && verdicts.every((v) => v.passed) : checkResults.length > 0;
+    const passed = !errors.length && !checkFailures.length && verifiedBy;
     const prevKey = failureKey(failures);
     failures = [...errors, ...checkFailures, ...verdicts.flatMap((v) => v.failures)];
     const roundCost = round4(ctx.budget.spent - spentBefore);
@@ -906,7 +939,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     maxCost = Number(values["max-cost"]);
     if (!(maxCost > 0)) throw new Error(`--max-cost must be a positive amount in USD, got "${values["max-cost"]}"`);
   }
-  return { maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost };
+  return { maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost, fast: !!values.fast };
 }
 
 async function main() {
@@ -920,6 +953,7 @@ async function main() {
       poll: { type: "string", default: "15" },
       "until-empty": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
+      fast: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
     },

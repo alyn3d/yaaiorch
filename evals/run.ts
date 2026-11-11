@@ -9,7 +9,8 @@
 // runs each case once per orch tier and once as a single `claude -p` call per model, graded the same way.
 //
 // Options:
-//   --cases a,b          case ids (default: all)          --power economy,heavy  orch tiers (default: economy; "none" for no orch runs)
+//   --cases a,b          case ids (default: all)          --power economy,heavy  orch tiers (default: economy; "none" for no orch runs;
+//                                                                              "economy+fast" adds orch's --fast)
 //   --single m1,m2       also run a single agent with these models (control group), e.g. sonnet,opus
 //   --repeat N           runs per case and tier (1)       --parallel N           runs at once (1)
 //   --max-rounds N       passed to orch (4)               --max-cost USD         per run, passed to orch (3)
@@ -70,7 +71,9 @@ const unknown = wanted?.filter((id) => !allCases.some((c) => c.id === id)) ?? []
 if (unknown.length) fail(`unknown case(s): ${unknown.join(", ")}. Known: ${allCases.map((c) => c.id).join(", ")}`);
 const cases = wanted ? allCases.filter((c) => wanted.includes(c.id)) : allCases;
 const powers = a.power === "none" ? [] : a.power!.split(",").map((s) => s.trim()).filter(Boolean);
-for (const p of powers) if (!TIERS.includes(p)) fail(`unknown power "${p}"; use ${TIERS.join(", ")} or none`);
+// "economy+fast" runs orch with --fast (direct attempt first).
+const tierOf = (label: string) => label.replace(/\+fast$/, "");
+for (const p of powers) if (!TIERS.includes(tierOf(p))) fail(`unknown power "${p}"; use ${TIERS.join(", ")} (optionally +fast) or none`);
 const singles = (a.single ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 for (const m of singles) if (!/^[\w.:-]+$/.test(m)) fail(`bad model name "${m}"`);
 /** Configuration labels, in table order: orch tiers, then the single-agent control group. */
@@ -153,7 +156,8 @@ function runOrch(dir: string, c: Case, power: string): Promise<{ exit: number | 
     const start = Date.now();
     const args = [
       ...orchArgs, "run", c.goal,
-      "--power", power,
+      "--power", tierOf(power),
+      ...(power.endsWith("+fast") ? ["--fast"] : []),
       "--max-rounds", a["max-rounds"]!,
       "--max-cost", a["max-cost"]!,
       "--agent-timeout", a["agent-timeout"]!,

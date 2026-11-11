@@ -6,6 +6,7 @@
 //                                      fe build .\src\ui.ts (backslash on purpose), qa verify
 //   verifier ('{"passed": true | false')  -> verdict from FAKE_QA
 //   anything else (implementer)     -> writes every "- <path>" listed in the prompt, ends "Status: COMPLETE"
+//                                      (the fast path's `dev` agent writes src/direct.txt instead)
 //
 // Switches (environment):
 //   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, budget cap
@@ -114,7 +115,8 @@ if (prompt.includes("Produce the plan")) {
     await new Promise(() => {});
   }
   if (env.FAKE_SLOW) await sleep(Number(env.FAKE_SLOW) * 1000);
-  const files = [...prompt.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
+  // The fast path's generalist gets no file list; it writes one file of its own.
+  const files = agent === "dev" ? ["src/direct.txt"] : [...prompt.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
   if (!env.FAKE_NOWRITE)
     for (const f of files) {
       mkdirSync(dirname(f), { recursive: true });
