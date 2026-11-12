@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/logo-256.png" alt="YAAIORCH logo" width="128" height="128"></p>
+
 # YAAIORCH — Yet Another AI Orchestrator
 
 YAAIORCH turns a goal into working code by looping AI agents until the code passes your checks.

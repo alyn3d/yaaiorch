@@ -66,6 +66,7 @@ export function App() {
   return (
     <div className="app">
       <header>
+        <img className="logo" src="/logo-64.png" alt="" width={28} height={28} />
         <h1 title="Yet Another AI Orchestrator">YAAIORCH</h1>
         <span className="tagline">Yet Another AI Orchestrator</span>
         <span className="spacer" />

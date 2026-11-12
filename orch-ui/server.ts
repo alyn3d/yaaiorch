@@ -234,7 +234,10 @@ const body = (req: http.IncomingMessage) =>
     });
   });
 
-const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
+const MIME: Record<string, string> = {
+  ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
+  ".png": "image/png", ".ico": "image/x-icon",
+};
 
 // Open the remembered repos, then the ones from the environment.
 const stored = readJson<{ repos?: string[]; maxParallel?: number }>(SETTINGS_FILE, {});

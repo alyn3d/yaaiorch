@@ -13,6 +13,7 @@ body { margin: 0; background: $bg; color: $text; font: 14px/1.5 system-ui, sans-
 
 .app { max-width: 1100px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
 header { display: flex; align-items: center; gap: 12px; h1 { font-size: 20px; margin: 0; letter-spacing: 0.04em; } }
+.logo { border-radius: 6px; flex: none; }
 .tagline { color: $muted; font-size: 12px; white-space: nowrap; @media (max-width: 800px) { display: none; } }
 .repo { color: $muted; font-family: ui-monospace, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: $bad; &.on { background: $ok; } }
