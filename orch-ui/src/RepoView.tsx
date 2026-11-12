@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { pluginOpts } from "./Plugins";
 import type { Power } from "./types";
 import { RunPanel } from "./RunView";
 import { SettingsPanel, modelSpec, useRepoSettings } from "./Settings";
@@ -47,7 +48,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
   const models = modelSpec(settings);
   const opts = {
     power, maxRounds: Math.min(20, Math.max(1, Math.round(maxRounds) || 1)), dryRun, maxCost: cap > 0 ? cap : undefined,
-    models: models.spec, onLimit: settings.onLimit, fast: settings.fast,
+    models: models.spec, onLimit: settings.onLimit, fast: settings.fast, plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;
   const rounds = state.lastRun?.state ?? [];
@@ -119,7 +120,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           <button disabled={!goal.trim()} onClick={async () => { if (await call("add", { goal })) setGoal(""); }}>Add to queue</button>
           <button className="primary" disabled={busy || !goal.trim() || badSettings} onClick={() => call("run", { goal, ...opts })}>Run now</button>
         </div>
-        <SettingsPanel power={power} settings={settings} onChange={setSettings} />
+        <SettingsPanel repo={repo} power={power} settings={settings} onChange={setSettings} />
         {error && <p className="error">{error}</p>}
       </section>
 

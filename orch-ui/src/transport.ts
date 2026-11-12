@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Finding, Global, OrchEvent, State } from "./types";
+import type { Finding, Global, OrchEvent, Plugin, State } from "./types";
 
 /** One repo's state, log and structured events since its last goal_start. */
 export type SessionInit = { state: State; log: string[]; events: OrchEvent[] };
@@ -32,6 +32,8 @@ export interface Transport {
   clearLimit(): Promise<void>;
   /** First-run checks (`orch doctor`) for one repo. */
   doctor(repo: string): Promise<Finding[]>;
+  /** The repo's Claude Code plugins with their token cost (slow; the browser server caches it). */
+  plugins(repo: string, fresh?: boolean): Promise<Plugin[]>;
 }
 
 // ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
@@ -73,6 +75,11 @@ const web: Transport = {
   async doctor(repo) {
     const r = await fetch(`/api/doctor?repo=${encodeURIComponent(repo)}`);
     return r.ok ? r.json() : [{ name: "server", level: "fail", detail: r.statusText }];
+  },
+  async plugins(repo, fresh) {
+    const r = await fetch(`/api/plugins?repo=${encodeURIComponent(repo)}${fresh ? "&fresh=1" : ""}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+    return r.json();
   },
 };
 
@@ -132,6 +139,7 @@ const tauri: Transport = {
   setUsageCap: (cap) => tauriInvoke("set_usage_cap", { fiveHour: cap.fiveHour, week: cap.week }),
   clearLimit: () => tauriInvoke("clear_limit"),
   doctor: (repo) => tauriInvoke<Finding[]>("doctor", { repo }),
+  plugins: (repo) => tauriInvoke<Plugin[]>("plugins", { repo }),
 };
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

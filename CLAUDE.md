@@ -31,12 +31,13 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- `npm test`: 31 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 32 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
 - Windows is the primary target. `orch.ts` spawns `claude` through a shell on win32; children use `windowsHide`.
 - Multi-repo UI: both backends keep one session per repo (process, log, events), tag every message with its `repo`, and run at most `maxParallel` repos at once (start queue). One run per repo. Keep `server.ts`, `main.rs` and `transport.ts` in sync. Stop kills that repo's process tree (taskkill on Windows).
+- Plugins: headless agents load the user's Claude Code plugins and hooks. `--plugins off` / `--disable-plugins` / `--no-hooks` (config `plugins`) write `enabledPlugins: {id: false}` and `disableAllHooks` into the agents' `--settings` files (not `--bare`, which drops the OAuth login). `orch plugins --json --details` lists them via `claude plugin list --json` and `claude plugin details`.
 - Usage caps: agents run with `stream-json`; orch reads the CLI's `rate_limit_event` (5-hour and weekly `utilization`, undocumented) into `usage` events and, with `--usage-cap 5h=N,week=M` (config `usageCap`), pauses before an agent call (or stops, with `--on-limit stop`) while a reading is over a cap. The backends pass their global caps to every run and hold new starts too.
 - Global state (both backends, `global` / `orch-global` event): a usage limit in any repo holds new starts everywhere until the reset ("Try now" clears it); the optional daily budget sums `cost` from `plan`/`task_end` events, caps each run's `--max-cost` to what is left, holds starts and kills a loop at `queue_item` when used up. Persisted with the repos.
 - `.orchestrator/` (queue.json, last-run.json, builtin-agents.json) lives in the target repo and is never committed by the orchestrator.

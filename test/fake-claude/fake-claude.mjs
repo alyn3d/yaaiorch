@@ -22,7 +22,8 @@
 //   FAKE_LIMIT_AFTER=<n>     every call after the n-th returns the usage-limit reply
 //   FAKE_USAGE=<5h>,<week>   with --output-format stream-json, print a rate_limit_event first with these
 //                            utilizations (fractions, e.g. 0.83,0.24); windows reset FAKE_USAGE_RESET_S (3600) s from now
-// Also answers `--version` and `auth status --json` for `orch doctor`, and honours --max-budget-usd.
+// Also answers `--version` and `auth status --json` for `orch doctor`, `plugin list --json` and
+// `plugin details <id>` for `orch plugins`, and honours --max-budget-usd.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -33,6 +34,17 @@ if (args[0] === "--version") {
 }
 if (args[0] === "auth") {
   console.log(JSON.stringify({ loggedIn: true }));
+  process.exit(0);
+}
+// `plugin list --json` and `plugin details <id>`: two enabled plugins and a disabled one.
+if (args[0] === "plugin") {
+  const plugins = [
+    { id: "caveman@caveman", scope: "user", enabled: true },
+    { id: "superpowers@claude-plugins-official", scope: "user", enabled: true },
+    { id: "old@market", scope: "user", enabled: false },
+  ];
+  if (args[1] === "list") console.log(JSON.stringify(plugins));
+  else if (args[1] === "details") console.log(`${args[2]}\n\nProjected token cost\n  Always-on:   ~1,234 tok   added to every session`);
   process.exit(0);
 }
 

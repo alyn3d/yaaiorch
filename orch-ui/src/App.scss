@@ -107,3 +107,10 @@ button.link { border: none; background: none; padding: 0; display: inline-flex; 
     label { justify-content: space-between; } .muted { font-size: 12px; } } }
 .meter { font: 12px ui-monospace, monospace; color: $text; white-space: nowrap; &.near { color: $warn; } &.over { color: $bad; } .muted { margin: 0; } }
 input.limit { width: 72px; }
+
+// Plugins for agents: one switch per plugin.
+.plugins { .plugin-head { margin-top: 8px; } }
+.plugin-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px;
+  li { display: flex; align-items: center; gap: 10px; padding: 3px 0; border-bottom: 1px solid $border; font-size: 13px;
+    &.unavailable { opacity: 0.5; } .muted { font-size: 12px; margin: 0; } }
+  .plugin-name { font-family: ui-monospace, monospace; } }

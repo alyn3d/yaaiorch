@@ -94,8 +94,9 @@ Other commands:
 | `orch rollback` | undo the last unfinished goal (work kept on `orchestrator/discarded-*`) |
 | `orch prune` | delete old `orchestrator/*` branches |
 | `orch agents` | list the agents and skills the architect can use |
+| `orch plugins [--details]` | list your Claude Code plugins (with `--details`: context tokens each adds per call) |
 
-Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
+Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
 `--agent-timeout MIN` (30), `--dry-run` (plan only). Run `orch` without arguments for the full usage.
 
 ### Browser UI
@@ -156,6 +157,13 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   { "models": { "architect": "opus", "impl": "haiku", "agents": { "be": "sonnet" } }, "onLimit": "wait", "usageCap": { "5h": 80, "week": 90 } }
   ```
 
+- **Plugins.** Agents are ordinary `claude -p` calls, so by default they load your Claude Code plugins
+  and hooks, and every plugin adds context (cost) to every agent call; some, like prompt-style or
+  "always use skills" plugins, also change how agents behave. In the UI, **Plugins** (in each repo's run
+  settings) lists them with the tokens each adds, with a switch per plugin, one for all, and one for
+  hooks. CLI: `--plugins off`, `--disable-plugins caveman@caveman`, `--no-hooks`, or
+  `"plugins": {"off": true, "disable": [...], "hooks": false}` in config. Your Claude Code setup itself is
+  not changed: orch passes the choice in the agents' own `--settings` file.
 - **Usage limit.** By default a goal that hits the Claude usage limit is set aside, YAAIORCH waits until
   the reset and continues (for `run` and the queue). Choose **Stop** (`--on-limit stop`) to end instead;
   the goal stays pending for later.

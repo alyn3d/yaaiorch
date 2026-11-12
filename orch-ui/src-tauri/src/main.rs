@@ -531,6 +531,22 @@ struct Extra {
     /// "wait" or "stop"
     on_limit: Option<String>,
     fast: Option<bool>,
+    plugins: Option<PluginOpts>,
+}
+
+/// Which of the user's Claude Code plugins and hooks the agents get (see `orch plugins`).
+#[derive(serde::Deserialize, Default)]
+struct PluginOpts {
+    off: Option<bool>,
+    disable: Option<Vec<String>>,
+    hooks: Option<bool>,
+}
+
+/// A plugin id like `name@marketplace` with safe characters only (orch validates it again).
+fn valid_plugin_id(s: &str) -> bool {
+    let part = |p: &str| p.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) && p.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    let mut it = s.splitn(2, '@');
+    it.next().is_some_and(part) && it.next().is_none_or(part)
 }
 
 /// A model spec of key=value pairs with safe characters only (orch validates the names again).
@@ -562,6 +578,18 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if extra.fast.unwrap_or(false) {
         v.push("--fast".into());
+    }
+    if let Some(p) = &extra.plugins {
+        if p.off.unwrap_or(false) {
+            v.extend(["--plugins".into(), "off".into()]);
+        }
+        let ids: Vec<&str> = p.disable.iter().flatten().map(String::as_str).filter(|s| valid_plugin_id(s)).collect();
+        if !ids.is_empty() {
+            v.extend(["--disable-plugins".into(), ids.join(",")]);
+        }
+        if p.hooks == Some(false) {
+            v.push("--no-hooks".into());
+        }
     }
     v
 }
@@ -673,11 +701,12 @@ fn run_goal(
     models: Option<String>,
     on_limit: Option<String>,
     fast: Option<bool>,
+    plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
         return Err("goal required".into());
     }
-    let extra = Extra { max_cost, models, on_limit, fast };
+    let extra = Extra { max_cost, models, on_limit, fast, plugins };
     let mut args = vec!["run".to_string()];
     args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     let label = format!("run: {}", goal.chars().take(60).collect::<String>());
@@ -698,8 +727,9 @@ fn run_loop(
     models: Option<String>,
     on_limit: Option<String>,
     fast: Option<bool>,
+    plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
-    let extra = Extra { max_cost, models, on_limit, fast };
+    let extra = Extra { max_cost, models, on_limit, fast, plugins };
     let mut args = vec!["loop".to_string()];
     args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     if until_empty.unwrap_or(false) {
@@ -737,6 +767,22 @@ fn agents(app: AppHandle, repo: String) -> Result<String, String> {
 #[tauri::command]
 fn rollback(app: AppHandle, repo: String) -> Result<(), String> {
     request_start(&app, &repo, vec!["rollback".into()], "rollback".into())
+}
+
+/// `orch plugins --json --details` in a repo: the user's Claude Code plugins with their token cost.
+/// Async: it makes one CLI call per plugin.
+#[tauri::command(async)]
+fn plugins(app: AppHandle, repo: String) -> Result<Value, String> {
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let out = node_cmd(&app, &dir, &["plugins".into(), "--json".into(), "--details".into()])?
+        .output()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .lines()
+        .find(|l| l.starts_with('['))
+        .and_then(|l| serde_json::from_str(l).ok())
+        .ok_or_else(|| String::from_utf8_lossy(&out.stderr).trim().lines().last().unwrap_or("could not list plugins").to_string())
 }
 
 /// `orch doctor --json` in a repo. Async so starting node does not freeze the window.
@@ -852,7 +898,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, set_usage_cap, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor
+            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, set_usage_cap, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor, plugins
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -881,6 +927,17 @@ mod tests {
         assert_eq!(with_budget(v(&["rollback"]), Some(1.0), "5h=80"), v(&["rollback"]));
         assert_eq!(with_budget(v(&["run", "g"]), None, "5h=80,week=90"), v(&["run", "g", "--usage-cap", "5h=80,week=90"]));
         assert_eq!(with_budget(v(&["run", "g", "--usage-cap", "5h=50"]), None, "5h=80"), v(&["run", "g", "--usage-cap", "5h=50"]));
+    }
+
+    #[test]
+    fn plugin_flags() {
+        let extra = |p: PluginOpts| Extra { max_cost: None, models: None, on_limit: None, fast: None, plugins: Some(p) };
+        let tail = |e: Extra| flags("heavy", 1, false, &e)[4..].to_vec();
+        assert!(tail(extra(PluginOpts::default())).is_empty());
+        let p = PluginOpts { off: Some(true), disable: Some(vec!["caveman@caveman".into(), "a b;rm".into(), "@x".into(), "x@".into()]), hooks: Some(false) };
+        assert_eq!(tail(extra(p)), ["--plugins", "off", "--disable-plugins", "caveman@caveman", "--no-hooks"]);
+        assert!(valid_plugin_id("superpowers@claude-plugins-official") && valid_plugin_id("local-plugin"));
+        assert!(!valid_plugin_id("a@b@c") && !valid_plugin_id("") && !valid_plugin_id("-x"));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Power } from "./types";
+import { DEFAULT_PLUGINS, PluginsPanel, type PluginSettings } from "./Plugins";
 
 /** Roles that call a model; mirrors ROLES in orch.ts. */
 export const ROLES = ["architect", "impl", "heavy", "qa", "dev"] as const;
@@ -28,6 +29,7 @@ export type RunSettings = {
   agentModels: string;
   onLimit: "wait" | "stop";
   fast: boolean;
+  plugins: PluginSettings;
 };
 
 export const DEFAULT_SETTINGS: RunSettings = {
@@ -35,6 +37,7 @@ export const DEFAULT_SETTINGS: RunSettings = {
   agentModels: "",
   onLimit: "wait",
   fast: false,
+  plugins: DEFAULT_PLUGINS,
 };
 
 const NAME = /^[\w-]+$/;
@@ -64,7 +67,8 @@ export function useRepoSettings(repo: string | null | undefined) {
   useEffect(() => {
     try {
       const saved = localStorage.getItem(key);
-      setSettings(saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved), models: { ...DEFAULT_SETTINGS.models, ...JSON.parse(saved).models } } : DEFAULT_SETTINGS);
+      const s = saved ? JSON.parse(saved) : {};
+      setSettings({ ...DEFAULT_SETTINGS, ...s, models: { ...DEFAULT_SETTINGS.models, ...s.models }, plugins: { ...DEFAULT_PLUGINS, ...s.plugins } });
     } catch {
       setSettings(DEFAULT_SETTINGS);
     }
@@ -80,7 +84,7 @@ export function useRepoSettings(repo: string | null | undefined) {
   return [settings, update] as const;
 }
 
-export function SettingsPanel({ power, settings, onChange }: { power: Power; settings: RunSettings; onChange: (s: RunSettings) => void }) {
+export function SettingsPanel({ repo, power, settings, onChange }: { repo: string; power: Power; settings: RunSettings; onChange: (s: RunSettings) => void }) {
   const tier = TIER_MODELS[power];
   const custom = ROLES.filter((r) => settings.models[r].trim()).length + (settings.agentModels.trim() ? 1 : 0);
   const { error } = modelSpec(settings);
@@ -129,6 +133,7 @@ export function SettingsPanel({ power, settings, onChange }: { power: Power; set
         </p>
         {error && <p className="error">{error}</p>}
       </details>
+      <PluginsPanel repo={repo} value={settings.plugins} onChange={(plugins) => onChange({ ...settings, plugins })} />
     </>
   );
 }

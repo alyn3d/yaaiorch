@@ -28,6 +28,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   **Limits** has "Pause at 5h %" and "Pause at week %" (CLI: `--usage-cap 5h=80,week=90`, config
   `usageCap`). At a cap, new runs wait and running goals pause before their next agent call until the
   window resets (or stop, with `--on-limit stop`). New `usage` event.
+- **Plugins for agents**: agents load your Claude Code plugins and hooks, which add context to every
+  call. A **Plugins** section per repo lists them with the tokens each adds and has a switch per plugin,
+  one for all and one for hooks. CLI: `orch plugins [--details]`, `--plugins off`,
+  `--disable-plugins ID,ID`, `--no-hooks`, config `plugins`. Claude Code itself is unchanged.
 
 ### Changed
 - Agents run with `--output-format stream-json --verbose` (to read the usage windows); the final result

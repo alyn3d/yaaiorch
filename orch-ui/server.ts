@@ -293,7 +293,15 @@ function stop(s: Session) {
 /** Model spec ("architect=opus,be=sonnet"): only key=value pairs of safe characters reach orch. */
 const MODEL_SPEC = /^[\w-]+=[\w.:[\]-]+(,[\w-]+=[\w.:[\]-]+)*$/;
 
-const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCost?: number; models?: string; onLimit?: string; fast?: boolean }) => [
+const PLUGIN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+type PluginOpts = { off?: boolean; disable?: unknown; hooks?: boolean };
+/** --plugins off, --disable-plugins a,b, --no-hooks; ids that are not plain plugin ids are dropped. */
+const pluginFlags = (p?: PluginOpts) => {
+  if (!p || typeof p !== "object") return [];
+  const ids = Array.isArray(p.disable) ? p.disable.filter((x): x is string => typeof x === "string" && PLUGIN_ID.test(x)) : [];
+  return [...(p.off ? ["--plugins", "off"] : []), ...(ids.length ? ["--disable-plugins", ids.join(",")] : []), ...(p.hooks === false ? ["--no-hooks"] : [])];
+};
+const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCost?: number; models?: string; onLimit?: string; fast?: boolean; plugins?: PluginOpts }) => [
   "--power", b.power ?? "heavy",
   "--max-rounds", String(b.maxRounds ?? 5),
   ...(b.dryRun ? ["--dry-run"] : []),
@@ -301,7 +309,29 @@ const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCos
   ...(typeof b.models === "string" && MODEL_SPEC.test(b.models) ? ["--model", b.models] : []),
   ...(b.onLimit === "wait" || b.onLimit === "stop" ? ["--on-limit", b.onLimit] : []),
   ...(b.fast ? ["--fast"] : []),
+  ...pluginFlags(b.plugins),
 ];
+
+/** `orch plugins --json --details` in a repo (slow: one CLI call per plugin), cached for 10 minutes. */
+const pluginCache = new Map<string, { at: number; list: Promise<unknown> }>();
+const plugins = (s: Session, fresh: boolean) => {
+  const key = keyOf(s.repo);
+  const hit = pluginCache.get(key);
+  if (hit && !fresh && Date.now() - hit.at < 10 * 60_000) return hit.list;
+  const list = new Promise<unknown>((ok, fail) =>
+    execFile(process.execPath, [TSX_CLI, ORCH, "plugins", "--json", "--details"], { cwd: s.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 }, (err, stdout, stderr) => {
+      const line = stdout.split(/\r?\n/).find((l) => l.startsWith("["));
+      try {
+        ok(JSON.parse(line ?? ""));
+      } catch {
+        pluginCache.delete(key);
+        fail(new Error((stderr || err?.message || "could not list plugins").trim().split(/\r?\n/).pop()));
+      }
+    }),
+  );
+  pluginCache.set(key, { at: Date.now(), list });
+  return list;
+};
 
 /** `orch doctor --json` in a repo, without blocking the event loop (SSE keeps flowing). */
 const doctor = (s: Session) =>
@@ -408,6 +438,7 @@ http
       }
       if (url.pathname === "/api/state") return json(200, initPayload());
       if (url.pathname === "/api/doctor") return json(200, await doctor(mustGet(url.searchParams.get("repo"))));
+      if (url.pathname === "/api/plugins") return json(200, await plugins(mustGet(url.searchParams.get("repo")), url.searchParams.has("fresh")));
       if (url.pathname === "/api/agents") {
         const s = mustGet(url.searchParams.get("repo"));
         return json(200, { text: execFileSync(process.execPath, [TSX_CLI, ORCH, "agents"], { cwd: s.repo, encoding: "utf8" }) });

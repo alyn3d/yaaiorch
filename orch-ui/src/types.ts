@@ -17,6 +17,8 @@ export type Global = {
   usageCap: Record<UsageWindow, number | null>;
 };
 export type Power = "max" | "heavy" | "balanced" | "economy";
+/** One of the user's Claude Code plugins (`orch plugins --json --details`). `enabled`: on in Claude Code itself. */
+export type Plugin = { id: string; name: string; scope: string; enabled: boolean; tokens?: number };
 /** One line of `orch doctor --json`. */
 export type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };
 

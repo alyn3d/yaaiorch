@@ -169,6 +169,7 @@ A start that waits is `queued` with a `waitReason`: the usage limit, the budget,
 |---|---|
 | `transport.ts` | The only place that knows how to reach the backend. Browser: `fetch` + `EventSource`. Desktop: Tauri `invoke` + `listen`. Chosen at startup via `__TAURI_INTERNALS__`. Every message carries its `repo`. |
 | `useOrch.ts` | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`, `global` (usage-limit hold, daily budget). `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends. |
+| `Plugins.tsx` | The **Plugins** section of a repo's run settings: the repo's Claude Code plugins (`orch plugins --json --details`, loaded when opened) with a switch each, one for all and one for hooks; remembered per repo with the other settings. |
 | `Limits.tsx` | Header meters (5-hour and weekly usage, today's spend) and the Limits panel: Daily $, pause at 5h % and week %. |
 | `App.tsx` | Header (running count, Parallel limit, Limits), usage-limit, usage-cap and budget banners, tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating. |
 | `Overview.tsx` | The **Overview** tab (shown from two repos on): one row per repo with its phase (planning, building, verifying, checks, waiting), goal, round, tasks done and running agents, cost against its cap, pending queue, and Open / Stop. |
@@ -196,6 +197,7 @@ remembered in `~/.yaaiorch/ui.json` plus `ORCH_REPO` / `ORCH_REPOS` (separated b
 | `GET /api/events` | SSE: `init`, `session`, `log`, `ev`, `global` |
 | `GET /api/state` | The init payload |
 | `GET /api/doctor?repo=`, `/api/agents?repo=` | `orch doctor --json`, roster |
+| `GET /api/plugins?repo=[&fresh]` | `orch plugins --json --details` (cached 10 minutes) |
 | `POST /api/add-repo` `{ path }`, `/api/remove-repo` `{ repo }` | Open or close a repo (closing is refused while it runs) |
 | `POST /api/settings` `{ maxParallel?, dailyBudget?, usageCap?: { fiveHour?, week? } }` | Change the parallel limit, the daily budget and/or the usage caps in percent (`null` or `""` = none) |
 | `POST /api/clear-limit` | Lift the usage-limit hold ("Try now") |
@@ -213,6 +215,7 @@ Tauri v2. Replaces the Node server. Runs the compiled `orch.mjs` with `node` in 
 | `set_daily_budget(dailyBudget)`, `set_usage_cap(fiveHour, week)`, `clear_limit` | Daily budget and usage caps (`null` = none); lift the usage-limit hold and forget usage readings |
 | `run_goal`, `run_loop`, `add_goal`, `stop`, `clear_log`, `agents`, `rollback` | Same actions as the HTTP API, each with `repo` |
 | `doctor(repo)` | `orch doctor --json` (async command, so starting node does not freeze the window) |
+| `plugins(repo)` | `orch plugins --json --details` (async) |
 
 Events to the UI: `orch-init`, `orch-session`, `orch-log`, `orch-ev` (these two as `{ repo, … }`), `orch-global`.
 
@@ -234,7 +237,7 @@ a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 | `<target>/.orchestrator/readonly-settings.json` | orch.ts | Allow-list plus edit-tool deny for the architect and verifiers |
 | `<target>` git branches `orchestrator/discarded-*` | orch.ts | Work thrown away by `orch rollback` |
 | `<target>/.orchestrator/builtin-agents.json` | orch.ts | Built-in agent definitions passed to `claude --agents` |
-| `<target>/.orchestrator/agent-settings.json` | orch.ts | Permission allow-list passed to `claude --settings` |
+| `<target>/.orchestrator/agent-settings.json` | orch.ts | Permission allow-list passed to `claude --settings`, plus `enabledPlugins` (ids set to false) and `disableAllHooks` when plugins or hooks are switched off |
 | `<target>/.orchestrator/config.json` | user | Optional: `{"checks": {"name": "command"}, "allow": ["Bash(...)"]}` |
 | `<target>` git branches `orchestrator/checkpoint-*` | orch.ts | Rollback point of the running or last unfinished goal |
 | `<target>` git branches `orchestrator/failed-*` | orch.ts | Work of goals that failed in `loop` |

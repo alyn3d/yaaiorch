@@ -286,6 +286,42 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     }
   });
 
+  test("plugins: list with token cost; off, disable and no-hooks reach the agents' settings", () => {
+    const dir = repo();
+    const list = orch(dir, ["plugins", "--json", "--details"]);
+    assert.equal(list.code, 0, list.out);
+    const plugins = JSON.parse(list.out.split(/\r?\n/).find((l) => l.startsWith("[")));
+    assert.deepEqual(plugins.map((p) => [p.id, p.enabled, p.tokens]), [
+      ["caveman@caveman", true, 1234], ["superpowers@claude-plugins-official", true, 1234], ["old@market", false, 1234],
+    ]);
+    const settings = (file) => JSON.parse(readFileSync(join(dir, ".orchestrator", file), "utf8"));
+
+    let r = orch(dir, ["run", "x", "--max-rounds", "1", "--dry-run"]);
+    assert.equal(r.code, 0, r.out);
+    assert.equal(settings("agent-settings.json").enabledPlugins, undefined, "default: plugins untouched");
+    assert.equal(settings("agent-settings.json").disableAllHooks, undefined);
+
+    r = orch(dir, ["run", "x", "--dry-run", "--plugins", "off", "--no-hooks"]);
+    assert.equal(r.code, 0, r.out);
+    for (const f of ["agent-settings.json", "readonly-settings.json"]) {
+      assert.deepEqual(settings(f).enabledPlugins, { "caveman@caveman": false, "superpowers@claude-plugins-official": false }, f);
+      assert.equal(settings(f).disableAllHooks, true, f);
+    }
+    assert.ok(settings("readonly-settings.json").permissions.deny.includes("Edit"), "read-only deny kept");
+    assert.deepEqual(r.last("goal_start").plugins, { off: true, disable: [], hooks: false });
+
+    writeConfig(dir, { plugins: { disable: ["caveman@caveman"] } });
+    r = orch(dir, ["run", "x", "--dry-run", "--disable-plugins", "superpowers@claude-plugins-official"]);
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(settings("agent-settings.json").enabledPlugins, { "caveman@caveman": false, "superpowers@claude-plugins-official": false });
+    assert.equal(settings("agent-settings.json").disableAllHooks, undefined);
+
+    for (const bad of [["--plugins", "maybe"], ["--disable-plugins", "a b;rm"]]) {
+      const b = orch(dir, ["run", "x", "--dry-run", ...bad]);
+      assert.notEqual(b.code, 0, bad.join(" "));
+    }
+  });
+
   test("usage limit in run with --on-limit stop: exit 3, no stuck round, reset time reported", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "3", "--on-limit", "stop"], { FAKE_LIMIT_AFTER: "2" });

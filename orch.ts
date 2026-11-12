@@ -14,6 +14,7 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch status           show queue
   orch agents           list agents + skills the architect will see
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
+  orch plugins [--json] [--details]  Claude Code plugins installed for this repo (--details: token cost)
   orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work is kept
                         on an orchestrator/discarded-* branch
   orch prune [--older-than DAYS]  delete orchestrator/* branches older than DAYS (14)
@@ -27,6 +28,9 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   (exit code 3); also "onLimit" in .orchestrator/config.json
          --usage-cap 5h=80,week=90   pause (or, with --on-limit stop, stop) before an agent call once the
                   Claude subscription's 5-hour or weekly usage is at that percentage; also "usageCap" in config
+         --plugins off   agents run without any Claude Code plugins  --disable-plugins ID,ID  without these
+                  (ids from "orch plugins")  --no-hooks  without settings and plugin hooks; also "plugins"
+                  in config: {"off": true, "disable": [...], "hooks": false}. Your Claude Code setup is unchanged.
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
                   are no checks); if that fails, later rounds run the full architect/build/QA loop
 Agents: built-in (architect, fe, be, qa), overridden by ~/.claude/agents and ./.claude/agents.
@@ -224,6 +228,7 @@ type Config = {
   models?: Partial<Record<Role, string>> & { agents?: Record<string, string> };
   onLimit?: "wait" | "stop";
   usageCap?: { "5h"?: number; week?: number };
+  plugins?: { off?: boolean; disable?: string[]; hooks?: boolean };
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -249,11 +254,69 @@ function loadChecks(cfg: Config): Record<string, string> {
  * they may not. Read-only roles also deny the edit tools and run in permission mode "default", where
  * shell commands that write files are refused too (acceptEdits would let `echo > file` through).
  */
-function writeAgentSettings(cfg: Config, checks: Record<string, string>) {
+function writeAgentSettings(cfg: Config, checks: Record<string, string>, plugins: PluginChoice) {
   const cmds = [...Object.values(checks), ...(checks.test ? ["npm test"] : []), "git status", "git diff", "git log", "git show"];
   const allow = [...cmds.flatMap((c) => [`Bash(${c}:*)`, `PowerShell(${c}:*)`]), ...(cfg.allow ?? [])];
-  writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow } }, null, 2));
-  writeFileSync(READONLY_SETTINGS, JSON.stringify({ permissions: { allow, deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] } }, null, 2));
+  const extra = pluginSettings(plugins);
+  writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow }, ...extra }, null, 2));
+  writeFileSync(READONLY_SETTINGS, JSON.stringify({ permissions: { allow, deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] }, ...extra }, null, 2));
+}
+
+// ---------- plugins: which of the user's Claude Code plugins and hooks the agents get ----------
+/** `off`: no plugins at all; `disable`: these plugin ids off; `hooks: false`: no settings or plugin hooks. */
+type PluginChoice = { off: boolean; disable: string[]; hooks: boolean };
+const PLUGIN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+type Plugin = { id: string; name: string; scope: string; enabled: boolean; tokens?: number };
+
+/** `claude plugin list --json`, run in the repo so project-scoped plugins are included. */
+function listPlugins(): Plugin[] {
+  const r = cli(CLAUDE, ["plugin", "list", "--json"]);
+  if (r.status !== 0) throw new Error(`"claude plugin list --json" failed: ${(r.stderr || r.stdout || "").trim().slice(0, 200)}`);
+  const raw = JSON.parse(r.stdout) as { id?: string; scope?: string; enabled?: boolean; projectEnabled?: boolean }[];
+  return raw
+    .filter((p) => typeof p.id === "string" && PLUGIN_ID_RE.test(p.id))
+    .map((p) => ({ id: p.id!, name: p.id!.split("@")[0], scope: p.scope ?? "user", enabled: p.enabled !== false || p.projectEnabled === true }));
+}
+
+/** "Always-on: ~1,266 tok" from `claude plugin details <id>`, run for all plugins at once. */
+async function pluginTokens(plugins: Plugin[]): Promise<void> {
+  await Promise.all(
+    plugins.map(
+      (p) =>
+        new Promise<void>((resolve) => {
+          const c = spawn(shellCmd(CLAUDE), ["plugin", "details", p.id], { shell: process.platform === "win32", windowsHide: true });
+          let out = "";
+          c.stdout?.setEncoding("utf8").on("data", (d: string) => (out += d));
+          const timer = setTimeout(() => killTree(c), 30_000);
+          c.on("close", () => {
+            clearTimeout(timer);
+            const m = /Always-on:\s*~?([\d,]+)\s*tok/i.exec(out);
+            if (m) p.tokens = Number(m[1].replace(/,/g, ""));
+            resolve();
+          });
+          c.on("error", () => (clearTimeout(timer), resolve()));
+        }),
+    ),
+  );
+}
+
+/** Settings for the agents' --settings file: plugins switched off and/or hooks disabled. */
+function pluginSettings(c: PluginChoice): { enabledPlugins?: Record<string, false>; disableAllHooks?: true } {
+  const ids = c.off ? listPlugins().filter((p) => p.enabled).map((p) => p.id) : c.disable;
+  return {
+    ...(ids.length ? { enabledPlugins: Object.fromEntries(ids.map((id) => [id, false as const])) } : {}),
+    ...(c.hooks ? {} : { disableAllHooks: true as const }),
+  };
+}
+
+function parsePlugins(values: Record<string, string | boolean | undefined>, cfg: Config["plugins"]): PluginChoice {
+  const mode = String(values.plugins ?? (cfg?.off ? "off" : "on"));
+  if (mode !== "on" && mode !== "off") throw new Error(`--plugins must be on or off, got "${mode}"`);
+  const fromCli = typeof values["disable-plugins"] === "string" ? values["disable-plugins"].split(",").map((x) => x.trim()).filter(Boolean) : [];
+  const disable = [...new Set([...(cfg?.disable ?? []), ...fromCli])];
+  for (const id of disable)
+    if (typeof id !== "string" || !PLUGIN_ID_RE.test(id)) throw new Error(`--disable-plugins: invalid plugin id "${id}" (see "orch plugins")`);
+  return { off: mode === "off", disable, hooks: !values["no-hooks"] && cfg?.hooks !== false };
 }
 
 function runChecks(checks: Record<string, string>): Check[] {
@@ -795,7 +858,7 @@ const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 /** `onLimit`: on a Claude usage limit, wait for the reset and retry the goal (default), or stop. */
 type Opts = {
   maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean;
-  models: Models; onLimit: "wait" | "stop"; usageCap: UsageCap;
+  models: Models; onLimit: "wait" | "stop"; usageCap: UsageCap; plugins: PluginChoice;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -873,7 +936,7 @@ const writeLastRun = (lr: LastRun) => (mkdirSync(DIR, { recursive: true }), writ
 
 // ---------- one goal: architect -> foundation -> build (parallel) -> verify, repeat ----------
 async function runGoal(goal: string, o: Opts): Promise<boolean> {
-  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit, usageCap: o.usageCap });
+  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit, usageCap: o.usageCap, plugins: o.plugins });
   const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost }, timeoutMs: o.agentTimeoutMs, usageCap: o.usageCap, onLimit: o.onLimit };
   const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
   let cp = "";
@@ -917,7 +980,9 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   writeBuiltins(roster);
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   const checks = loadChecks(cfg);
-  writeAgentSettings(cfg, checks);
+  writeAgentSettings(cfg, checks, o.plugins);
+  if (o.plugins.off || o.plugins.disable.length || !o.plugins.hooks)
+    console.log(`plugins: ${o.plugins.off ? "all off" : o.plugins.disable.length ? `off: ${o.plugins.disable.join(", ")}` : "on"}${o.plugins.hooks ? "" : "; hooks off"}`);
   console.log(`checks: ${Object.entries(checks).map(([n, c]) => `${n} (${c})`).join(", ") || "none configured"}`);
 
   let power = o.power;
@@ -1161,9 +1226,10 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const onLimit = String(values["on-limit"] ?? cfg.onLimit ?? "wait");
   if (onLimit !== "wait" && onLimit !== "stop") throw new Error(`--on-limit must be wait or stop, got "${onLimit}"`);
   const usageCap = parseUsageCap(String(values["usage-cap"] ?? ""), cfg.usageCap);
+  const plugins = parsePlugins(values, cfg.plugins);
   return {
     maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost,
-    fast: !!values.fast, models, onLimit, usageCap,
+    fast: !!values.fast, models, onLimit, usageCap, plugins,
   };
 }
 
@@ -1182,6 +1248,10 @@ async function main() {
       model: { type: "string" },
       "on-limit": { type: "string" },
       "usage-cap": { type: "string" },
+      plugins: { type: "string" },
+      "disable-plugins": { type: "string" },
+      "no-hooks": { type: "boolean", default: false },
+      details: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
     },
@@ -1221,6 +1291,14 @@ async function main() {
     case "agents":
       console.log("agents:\n" + discoverAgents().map((a) => `  ${a.name}${a.builtin ? " (built-in)" : ""}: ${a.description}`).join("\n"));
       return console.log("skills:\n" + discoverSkills().map((s) => `  ${s.name}: ${s.description}`).join("\n"));
+    case "plugins": {
+      const list = listPlugins();
+      if (values.details) await pluginTokens(list);
+      if (values.json) return console.log(JSON.stringify(list));
+      for (const p of list)
+        console.log(`${p.enabled ? "on " : "off"}  ${p.id}  (${p.scope})${p.tokens !== undefined ? `  ~${p.tokens} tok/call` : ""}`);
+      return;
+    }
     case "doctor": {
       const findings = doctor();
       if (values.json) console.log(JSON.stringify(findings));
