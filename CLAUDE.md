@@ -31,7 +31,7 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- `npm test`: 32 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 33 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
@@ -44,7 +44,7 @@ process exits without `goal_end`.
 - Git: a run refuses a dirty tree, creates `orchestrator/checkpoint-*`, and commits each round on the current branch. On pass the checkpoint is deleted, but only if everything got committed (a failed commit keeps it). Parking commits (`moveWorkAside`, side branches only) use `--no-verify` so hooks never block recovery; round commits respect hooks. On failure in `loop`, the work moves to `orchestrator/failed-*` and the branch is reset to the checkpoint. `orch rollback` (and the UI button) resets to the checkpoint and keeps the discarded work on `orchestrator/discarded-*`; `orch prune` deletes old `orchestrator/*` branches.
 - Headless agents get no shell unless allowed: `claude -p` with `acceptEdits` refuses every Bash/PowerShell call. So orch.ts runs the repo's checks itself (`.orchestrator/config.json` `checks`, else package.json `typecheck`/`lint`/`test`/`build`) and a non-zero exit fails the round. Agents get an allow-list for those commands via `--settings`.
 - Read-only roles (architect, verifiers) run with `--permission-mode default` and `readonly-settings.json` (edit tools denied). Deny rules alone are not enough: under `acceptEdits` an agent writes files with a shell redirect instead.
-- Limits: `--agent-timeout` (30 min, kills the process tree), `--max-cost` per goal (passed on as `--max-budget-usd`; CLI reports `error_max_budget_usd`). Stuck rounds (no file changed, or same failures again) move up one power tier; two in a row stop the goal.
+- Limits: `--agent-timeout` (30 min, kills the process tree), `--max-cost` per goal (each call reserves its share of what is left and gets it as `--max-budget-usd`; parallel build tasks split it equally; CLI reports `error_max_budget_usd`). Stuck rounds (no file changed, or same failures again) move up one power tier; two in a row stop the goal.
 - `--fast`: round 1 is a single built-in `dev` agent (strong model, no file list) judged by the checks (QA only without checks); failure falls back to the full loop. Eval it as `--power economy+fast`.
 - `orch doctor --json` is the first-run check both UIs show as a banner.
 - Usage limit ("You've hit your … limit · resets …"): ends the goal as `UsageLimit` (never a task failure or stuck round). `--on-limit wait` (default; config `onLimit`): the work goes to `orchestrator/interrupted-*`, orch waits for the reset and retries (`run` and `loop`). `--on-limit stop`: the goal stays pending and orch exits 3. The eval runner always passes `--on-limit stop` and never records such runs: it stops (or waits with `--wait-on-limit`), and `--resume <stamp>` finishes later.

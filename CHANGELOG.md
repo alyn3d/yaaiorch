@@ -46,6 +46,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   pre-commit hook): the checkpoint and the rollback offer stay, and the run says what is uncommitted.
   `orch rollback` and parking failed work skip commit hooks, since those commits only land on
   `orchestrator/*` side branches, so recovery cannot be blocked.
+- `--max-cost` could be overspent by parallel agents: each build agent got the whole remaining budget.
+  Now every call reserves its share before it starts (parallel build tasks split what is left equally)
+  and releases it when it ends, also on failure or timeout.
+- A repo paused at your usage cap no longer says "waiting for the usage limit" in its tab and the
+  overview: it says "paused at your usage cap".
 
 ## [0.1.0] - 2026-11-12
 

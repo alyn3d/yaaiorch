@@ -192,6 +192,17 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(be.error, /timed out after 3 s/);
   });
 
+  test("parallel build agents share the remaining budget instead of each getting all of it", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--max-cost", "0.30"], { FAKE_QA: "pass", FAKE_SLOW: "1" });
+    assert.equal(r.code, 0, r.out);
+    const calls = r.calls.filter((c) => c.startsWith("call "));
+    const capOf = (c) => [/agent=(\S+)/.exec(c)[1], Number(/ cap=(\S+)$/.exec(c)[1])];
+    // architect 0.30 -> foundation fe gets the 0.25 left -> be and fe build in parallel: 0.20 left, 0.10 each -> qa 0.10.
+    assert.deepEqual(calls.map(capOf), [["architect", 0.3], ["fe", 0.25], ["be", 0.1], ["fe", 0.1], ["qa", 0.1]], calls.join("\n"));
+    assert.equal(r.last("goal_end").cost, 0.25);
+  });
+
   test("budget cap stops the goal", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "3", "--max-cost", "0.12"]);

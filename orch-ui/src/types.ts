@@ -63,8 +63,10 @@ export type RunView = {
   error?: string;
   checkpoint?: string;
   maxCost?: number;
-  /** From a `waiting` event: the usage limit resets around this time (ms). */
+  /** From a `waiting` event: the usage limit (or the usage window over a cap) resets around this time (ms). */
   waitingUntil?: number;
+  /** `usage_limit` (the subscription's limit was hit) or `usage_cap` (paused at the user's own cap). */
+  waitingReason?: string;
   /** Sum of the costs reported so far; `goal_end` replaces it with the exact total. */
   cost: number;
   startedAt: number;

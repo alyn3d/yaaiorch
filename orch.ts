@@ -338,8 +338,33 @@ const checkReport = (cs: Check[]) =>
 
 // ---------- claude runner (prompt via stdin: no quoting problems on Windows) ----------
 type CliResult = { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number };
-/** Money spent on one goal; `cap` is the --max-cost limit. */
-type Budget = { spent: number; cap?: number };
+/**
+ * Money spent on one goal; `cap` is the --max-cost limit. Each agent call reserves its share of what is
+ * left before it starts (`reserved`), so parallel calls cannot overspend together; `launching` counts the
+ * calls of a parallel batch that have not started yet, so they get equal shares.
+ */
+type Budget = { spent: number; cap?: number; reserved: number; launching: number };
+
+/**
+ * Reserve this call's spending ceiling: an equal share of the unreserved budget among the calls still to
+ * start in its batch. With too little unreserved but other calls running, wait for them to release theirs.
+ * Returns undefined without a cap.
+ */
+async function reserve(budget: Budget): Promise<number | undefined> {
+  if (budget.cap === undefined) return undefined;
+  const share = Math.max(1, budget.launching);
+  if (budget.launching > 0) budget.launching--;
+  for (;;) {
+    const free = budget.cap - budget.spent - budget.reserved;
+    const mine = free / share;
+    if (mine >= 0.01) {
+      budget.reserved += mine;
+      return mine;
+    }
+    if (budget.reserved <= 0) throw new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`);
+    await sleep(200);
+  }
+}
 /** Percent caps on the subscription's usage windows (1-100); unset = no cap. */
 type UsageCap = { fiveHour?: number; week?: number };
 type RunCtx = { budget: Budget; timeoutMs: number; usageCap: UsageCap; onLimit: "wait" | "stop" };
@@ -512,10 +537,19 @@ function parseCliOutput(out: string): CliResult | undefined {
   return r;
 }
 
-function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
+async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
   const { budget } = ctx;
   if (budget.cap !== undefined && budget.spent >= budget.cap)
-    return Promise.reject(new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`));
+    throw new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`);
+  const ceiling = await reserve(budget);
+  let released = false;
+  /** Give the reservation back and count what the call cost (once, however the call ends). */
+  const settle = (cost: number) => {
+    if (released) return;
+    released = true;
+    if (ceiling !== undefined) budget.reserved = Math.max(0, budget.reserved - ceiling);
+    budget.spent += cost;
+  };
   return new Promise((resolve, reject) => {
     const args = [
       "-p",
@@ -526,10 +560,16 @@ function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readO
       // stream-json (needs --verbose) also carries rate_limit_event lines with the subscription's usage.
       "--output-format", "stream-json", "--verbose",
       "--permission-mode", readOnly ? "default" : "acceptEdits",
-      // Checked by the CLI after each turn, so a call can overshoot a little; parallel calls each get the full remainder.
-      ...(budget.cap !== undefined ? ["--max-budget-usd", Math.max(0.01, budget.cap - budget.spent).toFixed(2)] : []),
+      // This call's reserved share. The CLI checks it after each turn, so a call can overshoot it a little.
+      ...(ceiling !== undefined ? ["--max-budget-usd", (Math.floor(ceiling * 100 + 1e-6) / 100).toFixed(2)] : []),
     ];
-    const p = spawn(shellCmd(CLAUDE), args, { stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32", windowsHide: true });
+    let p: ChildProcess & { stdout: NonNullable<ChildProcess["stdout"]>; stdin: NonNullable<ChildProcess["stdin"]> };
+    try {
+      p = spawn(shellCmd(CLAUDE), args, { stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32", windowsHide: true });
+    } catch (e) {
+      settle(0);
+      return reject(e);
+    }
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -538,13 +578,13 @@ function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readO
     p.stdout.setEncoding("utf8"); // decode across chunk boundaries
     let out = "";
     p.stdout.on("data", (d: string) => (out += d));
-    p.on("error", (e) => (clearTimeout(timer), reject(e)));
+    p.on("error", (e) => (clearTimeout(timer), settle(0), reject(e)));
     p.on("close", (code) => {
       clearTimeout(timer);
       const r = parseCliOutput(out);
       // Count the cost even when the call failed: the money is spent either way.
       const cost = typeof r?.total_cost_usd === "number" ? r.total_cost_usd : 0;
-      budget.spent += cost;
+      settle(cost);
       if (timedOut) {
         const limit = ctx.timeoutMs >= 60_000 ? `${Math.round(ctx.timeoutMs / 60_000)} min` : `${Math.round(ctx.timeoutMs / 1000)} s`;
         return reject(new Error(`${agent.name} timed out after ${limit}`));
@@ -937,7 +977,7 @@ const writeLastRun = (lr: LastRun) => (mkdirSync(DIR, { recursive: true }), writ
 // ---------- one goal: architect -> foundation -> build (parallel) -> verify, repeat ----------
 async function runGoal(goal: string, o: Opts): Promise<boolean> {
   emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit, usageCap: o.usageCap, plugins: o.plugins });
-  const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost }, timeoutMs: o.agentTimeoutMs, usageCap: o.usageCap, onLimit: o.onLimit };
+  const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 }, timeoutMs: o.agentTimeoutMs, usageCap: o.usageCap, onLimit: o.onLimit };
   const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
   let cp = "";
   let passed = false;
@@ -1039,7 +1079,15 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     }
     const foundationFailed = results.some((r) => r.error);
     if (foundationFailed) build.forEach(skip);
-    else results.push(...(await Promise.all(build.map(exec))));
+    else {
+      // The batch shares the unreserved budget equally (see reserve()).
+      ctx.budget.launching = build.length;
+      try {
+        results.push(...(await Promise.all(build.map(exec))));
+      } finally {
+        ctx.budget.launching = 0;
+      }
+    }
     for (const r of results) console.log(`[${r.agent}] touched ${r.touched.length} file(s)`);
     const errors = results.filter((r) => r.error).map((r) => `${r.agent} task failed: ${r.error}`);
 
