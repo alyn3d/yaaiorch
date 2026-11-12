@@ -12,6 +12,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, createReadStream, s
 import { homedir } from "node:os";
 import { resolve, join, extname, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ORCH = resolve(process.env.ORCH_PATH ?? join(here, "..", "orch.ts"));
@@ -20,6 +21,40 @@ const TSX_CLI = createRequire(import.meta.url).resolve("tsx/cli");
 const DIST = join(here, "dist");
 /** Remembered open repos and the parallel limit. */
 const SETTINGS_FILE = join(homedir(), ".yaaiorch", "ui.json");
+
+// ---------- request guard: only the UI served by this process may drive it ----------
+// The server listens on 127.0.0.1, but any web page in the user's browser can still send requests to it.
+// Three checks stop that: the Host header must name this machine (defeats DNS rebinding), a browser's
+// Origin header must be a local page, and every /api call must carry this process's random token, which
+// only a same-origin page can read (from /api/token).
+const TOKEN = randomBytes(32).toString("hex");
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const localHost = (host: string | undefined) => {
+  try {
+    return !!host && LOCAL_HOSTS.has(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
+};
+const localOrigin = (origin: string | undefined) => {
+  if (!origin) return true; // not sent by every request (same-origin GETs, curl); the token still applies
+  try {
+    const u = new URL(origin);
+    return (u.protocol === "http:" || u.protocol === "https:") && LOCAL_HOSTS.has(u.hostname);
+  } catch {
+    return false;
+  }
+};
+const tokenOk = (given: unknown) =>
+  typeof given === "string" && given.length === TOKEN.length && timingSafeEqual(Buffer.from(given), Buffer.from(TOKEN));
+/** Why this request is refused, or null. */
+function refuse(req: http.IncomingMessage, url: URL): string | null {
+  if (!localHost(req.headers.host)) return "forbidden host";
+  if (!localOrigin(req.headers.origin)) return "forbidden origin";
+  if (!url.pathname.startsWith("/api/")) return null;
+  if (url.pathname === "/api/token") return req.headers["sec-fetch-site"] === "cross-site" ? "forbidden" : null;
+  return tokenOk(req.headers["x-orch-token"] ?? url.searchParams.get("token")) ? null : "missing or wrong session token; reload the page";
+}
 const MARK = "@@ORCH@@ ";
 const MAX_LOG = 5000;
 
@@ -429,7 +464,13 @@ http
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(data));
     };
+    const refused = refuse(req, url);
+    if (refused) return json(403, { error: refused });
     try {
+      if (url.pathname === "/api/token") {
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        return res.end(JSON.stringify({ token: TOKEN }));
+      }
       if (url.pathname === "/api/events") {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         res.write(`event: init\ndata: ${JSON.stringify(initPayload())}\n\n`);

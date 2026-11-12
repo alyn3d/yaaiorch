@@ -195,9 +195,19 @@ Node `http` server on `127.0.0.1:4317`. Spawns `orch.ts` through tsx in each rep
 remembered in `~/.yaaiorch/ui.json` plus `ORCH_REPO` / `ORCH_REPOS` (separated by the OS path delimiter);
 `MAX_PARALLEL` sets the limit.
 
+**Request guard** (`refuse()`): any web page in the user's browser can send requests to `127.0.0.1`, so
+every request must have a local `Host` header (`localhost`, `127.0.0.1` or `[::1]`, any port; this
+defeats DNS rebinding), a browser's `Origin` header, when sent, must be a local page, and every `/api/*`
+call must carry the process's random 32-byte session token in `x-orch-token` (or `?token=` for the
+event stream, since `EventSource` cannot set headers). The UI reads the token from `GET /api/token`,
+which another site cannot read (no CORS, and `Origin` / `Sec-Fetch-Site: cross-site` are refused).
+The token changes when the server restarts; `transport.ts` then fetches it again, retries once, and
+reconnects the event stream. Vite's dev proxy (`localhost:5173`) passes the checks.
+
 | Route | Purpose |
 |---|---|
-| `GET /api/events` | SSE: `init`, `session`, `log`, `ev`, `global` |
+| `GET /api/token` | The session token (see the request guard) |
+| `GET /api/events?token=` | SSE: `init`, `session`, `log`, `ev`, `global` |
 | `GET /api/state` | The init payload |
 | `GET /api/doctor?repo=`, `/api/agents?repo=` | `orch doctor --json`, roster |
 | `GET /api/plugins?repo=[&fresh]` | `orch plugins --json --details` (cached 10 minutes) |

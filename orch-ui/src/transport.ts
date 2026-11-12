@@ -37,30 +37,78 @@ export interface Transport {
 }
 
 // ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
+// Every /api call carries the server's session token (see refuse() in server.ts); a restarted server has a
+// new one, so a 403 fetches it again and retries once.
+let tokenP: Promise<string> | null = null;
+function sessionToken(): Promise<string> {
+  tokenP ??= fetch("/api/token", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`could not get the session token (${r.status})`))))
+    .then((d: { token: string }) => d.token)
+    .catch((e) => {
+      tokenP = null;
+      throw e;
+    });
+  return tokenP;
+}
+async function api(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
+  const r = await fetch(path, { ...init, headers: { ...(init.headers as Record<string, string>), "x-orch-token": await sessionToken() } });
+  if (r.status === 403 && retry) {
+    tokenP = null;
+    return api(path, init, false);
+  }
+  return r;
+}
 async function post(path: string, body: Record<string, unknown>) {
-  const r = await fetch(`/api/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const r = await api(`/api/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
 }
 
 const web: Transport = {
   canPickRepo: false,
   subscribe(h) {
-    const es = new EventSource("/api/events");
+    // EventSource cannot send headers, so the token goes in the URL. A refused or dropped stream closes;
+    // reconnect with a fresh token (the server may have restarted with a new one).
+    let es: EventSource | null = null;
+    let stopped = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const data = (e: Event) => JSON.parse((e as MessageEvent).data);
-    es.onopen = () => h.onConnection(true);
-    es.onerror = () => h.onConnection(false);
-    es.addEventListener("init", (e) => h.onInit(data(e)));
-    es.addEventListener("session", (e) => h.onSession(data(e)));
-    es.addEventListener("log", (e) => {
-      const d = data(e);
-      h.onLog(d.repo, d.line);
-    });
-    es.addEventListener("ev", (e) => {
-      const d = data(e);
-      h.onEvent(d.repo, d.ev);
-    });
-    es.addEventListener("global", (e) => h.onGlobal(data(e)));
-    return () => es.close();
+    const connect = async () => {
+      let token: string;
+      try {
+        token = await sessionToken();
+      } catch {
+        h.onConnection(false);
+        retry = setTimeout(connect, 2000);
+        return;
+      }
+      if (stopped) return;
+      es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
+      es.onopen = () => h.onConnection(true);
+      es.onerror = () => {
+        h.onConnection(false);
+        if (es?.readyState === EventSource.CLOSED && !stopped) {
+          tokenP = null;
+          retry = setTimeout(connect, 2000);
+        }
+      };
+      es.addEventListener("init", (e) => h.onInit(data(e)));
+      es.addEventListener("session", (e) => h.onSession(data(e)));
+      es.addEventListener("log", (e) => {
+        const d = data(e);
+        h.onLog(d.repo, d.line);
+      });
+      es.addEventListener("ev", (e) => {
+        const d = data(e);
+        h.onEvent(d.repo, d.ev);
+      });
+      es.addEventListener("global", (e) => h.onGlobal(data(e)));
+    };
+    connect();
+    return () => {
+      stopped = true;
+      clearTimeout(retry);
+      es?.close();
+    };
   },
   call: (path, body = {}) => post(path, body),
   async addRepo(path) {
@@ -73,11 +121,11 @@ const web: Transport = {
   setUsageCap: (cap) => post("settings", { usageCap: cap }),
   clearLimit: () => post("clear-limit", {}),
   async doctor(repo) {
-    const r = await fetch(`/api/doctor?repo=${encodeURIComponent(repo)}`);
+    const r = await api(`/api/doctor?repo=${encodeURIComponent(repo)}`);
     return r.ok ? r.json() : [{ name: "server", level: "fail", detail: r.statusText }];
   },
   async plugins(repo, fresh) {
-    const r = await fetch(`/api/plugins?repo=${encodeURIComponent(repo)}${fresh ? "&fresh=1" : ""}`);
+    const r = await api(`/api/plugins?repo=${encodeURIComponent(repo)}${fresh ? "&fresh=1" : ""}`);
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
     return r.json();
   },

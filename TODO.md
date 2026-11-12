@@ -51,9 +51,8 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   **good first issue**
 
 ### Correctness and safety
-- [ ] **Local CSRF in browser mode.** `server.ts` accepts any request on localhost and parses JSON
-  without checking `Origin` or `Content-Type`, so a web page could POST `/api/run`. Add an
-  Origin/Host check and a per-session token. **good first issue**
+- [x] **Local CSRF in browser mode.** `server.ts` now refuses a foreign `Host` or `Origin` and requires a
+  per-process session token on every `/api` call (`test/server.test.mjs`).
 - [ ] **Queue write races.** The UI's `add` and the loop both read-modify-write `queue.json`. Use a
   lock file, or route every write through one process, and write through a temp file + rename.
 - [ ] **Retry transient failures** once (network errors, API overload), separately from the usage limit.

@@ -31,11 +31,12 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- `npm test`: 38 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 38 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, plus the browser server's request guard (`test/server.test.mjs`); no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
 - Windows is the primary target. `orch.ts` spawns `claude` through a shell on win32; children use `windowsHide`.
+- Browser-mode server guard: `refuse()` in `server.ts` checks a local `Host` and `Origin` and a per-process token (`x-orch-token`, or `?token=` for SSE) on every `/api` call; the UI gets it from `/api/token` (`transport.ts`). Any new route is covered automatically; never add an `/api` route before the guard.
 - Multi-repo UI: both backends keep one session per repo (process, log, events), tag every message with its `repo`, and run at most `maxParallel` repos at once (start queue). One run per repo. Keep `server.ts`, `main.rs` and `transport.ts` in sync. Stop kills that repo's process tree (taskkill on Windows).
 - Plugins: headless agents load the user's Claude Code plugins and hooks. `--plugins off` / `--disable-plugins` / `--no-hooks` (config `plugins`) write `enabledPlugins: {id: false}` and `disableAllHooks` into the agents' `--settings` files (not `--bare`, which drops the OAuth login). `orch plugins --json --details` lists them via `claude plugin list --json` and `claude plugin details`.
 - Usage caps: agents run with `stream-json`; orch reads the CLI's `rate_limit_event` (5-hour and weekly `utilization`, undocumented) into `usage` events and, with `--usage-cap 5h=N,week=M` (config `usageCap`), pauses before an agent call (or stops, with `--on-limit stop`) while a reading is over a cap. The backends pass their global caps to every run and hold new starts too.
@@ -63,4 +64,4 @@ process exits without `goal_end`.
 - GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
-0.2.0 shipped several repos at once and cost control. Next milestone is 0.3 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then hardening (browser CSRF, queue lock, retries, loop budget, graceful stop).
+0.2.0 shipped several repos at once and cost control. Next milestone is 0.3 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then hardening (queue lock, retries, loop budget, graceful stop).

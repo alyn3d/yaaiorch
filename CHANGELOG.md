@@ -5,6 +5,12 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Security
+- The browser-mode server could be driven by any web page you visited (it accepted every request on
+  `localhost:4317`), for example to start runs on your Claude account. It now refuses requests whose
+  `Host` or `Origin` is not local (this also stops DNS rebinding) and requires a per-process session
+  token on every `/api` call; the UI fetches it automatically. The desktop app was not affected.
+
 ### Changed
 - **License: GPL-3.0-only** (was MIT). Versions up to and including 0.2.0 remain available under MIT.
 

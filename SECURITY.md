@@ -14,7 +14,8 @@ first answer within a week. Please give a reasonable time to fix it before discl
 - An agent escaping its permissions: a read-only role (architect, QA) editing files, an implementer
   running commands outside the allow-list, or anything reaching outside the target repo.
 - The browser-mode server (`orch-ui/server.ts`) being driven by a web page or another user
-  (it listens on `127.0.0.1` only; a local CSRF hardening item is open in [TODO.md](TODO.md)).
+  (it listens on `127.0.0.1` only, refuses requests whose `Host` or `Origin` is not local, and requires a
+  per-process session token on every `/api` call; see `refuse()` in `server.ts`).
 - Git handling that loses user work (rollback, park, prune) or commits files it should not.
 - Command injection through goals, file names, config or agent output.
 
