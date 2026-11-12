@@ -4,8 +4,10 @@ export type Round = { round: number; plan: string; touched: string[]; passed: bo
 /** .orchestrator/last-run.json, written by orch.ts. `checkpoint` is set only while that branch still exists. */
 export type LastRun = { goal: string; status?: "running" | "passed" | "failed"; checkpoint?: string; cost?: number; state: Round[] } | null;
 export type Running = { pid: number; label: string; startedAt: number } | null;
-/** One repo's state. `queued`: a start is waiting for a free slot under the parallel limit. */
-export type State = { repo: string; running: Running; queued?: boolean; queue: Item[]; lastRun: LastRun };
+/** One repo's state. `queued`: a start is waiting (for a free slot, the usage limit or the daily budget); `waitReason` says which. */
+export type State = { repo: string; running: Running; queued?: boolean; waitReason?: string; queue: Item[]; lastRun: LastRun };
+/** Shared by all repos: the usage-limit hold and the daily budget. */
+export type Global = { usageLimit: { repo: string; until: number } | null; budget: { limit: number | null; spent: number; day: string } };
 export type Power = "max" | "heavy" | "balanced" | "economy";
 /** One line of `orch doctor --json`. */
 export type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };

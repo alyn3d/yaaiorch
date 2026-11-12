@@ -1,16 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Finding, OrchEvent, State } from "./types";
+import type { Finding, Global, OrchEvent, State } from "./types";
 
 /** One repo's state, log and structured events since its last goal_start. */
 export type SessionInit = { state: State; log: string[]; events: OrchEvent[] };
-export type Init = { sessions: SessionInit[]; maxParallel: number };
+export type Init = { sessions: SessionInit[]; maxParallel: number; global: Global };
 export type Handlers = {
   onInit(d: Init): void;
   onSession(s: State): void;
   onLog(repo: string, line: string): void;
   onEvent(repo: string, e: OrchEvent): void;
+  onGlobal(g: Global): void;
   onConnection(ok: boolean): void;
 };
 export interface Transport {
@@ -23,6 +24,10 @@ export interface Transport {
   addRepo(path?: string): Promise<void>;
   removeRepo(repo: string): Promise<void>;
   setMaxParallel(n: number): Promise<void>;
+  /** Daily budget across all repos in USD; null removes it. */
+  setDailyBudget(usd: number | null): Promise<void>;
+  /** Lift the usage-limit hold now ("Try now"). */
+  clearLimit(): Promise<void>;
   /** First-run checks (`orch doctor`) for one repo. */
   doctor(repo: string): Promise<Finding[]>;
 }
@@ -50,6 +55,7 @@ const web: Transport = {
       const d = data(e);
       h.onEvent(d.repo, d.ev);
     });
+    es.addEventListener("global", (e) => h.onGlobal(data(e)));
     return () => es.close();
   },
   call: (path, body = {}) => post(path, body),
@@ -59,6 +65,8 @@ const web: Transport = {
   },
   removeRepo: (repo) => post("remove-repo", { repo }),
   setMaxParallel: (n) => post("settings", { maxParallel: n }),
+  setDailyBudget: (usd) => post("settings", { dailyBudget: usd }),
+  clearLimit: () => post("clear-limit", {}),
   async doctor(repo) {
     const r = await fetch(`/api/doctor?repo=${encodeURIComponent(repo)}`);
     return r.ok ? r.json() : [{ name: "server", level: "fail", detail: r.statusText }];
@@ -94,6 +102,7 @@ const tauri: Transport = {
         listen<State>("orch-session", (e) => h.onSession(e.payload)),
         listen<{ repo: string; line: string }>("orch-log", (e) => h.onLog(e.payload.repo, e.payload.line)),
         listen<{ repo: string; ev: OrchEvent }>("orch-ev", (e) => h.onEvent(e.payload.repo, e.payload.ev)),
+        listen<Global>("orch-global", (e) => h.onGlobal(e.payload)),
       ]);
       if (cancelled) return subs.forEach((u) => u());
       unlisten.push(...subs);
@@ -116,6 +125,8 @@ const tauri: Transport = {
   },
   removeRepo: (repo) => tauriInvoke("remove_repo", { repo }),
   setMaxParallel: (n) => tauriInvoke("set_max_parallel", { maxParallel: n }),
+  setDailyBudget: (usd) => tauriInvoke("set_daily_budget", { dailyBudget: usd }),
+  clearLimit: () => tauriInvoke("clear_limit"),
   doctor: (repo) => tauriInvoke<Finding[]>("doctor", { repo }),
 };
 

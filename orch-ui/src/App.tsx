@@ -12,15 +12,48 @@ function tabStatus(s: Session): { tone: string; label: string } {
   if (s.state.running && s.run?.waitingUntil && s.run.waitingUntil > now) return { tone: "warn", label: "waiting for the usage limit" };
   if (s.state.running && s.state.queue.some((i) => i.note?.startsWith("usage limit"))) return { tone: "warn", label: "waiting for the usage limit" };
   if (s.state.running) return { tone: "running", label: s.state.running.label };
-  if (s.state.queued) return { tone: "warn", label: "waiting for a free slot" };
+  if (s.state.queued) return { tone: "warn", label: `waiting: ${s.state.waitReason ?? "free slot"}` };
   const last = s.run?.status ?? s.state.lastRun?.status;
   if (last === "failed") return { tone: "failed", label: "last goal failed" };
   if (last === "passed") return { tone: "done", label: "last goal passed" };
   return { tone: "", label: "idle" };
 }
 
+const usd = (n: number) => `$${n.toFixed(2)}`;
+const clock = (ms: number) => new Date(ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+/** The daily budget field: edited as text, saved on Enter or when it loses focus. Empty = no budget. */
+function BudgetField({ limit, spent, onSave }: { limit: number | null; spent: number; onSave: (v: number | null) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const save = () => {
+    if (draft === null) return;
+    const v = draft.trim() === "" ? null : Number(draft);
+    setDraft(null);
+    if (v === null || (Number.isFinite(v) && v > 0)) onSave(v);
+  };
+  return (
+    <label title="Spending cap for all repos together, per day (local time). Each run's max cost is capped to what is left; when it is used up, new starts wait for tomorrow and a queue stops before its next goal. Empty = no cap.">
+      Daily $
+      <input
+        className="budget" inputMode="decimal" placeholder="none"
+        value={draft ?? (limit === null ? "" : String(limit))}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => e.key === "Enter" && save()}
+      />
+      <span className={`cost ${limit !== null && spent >= limit ? "over" : ""}`}>{usd(spent)} today</span>
+    </label>
+  );
+}
+
 export function App() {
-  const { sessions, order, maxParallel, setMaxParallel, connected, canPickRepo } = useOrch();
+  const { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
+  // Re-render every 30 s so the usage-limit banner disappears when its reset time passes.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
   const [active, setActive] = useState<string>(() => {
     try {
       return localStorage.getItem(ACTIVE_KEY) ?? "";
@@ -83,6 +116,7 @@ export function App() {
             }}
           />
         </label>
+        <BudgetField limit={global.budget.limit} spent={global.budget.spent} onSave={(v) => guard(() => transport.setDailyBudget(v))} />
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "disconnected"} />
       </header>
 
@@ -119,6 +153,29 @@ export function App() {
         )}
       </nav>
       {error && <p className="error">{error}</p>}
+
+      {global.usageLimit && global.usageLimit.until > now && (
+        <section className="card notice banner" role="status">
+          <div className="row">
+            <strong>Claude usage limit reached</strong>
+            <span className="muted">
+              in {baseName(global.usageLimit.repo)}. New runs in all repos wait until {clock(global.usageLimit.until)}; running ones wait on their own.
+            </span>
+            <span className="spacer" />
+            <button onClick={() => guard(() => transport.clearLimit())} title="Start waiting runs now; if the limit is still on, they hit it again and wait.">Try now</button>
+          </div>
+        </section>
+      )}
+      {global.budget.limit !== null && global.budget.spent >= global.budget.limit && (
+        <section className="card notice banner" role="status">
+          <div className="row">
+            <strong>Daily budget used up</strong>
+            <span className="muted">
+              {usd(global.budget.spent)} of {usd(global.budget.limit)} spent today. New runs wait until tomorrow; raise or clear <em>Daily $</em> to continue now.
+            </span>
+          </div>
+        </section>
+      )}
 
       {order.length === 0 && (
         <section className="card">

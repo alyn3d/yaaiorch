@@ -41,6 +41,30 @@ const startQueue: string[] = []; // repo keys waiting for a slot, oldest first
 let maxParallel = Math.max(1, Number(process.env.MAX_PARALLEL) || 2);
 const clients = new Set<http.ServerResponse>();
 
+// ---------- global state shared by all repos: the Claude usage limit and a daily budget ----------
+/** Set when any repo hits the usage limit; new starts in every repo wait until `until`. */
+let usageLimit: { repo: string; until: number } | null = null;
+/** Daily budget in USD across all repos (null: none), and what agent calls cost today. */
+let dailyBudget: number | null = null;
+let spent = { day: today(), usd: 0 };
+
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const globalState = () => ({
+  usageLimit,
+  budget: { limit: dailyBudget, spent: Math.round(spent.usd * 10_000) / 10_000, day: spent.day },
+});
+/** Why new runs may not start right now, or null. */
+function gate(): string | null {
+  if (usageLimit && usageLimit.until > Date.now()) return `usage limit (resets ${new Date(usageLimit.until).toLocaleTimeString()})`;
+  if (dailyBudget !== null && spent.usd >= dailyBudget) return `daily budget of $${dailyBudget} used up`;
+  return null;
+}
+/** Remaining budget to pass on as --max-cost, or undefined when there is no budget. */
+const budgetLeft = () => (dailyBudget === null ? undefined : Math.max(0.01, dailyBudget - spent.usd));
+
 const readJson = <T>(p: string, fallback: T): T => {
   try {
     return existsSync(p) ? (JSON.parse(readFileSync(p, "utf8")) as T) : fallback;
@@ -54,7 +78,10 @@ const keyOf = (repo: string) => (process.platform === "win32" ? resolve(repo).to
 function saveSettings() {
   try {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
-    writeFileSync(SETTINGS_FILE, JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo), maxParallel }, null, 2));
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo), maxParallel, dailyBudget, spent }, null, 2),
+    );
   } catch {
     /* not fatal: the list just is not remembered */
   }
@@ -70,6 +97,8 @@ function snapshot(s: Session) {
     repo: s.repo,
     running: s.running,
     queued: !!s.pending,
+    /** Why a queued start waits: a free slot, the usage limit or the budget. */
+    waitReason: s.pending ? gate() ?? "free slot" : undefined,
     queue: readJson<Item[]>(join(dir, "queue.json"), []),
     lastRun: readJson<unknown>(join(dir, "last-run.json"), null),
   };
@@ -77,9 +106,37 @@ function snapshot(s: Session) {
 const initPayload = () => ({
   sessions: [...sessions.values()].map((s) => ({ state: snapshot(s), log: s.log, events: s.events })),
   maxParallel,
+  global: globalState(),
 });
 const sendSession = (s: Session) => send("session", snapshot(s));
 const sendInit = () => send("init", initPayload());
+const sendGlobal = () => {
+  send("global", globalState());
+  for (const s of sessions.values()) if (s.pending) sendSession(s); // their wait reason may have changed
+};
+
+/** Every agent call reports its cost once: the plan (architect, with retries) and each task_end. */
+function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number; until?: number }) {
+  if ((ev.type === "plan" || ev.type === "task_end") && typeof ev.cost === "number" && ev.cost > 0) {
+    if (spent.day !== today()) spent = { day: today(), usd: 0 };
+    spent.usd += ev.cost;
+    saveSettings();
+    sendGlobal();
+  }
+  if (ev.type === "queue_item" && dailyBudget !== null && spent.usd >= dailyBudget && s.child?.pid) {
+    // A queue loop is about to start its next goal with the day's budget used up: stop it now,
+    // before the goal's first agent call. The goal stays pending for later.
+    pushLine(s, `-- daily budget of $${dailyBudget} used up: stopping the queue before its next goal --`);
+    killTree(s.child.pid);
+  }
+  if (ev.type === "usage_limit" || (ev.type === "waiting" && ev.until)) {
+    // The limit is per account: hold new starts in every repo until it resets.
+    const until = (ev.type === "waiting" ? ev.until : ev.resetAt) ?? Date.now() + 30 * 60_000;
+    if (!usageLimit || until > usageLimit.until) usageLimit = { repo: s.repo, until };
+    pushLine(s, `-- usage limit: new runs in all repos wait until ${new Date(usageLimit.until).toLocaleString()} --`);
+    sendGlobal();
+  }
+}
 
 function pushLine(s: Session, line: string) {
   if (line.startsWith(MARK)) {
@@ -88,6 +145,7 @@ function pushLine(s: Session, line: string) {
       if (ev.type === "goal_start") s.events = [];
       s.events.push(ev);
       send("ev", { repo: s.repo, ev });
+      onEvent(s, ev);
       return;
     } catch {
       /* fall through to plain log */
@@ -118,18 +176,19 @@ function mustGet(repo: unknown): Session {
 
 const runningCount = () => [...sessions.values()].filter((s) => s.child).length;
 
-/** Start now if a slot is free, else queue the start. One run per repo. */
+/** Start now if a slot is free and nothing holds new runs, else queue the start. One run per repo. */
 function requestStart(s: Session, args: string[], label: string) {
   if (s.child || s.pending) throw new Error("this repo already has a run (or one waiting to start)");
-  if (runningCount() < maxParallel) return startNow(s, args, label);
+  const held = gate();
+  if (!held && runningCount() < maxParallel) return startNow(s, args, label);
   s.pending = { args, label };
   startQueue.push(keyOf(s.repo));
-  pushLine(s, `-- waiting for a free slot (${maxParallel} repo(s) may run at once) --`);
+  pushLine(s, `-- waiting: ${held ?? `free slot (${maxParallel} repo(s) may run at once)`} --`);
   sendSession(s);
 }
 
 function startNext() {
-  while (startQueue.length && runningCount() < maxParallel) {
+  while (startQueue.length && runningCount() < maxParallel && !gate()) {
     const s = sessions.get(startQueue.shift()!);
     if (!s?.pending) continue;
     const { args, label } = s.pending;
@@ -138,7 +197,18 @@ function startNext() {
   }
 }
 
-function startNow(s: Session, args: string[], label: string) {
+/** With a daily budget, a run may spend at most what is left today (and its own --max-cost, if lower). */
+function withBudget(args: string[]): string[] {
+  const left = budgetLeft();
+  if (left === undefined || args[0] === "rollback") return args;
+  const i = args.indexOf("--max-cost");
+  const own = i >= 0 ? Number(args[i + 1]) : Infinity;
+  const rest = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
+  return [...rest, "--max-cost", Math.min(own, left).toFixed(2)];
+}
+
+function startNow(s: Session, rawArgs: string[], label: string) {
+  const args = withBudget(rawArgs);
   const p = spawn(process.execPath, [TSX_CLI, ORCH, ...args], {
     cwd: s.repo,
     stdio: ["ignore", "pipe", "pipe"],
@@ -240,8 +310,31 @@ const MIME: Record<string, string> = {
 };
 
 // Open the remembered repos, then the ones from the environment.
-const stored = readJson<{ repos?: string[]; maxParallel?: number }>(SETTINGS_FILE, {});
+const stored = readJson<{ repos?: string[]; maxParallel?: number; dailyBudget?: number | null; spent?: { day: string; usd: number } }>(
+  SETTINGS_FILE,
+  {},
+);
 if (!process.env.MAX_PARALLEL && stored.maxParallel) maxParallel = Math.max(1, stored.maxParallel);
+if (typeof stored.dailyBudget === "number" && stored.dailyBudget > 0) dailyBudget = stored.dailyBudget;
+if (stored.spent?.day === today() && typeof stored.spent.usd === "number") spent = stored.spent;
+
+// Lift holds when they expire: the usage-limit reset time, and a new day for the budget.
+setInterval(() => {
+  let changed = false;
+  if (usageLimit && usageLimit.until <= Date.now()) {
+    usageLimit = null;
+    changed = true;
+  }
+  if (spent.day !== today()) {
+    spent = { day: today(), usd: 0 };
+    saveSettings();
+    changed = true;
+  }
+  if (changed) {
+    sendGlobal();
+    startNext();
+  }
+}, 30_000).unref();
 const fromEnv = [process.env.ORCH_REPO, ...(process.env.ORCH_REPOS ?? "").split(delimiter)].filter((r): r is string => !!r);
 for (const r of [...(stored.repos ?? []), ...fromEnv]) {
   try {
@@ -283,11 +376,25 @@ http
           return json(200, { ok: true, repo: s.repo });
         }
         if (url.pathname === "/api/settings") {
-          const n = Number(b.maxParallel);
-          if (!Number.isInteger(n) || n < 1 || n > 16) return json(400, { error: "maxParallel must be 1 to 16" });
-          maxParallel = n;
+          if ("maxParallel" in b) {
+            const n = Number(b.maxParallel);
+            if (!Number.isInteger(n) || n < 1 || n > 16) return json(400, { error: "maxParallel must be 1 to 16" });
+            maxParallel = n;
+          }
+          if ("dailyBudget" in b) {
+            const v = b.dailyBudget === null || b.dailyBudget === "" ? null : Number(b.dailyBudget);
+            if (v !== null && !(v > 0)) return json(400, { error: "dailyBudget must be a positive amount, or empty for none" });
+            dailyBudget = v;
+          }
           saveSettings();
           sendInit();
+          startNext();
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/clear-limit") {
+          // "Try now": lift the usage-limit hold early; a run that hits the limit again sets it again.
+          usageLimit = null;
+          sendGlobal();
           startNext();
           return json(200, { ok: true });
         }

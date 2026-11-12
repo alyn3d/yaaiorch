@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Finding, OrchEvent, RunView, State } from "./types";
+import type { Finding, Global, OrchEvent, RunView, State } from "./types";
 import { reduce } from "./reduce";
 import { transport, type SessionInit } from "./transport";
 
@@ -20,6 +20,7 @@ export function useOrch() {
   const [order, setOrder] = useState<string[]>([]);
   const [maxParallel, setMaxParallelState] = useState(2);
   const [connected, setConnected] = useState(false);
+  const [global, setGlobal] = useState<Global>({ usageLimit: null, budget: { limit: null, spent: 0, day: "" } });
 
   useEffect(
     () =>
@@ -28,6 +29,7 @@ export function useOrch() {
           setSessions(Object.fromEntries(d.sessions.map((s) => [s.state.repo, fromInit(s)])));
           setOrder(d.sessions.map((s) => s.state.repo));
           setMaxParallelState(d.maxParallel);
+          if (d.global) setGlobal(d.global);
         },
         onSession: (state) =>
           setSessions((all) => {
@@ -39,6 +41,7 @@ export function useOrch() {
         onLog: (repo, line) =>
           setSessions((all) => (all[repo] ? { ...all, [repo]: { ...all[repo], log: [...all[repo].log.slice(-(MAX_LOG - 1)), line] } } : all)),
         onEvent: (repo, e) => setSessions((all) => (all[repo] ? { ...all, [repo]: { ...all[repo], run: reduce(all[repo].run, e) } } : all)),
+        onGlobal: setGlobal,
         onConnection: setConnected,
       }),
     [],
@@ -48,7 +51,7 @@ export function useOrch() {
     await transport.setMaxParallel(n);
   }, []);
 
-  return { sessions, order, maxParallel, setMaxParallel, connected, canPickRepo: transport.canPickRepo };
+  return { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo: transport.canPickRepo };
 }
 
 /** Doctor findings for one repo: on open, and whenever its process ends. */

@@ -82,3 +82,8 @@ header input[type="number"] { width: 56px; }
 .tab-add-form { display: flex; gap: 6px; input { min-width: 320px; } }
 .repo-view { display: flex; flex-direction: column; gap: 16px; &[hidden] { display: none; } }
 @media (prefers-reduced-motion: reduce) { .status.running { animation: none; } }
+
+// Shared by all repos: the usage-limit banner and the daily budget.
+.banner { flex-direction: row; .row { width: 100%; } }
+header input.budget { width: 64px; }
+.cost.over { color: $bad; }

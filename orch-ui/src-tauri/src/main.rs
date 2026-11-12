@@ -43,11 +43,26 @@ struct Inner {
     /// Keys of sessions waiting for a slot, oldest first.
     start_queue: VecDeque<String>,
     max_parallel: usize,
+    /// Set when any repo hits the Claude usage limit: (repo, until ms). New starts everywhere wait.
+    usage_limit: Option<(String, u64)>,
+    /// Daily budget in USD across all repos (None: no budget).
+    daily_budget: Option<f64>,
+    /// Local date (YYYY-MM-DD) and what agent calls cost on it.
+    spent_day: String,
+    spent_usd: f64,
 }
 
 impl Default for Inner {
     fn default() -> Self {
-        Inner { sessions: Vec::new(), start_queue: VecDeque::new(), max_parallel: 2 }
+        Inner {
+            sessions: Vec::new(),
+            start_queue: VecDeque::new(),
+            max_parallel: 2,
+            usage_limit: None,
+            daily_budget: None,
+            spent_day: today(),
+            spent_usd: 0.0,
+        }
     }
 }
 
@@ -58,6 +73,27 @@ impl Inner {
     fn running_count(&self) -> usize {
         self.sessions.iter().filter(|s| s.running.is_some()).count()
     }
+    /// Why new runs may not start right now, or None.
+    fn gate(&self) -> Option<String> {
+        if let Some((_, until)) = self.usage_limit.as_ref().filter(|(_, u)| *u > now_ms()) {
+            let t = chrono::DateTime::from_timestamp_millis(*until as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string());
+            return Some(format!("usage limit (resets {})", t.unwrap_or_default()));
+        }
+        match self.daily_budget {
+            Some(b) if self.spent_usd >= b => Some(format!("daily budget of ${b} used up")),
+            _ => None,
+        }
+    }
+    fn global_value(&self) -> Value {
+        json!({
+            "usageLimit": self.usage_limit.as_ref().map(|(repo, until)| json!({ "repo": repo, "until": until })),
+            "budget": { "limit": self.daily_budget, "spent": (self.spent_usd * 10_000.0).round() / 10_000.0, "day": self.spent_day },
+        })
+    }
+}
+
+fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 struct AppState(Mutex<Inner>);
@@ -80,22 +116,88 @@ fn read_json(path: PathBuf, fallback: Value) -> Value {
     fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(fallback)
 }
 
-fn session_value(s: &Session) -> Value {
+fn session_value(s: &Session, gate: Option<&str>) -> Value {
     let dir = s.repo.join(".orchestrator");
     json!({
         "repo": s.repo.to_string_lossy(),
         "running": s.running.as_ref().map(|r| json!({ "pid": r.pid, "label": r.label, "startedAt": r.started_at })),
         "queued": s.pending.is_some(),
+        "waitReason": s.pending.as_ref().map(|_| gate.unwrap_or("free slot")),
         "queue": read_json(dir.join("queue.json"), json!([])),
         "lastRun": read_json(dir.join("last-run.json"), Value::Null),
     })
 }
 
 fn init_value(g: &Inner) -> Value {
+    let gate = g.gate();
     json!({
-        "sessions": g.sessions.iter().map(|s| json!({ "state": session_value(s), "log": s.log, "events": s.events })).collect::<Vec<_>>(),
+        "sessions": g.sessions.iter().map(|s| json!({ "state": session_value(s, gate.as_deref()), "log": s.log, "events": s.events })).collect::<Vec<_>>(),
         "maxParallel": g.max_parallel,
+        "global": g.global_value(),
     })
+}
+
+/// The shared limit/budget state changed: tell the UI, and refresh waiting repos' reasons.
+fn emit_global<R: Runtime>(app: &AppHandle<R>) {
+    let (global, waiting) = {
+        let st = app.state::<AppState>();
+        let g = st.0.lock().unwrap();
+        let gate = g.gate();
+        let waiting: Vec<Value> = g.sessions.iter().filter(|s| s.pending.is_some()).map(|s| session_value(s, gate.as_deref())).collect();
+        (g.global_value(), waiting)
+    };
+    let _ = app.emit("orch-global", global);
+    for s in waiting {
+        let _ = app.emit("orch-session", s);
+    }
+}
+
+/// Count agent-call costs, hold new starts on a usage limit, stop a loop at its next goal when the
+/// day's budget is used up.
+fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
+    let kind = ev["type"].as_str().unwrap_or("");
+    let cost = ev["cost"].as_f64().filter(|c| *c > 0.0);
+    if let Some(cost) = cost.filter(|_| matches!(kind, "plan" | "task_end")) {
+        {
+            let st = app.state::<AppState>();
+            let mut g = st.0.lock().unwrap();
+            if g.spent_day != today() {
+                g.spent_day = today();
+                g.spent_usd = 0.0;
+            }
+            g.spent_usd += cost;
+        }
+        persist(app);
+        emit_global(app);
+    }
+    if kind == "queue_item" {
+        let pid = {
+            let st = app.state::<AppState>();
+            let g = st.0.lock().unwrap();
+            let over = matches!(g.daily_budget, Some(b) if g.spent_usd >= b);
+            g.find(key).and_then(|i| g.sessions[i].running.as_ref().map(|r| r.pid)).filter(|_| over)
+        };
+        if let Some(pid) = pid {
+            push_line(app, key, "-- daily budget used up: stopping the queue before its next goal --".into());
+            kill_tree(pid);
+        }
+    }
+    let waiting_until = if kind == "waiting" { ev["until"].as_u64() } else { None };
+    if kind == "usage_limit" || waiting_until.is_some() {
+        let until = waiting_until.or_else(|| ev["resetAt"].as_u64()).unwrap_or(now_ms() + 30 * 60_000);
+        let shown = {
+            let st = app.state::<AppState>();
+            let mut g = st.0.lock().unwrap();
+            let repo = g.find(key).map(|i| g.sessions[i].repo.to_string_lossy().to_string()).unwrap_or_default();
+            if g.usage_limit.as_ref().is_none_or(|(_, u)| until > *u) {
+                g.usage_limit = Some((repo, until));
+            }
+            g.usage_limit.as_ref().map(|(_, u)| *u).unwrap_or(until)
+        };
+        let t = chrono::DateTime::from_timestamp_millis(shown as i64).map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string());
+        push_line(app, key, format!("-- usage limit: new runs in all repos wait until {} --", t.unwrap_or_default()));
+        emit_global(app);
+    }
 }
 
 fn emit_init<R: Runtime>(app: &AppHandle<R>) {
@@ -107,7 +209,8 @@ fn emit_session<R: Runtime>(app: &AppHandle<R>, key: &str) {
     let v = {
         let st = app.state::<AppState>();
         let g = st.0.lock().unwrap();
-        g.find(key).map(|i| session_value(&g.sessions[i]))
+        let gate = g.gate();
+        g.find(key).map(|i| session_value(&g.sessions[i], gate.as_deref()))
     };
     if let Some(v) = v {
         let _ = app.emit("orch-session", v);
@@ -129,6 +232,7 @@ fn push_line<R: Runtime>(app: &AppHandle<R>, key: &str, line: String) {
                 let repo = s.repo.to_string_lossy().to_string();
                 drop(g);
                 let _ = app.emit("orch-ev", json!({ "repo": repo, "ev": ev }));
+                on_event(app, key, &ev);
                 return;
             }
         }
@@ -142,12 +246,17 @@ fn push_line<R: Runtime>(app: &AppHandle<R>, key: &str, line: String) {
     let _ = app.emit("orch-log", json!({ "repo": repo, "line": line }));
 }
 
-/// Remember the open repos and the parallel limit in the app's config folder.
+/// Remember the open repos, the parallel limit, the daily budget and today's spending.
 fn persist<R: Runtime>(app: &AppHandle<R>) {
     let v = {
         let st = app.state::<AppState>();
         let g = st.0.lock().unwrap();
-        json!({ "repos": g.sessions.iter().map(|s| s.repo.to_string_lossy()).collect::<Vec<_>>(), "maxParallel": g.max_parallel })
+        json!({
+            "repos": g.sessions.iter().map(|s| s.repo.to_string_lossy()).collect::<Vec<_>>(),
+            "maxParallel": g.max_parallel,
+            "dailyBudget": g.daily_budget,
+            "spent": { "day": g.spent_day, "usd": g.spent_usd },
+        })
     };
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = fs::create_dir_all(&dir);
@@ -218,22 +327,44 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
         if g.sessions[i].running.is_some() || g.sessions[i].pending.is_some() {
             return Err("this repo already has a run (or one waiting to start)".into());
         }
-        if g.running_count() < g.max_parallel {
-            true
+        let held = g.gate();
+        if held.is_none() && g.running_count() < g.max_parallel {
+            None
         } else {
             g.sessions[i].pending = Some((args.clone(), label.clone()));
             g.start_queue.push_back(key.clone());
-            false
+            Some(held.unwrap_or_else(|| format!("free slot ({} repo(s) may run at once)", g.max_parallel)))
         }
     };
-    if start_now {
-        spawn_orch(app, &key, args, label)
-    } else {
-        let n = app.state::<AppState>().0.lock().unwrap().max_parallel;
-        push_line(app, &key, format!("-- waiting for a free slot ({n} repo(s) may run at once) --"));
-        emit_session(app, &key);
-        Ok(())
+    match start_now {
+        None => spawn_orch(app, &key, args, label),
+        Some(reason) => {
+            push_line(app, &key, format!("-- waiting: {reason} --"));
+            emit_session(app, &key);
+            Ok(())
+        }
     }
+}
+
+/// With a daily budget, a run may spend at most what is left today (and its own --max-cost, if lower).
+fn with_budget(args: Vec<String>, left: Option<f64>) -> Vec<String> {
+    let Some(left) = left else { return args };
+    if args.first().map(String::as_str) == Some("rollback") {
+        return args;
+    }
+    let mut own = f64::INFINITY;
+    let mut out = Vec::with_capacity(args.len() + 2);
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if a == "--max-cost" {
+            own = it.next().and_then(|v| v.parse().ok()).unwrap_or(f64::INFINITY);
+        } else {
+            out.push(a);
+        }
+    }
+    out.push("--max-cost".into());
+    out.push(format!("{:.2}", own.min(left)));
+    out
 }
 
 fn start_next<R: Runtime>(app: &AppHandle<R>) {
@@ -241,7 +372,7 @@ fn start_next<R: Runtime>(app: &AppHandle<R>) {
         let next = {
             let st = app.state::<AppState>();
             let mut g = st.0.lock().unwrap();
-            if g.running_count() >= g.max_parallel {
+            if g.running_count() >= g.max_parallel || g.gate().is_some() {
                 return;
             }
             let Some(key) = g.start_queue.pop_front() else { return };
@@ -261,6 +392,12 @@ fn start_next<R: Runtime>(app: &AppHandle<R>) {
 
 fn spawn_orch<R: Runtime>(app: &AppHandle<R>, key: &str, args: Vec<String>, label: String) -> Result<(), String> {
     let repo = repo_of(app, key)?;
+    let left = {
+        let st = app.state::<AppState>();
+        let g = st.0.lock().unwrap();
+        g.daily_budget.map(|b| (b - g.spent_usd).max(0.01))
+    };
+    let args = with_budget(args, left);
     let mut cmd = node_cmd(app, &repo, &args)?;
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -438,6 +575,29 @@ fn set_max_parallel(app: AppHandle, state: State<AppState>, max_parallel: usize)
     Ok(())
 }
 
+/// Daily budget across all repos in USD; None (or 0) removes it.
+#[tauri::command]
+fn set_daily_budget(app: AppHandle, state: State<AppState>, daily_budget: Option<f64>) -> Result<(), String> {
+    let b = match daily_budget {
+        Some(b) if !b.is_finite() || b < 0.0 => return Err("dailyBudget must be a positive number".into()),
+        Some(0.0) => None,
+        b => b,
+    };
+    state.0.lock().unwrap().daily_budget = b;
+    persist(&app);
+    emit_global(&app);
+    start_next(&app);
+    Ok(())
+}
+
+/// "Try now": lift the usage-limit hold before its reset time.
+#[tauri::command]
+fn clear_limit(app: AppHandle, state: State<AppState>) {
+    state.0.lock().unwrap().usage_limit = None;
+    emit_global(&app);
+    start_next(&app);
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn run_goal(
@@ -585,14 +745,43 @@ fn main() {
                 if let Some(n) = saved["maxParallel"].as_u64().filter(|n| (1..=16).contains(n)) {
                     g.max_parallel = n as usize;
                 }
+                g.daily_budget = saved["dailyBudget"].as_f64().filter(|b| *b > 0.0);
+                if saved["spent"]["day"].as_str() == Some(today().as_str()) {
+                    g.spent_usd = saved["spent"]["usd"].as_f64().unwrap_or(0.0);
+                }
                 for r in repos {
                     let _ = add_session(&mut g, Path::new(&r));
                 }
             }
+            // Lift an expired usage-limit hold and start a new budget day, then start what waits.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                let changed = {
+                    let st = handle.state::<AppState>();
+                    let mut g = st.0.lock().unwrap();
+                    let mut changed = false;
+                    if g.usage_limit.as_ref().is_some_and(|(_, u)| *u <= now_ms()) {
+                        g.usage_limit = None;
+                        changed = true;
+                    }
+                    if g.spent_day != today() {
+                        g.spent_day = today();
+                        g.spent_usd = 0.0;
+                        changed = true;
+                    }
+                    changed
+                };
+                if changed {
+                    persist(&handle);
+                    emit_global(&handle);
+                    start_next(&handle);
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, add_repo, remove_repo, set_max_parallel, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor
+            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -610,6 +799,28 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn budget_caps_max_cost() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(with_budget(v(&["run", "g", "--max-cost", "5"]), Some(1.0)), v(&["run", "g", "--max-cost", "1.00"]));
+        assert_eq!(with_budget(v(&["run", "g", "--max-cost", "0.5"]), Some(1.0)), v(&["run", "g", "--max-cost", "0.50"]));
+        assert_eq!(with_budget(v(&["loop"]), Some(2.5)), v(&["loop", "--max-cost", "2.50"]));
+        assert_eq!(with_budget(v(&["run", "g"]), None), v(&["run", "g"]));
+        assert_eq!(with_budget(v(&["rollback"]), Some(1.0)), v(&["rollback"]));
+    }
+
+    #[test]
+    fn gate_reports_limit_then_budget() {
+        let mut g = Inner { daily_budget: Some(1.0), spent_usd: 0.5, ..Inner::default() };
+        assert_eq!(g.gate(), None);
+        g.spent_usd = 1.0;
+        assert!(g.gate().unwrap().contains("daily budget"));
+        g.usage_limit = Some(("r".into(), now_ms() + 60_000));
+        assert!(g.gate().unwrap().starts_with("usage limit"));
+        g.usage_limit = Some(("r".into(), now_ms() - 1));
+        assert!(g.gate().unwrap().contains("daily budget"));
+    }
 
     fn wait_idle<R: Runtime>(h: &AppHandle<R>) {
         for _ in 0..300 {
@@ -675,9 +886,9 @@ mod tests {
             assert_eq!(end["type"], "goal_end");
             assert_eq!(end["passed"], true);
             assert!(s.log.iter().any(|l| l.starts_with("-- exited (0)")), "log: {:?}", s.log);
-            assert!(session_value(s)["queue"].is_array());
+            assert!(session_value(s, None)["queue"].is_array());
         }
         let sb = &g.sessions[g.find(&b).unwrap()];
-        assert!(sb.log.iter().any(|l| l.contains("waiting for a free slot")), "log: {:?}", sb.log);
+        assert!(sb.log.iter().any(|l| l.contains("waiting: free slot")), "log: {:?}", sb.log);
     }
 }

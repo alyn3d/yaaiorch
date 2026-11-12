@@ -117,6 +117,13 @@ with its own goal, queue, settings and log, and a status dot (running, waiting, 
 wait for a free slot. One run per repo at a time. All repos draw on the same Claude usage limit, so
 more parallel runs reach it sooner.
 
+- **Usage limit, shared.** When one repo hits the Claude usage limit, a banner shows the reset time and
+  new runs in every repo wait until then (running ones wait on their own). **Try now** starts them early.
+- **Daily $** sets a spending cap for all repos together, per day. Each run's max cost is capped to what
+  is left; when it is used up, new runs wait for the next day and a queue stops before its next goal.
+  Today's spend is shown next to it and kept across restarts. Runs that start at the same time can
+  overshoot the cap by up to one run's cost.
+
 ### Desktop app
 
 ```bash

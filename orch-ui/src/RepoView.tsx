@@ -173,7 +173,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
         <div className="row">
           <h2>Live output</h2>
           {state.running && <span className="badge running">{state.running.label}</span>}
-          {state.queued && <span className="badge warn">waiting for a free slot</span>}
+          {state.queued && <span className="badge warn">waiting: {state.waitReason ?? "free slot"}</span>}
           <span className="spacer" />
           <button className="danger" disabled={!busy} onClick={() => call("stop")}>{state.queued && !state.running ? "Cancel" : "Stop"}</button>
           <button onClick={() => call("clear-log")}>Clear</button>

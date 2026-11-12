@@ -139,23 +139,38 @@ events. One run per repo at a time (agents share that repo's working tree); at m
 repos run at once (default 2, 1-16) and further starts wait for a free slot, oldest first. All repos
 share one Claude usage limit, so the limit is the main brake on parallel runs.
 
+Two things are shared by all repos and kept by the backend (the **global** state):
+
+- **Usage-limit hold.** When any repo reports the usage limit (`usage_limit`, or `waiting` with `until`),
+  new starts in every repo wait until the latest reset time. Running goals are not stopped; each waits
+  on its own (`--on-limit`). The UI shows one banner with **Try now**, which lifts the hold early.
+- **Daily budget** (optional, USD, local day). The backend adds up `cost` from every `plan` and
+  `task_end` event in every repo; the total is stored, so it survives a restart the same day. Each new
+  run gets `--max-cost` capped to what is left (its own `--max-cost` if lower). When it is used up, new
+  starts wait for the next day (or a higher budget), and a running loop is stopped at its next
+  `queue_item`. Runs that start together each get the whole remainder, so the total can overshoot by
+  up to what one run spends.
+
+A start that waits is `queued` with a `waitReason`: the usage limit, the budget, or a free slot.
+
 ### Frontend (`src/`)
 
 | File | Role |
 |---|---|
 | `transport.ts` | The only place that knows how to reach the backend. Browser: `fetch` + `EventSource`. Desktop: Tauri `invoke` + `listen`. Chosen at startup via `__TAURI_INTERNALS__`. Every message carries its `repo`. |
-| `useOrch.ts` | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`. `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends. |
-| `App.tsx` | Header (running count, Parallel limit), tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating. |
+| `useOrch.ts` | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`, `global` (usage-limit hold, daily budget). `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends. |
+| `App.tsx` | Header (running count, Parallel limit, Daily $ budget and today's spend), usage-limit and budget banners, tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating. |
 | `RepoView.tsx` | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log. |
 | `Settings.tsx` | Usage-limit choice, fast path, models per role and agent; remembered per repo in local storage. |
 | `reduce.ts` | Pure fold of `OrchEvent`s into a `RunView` (rounds -> tasks). A reload replays the stored events through it. |
 | `RunView.tsx` | Task cards grouped Foundation / Build / Verify, with status, elapsed time, owned and changed files, failures. |
 | `types.ts` | Shared types. |
 
-State flow: the backend pushes `init` (`{ sessions: [{ state, log, events }], maxParallel }`, also after a
-repo is added or removed or the limit changes), then per-repo deltas: `session` (one repo's state),
-`log` (`{ repo, line }`) and `ev` (`{ repo, ev }`). A repo's state includes `queued` while its start waits
-for a slot.
+State flow: the backend pushes `init` (`{ sessions: [{ state, log, events }], maxParallel, global }`, also
+after a repo is added or removed or the limit changes), then per-repo deltas: `session` (one repo's state),
+`log` (`{ repo, line }`) and `ev` (`{ repo, ev }`), and `global`
+(`{ usageLimit: { repo, until } | null, budget: { limit, spent, day } }`) when the hold or the spending
+changes. A repo's state includes `queued` and `waitReason` while its start waits.
 
 ### Backend A: browser mode (`server.ts`)
 
@@ -165,11 +180,12 @@ remembered in `~/.yaaiorch/ui.json` plus `ORCH_REPO` / `ORCH_REPOS` (separated b
 
 | Route | Purpose |
 |---|---|
-| `GET /api/events` | SSE: `init`, `session`, `log`, `ev` |
+| `GET /api/events` | SSE: `init`, `session`, `log`, `ev`, `global` |
 | `GET /api/state` | The init payload |
 | `GET /api/doctor?repo=`, `/api/agents?repo=` | `orch doctor --json`, roster |
 | `POST /api/add-repo` `{ path }`, `/api/remove-repo` `{ repo }` | Open or close a repo (closing is refused while it runs) |
-| `POST /api/settings` `{ maxParallel }` | Change the parallel limit |
+| `POST /api/settings` `{ maxParallel?, dailyBudget? }` | Change the parallel limit and/or the daily budget (`null` or `""` = none) |
+| `POST /api/clear-limit` | Lift the usage-limit hold ("Try now") |
 | `POST /api/run`, `/add`, `/loop`, `/stop`, `/clear-log`, `/rollback` | Actions on `{ repo, … }`; `stop` also cancels a start waiting for a slot |
 | static | serves `dist/` |
 
@@ -181,13 +197,15 @@ Tauri v2. Replaces the Node server. Runs the compiled `orch.mjs` with `node` in 
 |---|---|
 | `snapshot` | The init payload |
 | `add_repo(path)`, `remove_repo(repo)`, `set_max_parallel(maxParallel)` | Open or close a repo, change the limit; persisted to `<app config>/repos.json` (the old single `repo.txt` is migrated) |
+| `set_daily_budget(dailyBudget)`, `clear_limit` | Daily budget (`null` = none), lift the usage-limit hold |
 | `run_goal`, `run_loop`, `add_goal`, `stop`, `clear_log`, `agents`, `rollback` | Same actions as the HTTP API, each with `repo` |
 | `doctor(repo)` | `orch doctor --json` (async command, so starting node does not freeze the window) |
 
-Events to the UI: `orch-init`, `orch-session`, `orch-log`, `orch-ev` (the last two as `{ repo, … }`).
+Events to the UI: `orch-init`, `orch-session`, `orch-log`, `orch-ev` (these two as `{ repo, … }`), `orch-global`.
 
 Internals: one `Mutex<Inner>` holds the sessions (repo, running process, pending start, log ring of 5000
-lines, events of the current goal), the start queue and `max_parallel`. Two reader threads per child
+lines, events of the current goal), the start queue, `max_parallel` and the global hold and budget.
+A ticker thread (30 s) lifts an expired hold, starts a new budget day and starts what waits. Two reader threads per child
 feed `push_line`, which splits structured lines from plain ones. A wait thread joins the readers before
 reporting exit, so the last output is never lost, then starts the next queued repo. Stop uses
 `taskkill /T /F` on Windows and a process-group `kill` elsewhere; the app does this for every running
@@ -207,8 +225,8 @@ a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 | `<target>/.orchestrator/config.json` | user | Optional: `{"checks": {"name": "command"}, "allow": ["Bash(...)"]}` |
 | `<target>` git branches `orchestrator/checkpoint-*` | orch.ts | Rollback point of the running or last unfinished goal |
 | `<target>` git branches `orchestrator/failed-*` | orch.ts | Work of goals that failed in `loop` |
-| `<app config>/repos.json` | Tauri | Open repos and the parallel limit |
-| `~/.yaaiorch/ui.json` | server.ts | Open repos and the parallel limit (browser mode) |
+| `<app config>/repos.json` | Tauri | Open repos, the parallel limit, the daily budget and today's spending |
+| `~/.yaaiorch/ui.json` | server.ts | Same, for browser mode |
 
 Run events and the log live in memory only and are lost on restart.
 

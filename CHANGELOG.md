@@ -17,6 +17,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - **Several repos at once**: one tab per repo in the browser UI and the desktop app, each with its own
   goal, queue, settings and log and a status dot; a global **Parallel** limit (default 2) with a start
   queue; open repos are remembered (`~/.yaaiorch/ui.json`, `<app config>/repos.json`).
+- **Shared usage limit** across repos: when one repo hits it, new runs in every repo wait for the
+  reset, with one banner and a **Try now** button.
+- **Daily budget** across repos (**Daily $**): counts every agent call's cost, caps each run's
+  `--max-cost` to what is left, holds new runs and stops a queue before its next goal when used up;
+  the day's total survives restarts. A waiting repo shows why it waits.
 
 ### Changed
 - `orch run` waits for the usage-limit reset by default instead of exiting with code 3; use
