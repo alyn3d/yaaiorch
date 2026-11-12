@@ -40,7 +40,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   `--fast` mode, and measure it.
 
 ### Test the orchestrator itself
-- [x] Fake `claude` (`test/fake-claude/`) and 33 scenario tests (`npm test`), run in CI on Linux and
+- [x] Fake `claude` (`test/fake-claude/`) and 35 scenario tests (`npm test`), run in CI on Linux and
   Windows; the Rust spawn test is `#[ignore]`d and run explicitly in CI.
 - [ ] **More scenarios**: phantom completion and its re-dispatch, foundation failure skipping the
   round, a commit hook that fails, a pre-existing `.orchestrator/config.json` allow-list reaching the
@@ -75,9 +75,9 @@ Each item should show its effect in the evals before it becomes the default.
   reasoning. Behind a flag first (`--critic`), compared with and without on the eval suite.
 - [ ] **Diff critic**: the same agent reviews the diff before QA, so QA and the critic are independent
   opinions; a failed check still wins over both.
-- [ ] **Project brief**: the architect writes `.orchestrator/brief.md` once (stack, conventions,
+- [x] **Project brief**: the architect writes `.orchestrator/brief.md` once (stack, conventions,
   commands) and later rounds and goals reuse it instead of re-reading the repo.
-- [ ] **Context between rounds**: give the architect its previous plan, the diff and the check output,
+- [x] **Context between rounds**: give the architect its previous plan, the diff and the check output,
   not only the failure strings.
 - [ ] **Session resume for fix rounds**: continue the implementer's session (`session_id` from the CLI)
   instead of starting cold.
@@ -85,7 +85,10 @@ Each item should show its effect in the evals before it becomes the default.
   architect, appended by QA.
 - [ ] **Review lens**: optional reviewer pass on the diff for bugs and security, with the user's own
   reviewer agents when present.
-- [ ] **Escalate per task**: on a stuck round, move only the failing tasks up a tier.
+- [x] **Escalate per task**: on a stuck round, move only the failing tasks up a tier.
+- [ ] **Measure the three above** (brief, context between rounds, per-task escalation): they were built
+  without an eval, because the current cases all pass in round 1. Needs cases that take several
+  rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.
 
 ## 0.5: autonomy
 

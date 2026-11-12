@@ -5,6 +5,17 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- **Project brief**: the architect writes `.orchestrator/brief.md` (stack, layout, conventions,
+  commands) on the first run; later rounds, later goals and the fast path's agent reuse it instead of
+  re-reading the repo. `--no-brief` or `"brief": false` turns it off.
+- **Context between rounds**: a fix round's architect sees what the previous round planned, how each
+  task ended and the diff since the checkpoint, not only the failure messages.
+- **Per-task escalation**: a stuck round where some tasks failed and others completed moves only the
+  failing tasks' agents up a tier (shown in the run panel); otherwise the whole round moves up as before.
+
+These are not measured by the evals yet (the current cases pass in round 1).
+
 ## [0.2.0] - 2026-11-12
 
 Several repos at once, shared limits across them, control over cost (daily budget, usage caps, plugins

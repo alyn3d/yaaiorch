@@ -31,6 +31,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
          --plugins off   agents run without any Claude Code plugins  --disable-plugins ID,ID  without these
                   (ids from "orch plugins")  --no-hooks  without settings and plugin hooks; also "plugins"
                   in config: {"off": true, "disable": [...], "hooks": false}. Your Claude Code setup is unchanged.
+         --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
+                  reused across rounds and goals); also "brief": false in config
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
                   are no checks); if that fails, later rounds run the full architect/build/QA loop
 Agents: built-in (architect, fe, be, qa), overridden by ~/.claude/agents and ./.claude/agents.
@@ -48,12 +50,13 @@ reset time from the CLI's message (or, with --on-limit stop, the goal is left pe
 const PHASES = ["foundation", "build", "verify"] as const;
 type Phase = (typeof PHASES)[number];
 type Task = { agent: string; phase: Phase; task: string; files?: string[]; heavy?: boolean; figma?: string; skills?: string[] };
-type Plan = { summary: string; tasks: Task[] };
+/** `brief`: the architect's project brief, when there was none yet or the old one was wrong. */
+type Plan = { summary: string; tasks: Task[]; brief?: string };
 type Verdict = { passed: boolean; failures: string[] };
 /** `note` says why a pending goal is waiting (for example a usage-limit reset). */
 type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed"; note?: string };
 type Entry = { name: string; description: string; builtin?: boolean };
-type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error };
+type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string };
 
 const POWER = {
   max: { arch: "opus", impl: "opus", heavy: "opus", qa: "opus" },
@@ -132,6 +135,9 @@ const QUEUE = join(DIR, "queue.json");
 const LAST_RUN = join(DIR, "last-run.json");
 // Relative, forward slashes, no spaces: safe to pass through the Windows shell.
 const BUILTIN_FILE = `${DIR}/builtin-agents.json`;
+/** The architect's notes on the repo (stack, layout, conventions, commands), reused by later rounds and goals. */
+const BRIEF_FILE = join(DIR, "brief.md");
+const MAX_BRIEF = 4000;
 /** Implementers: allow-list for the check commands, run with acceptEdits. */
 const AGENT_SETTINGS = `${DIR}/agent-settings.json`;
 /** Architect and verifiers: same allow-list plus a deny on edit tools, run with permission mode "default". */
@@ -149,7 +155,8 @@ const PLAN_FORMAT = `
 ## Reply format
 Reply with exactly one JSON object and nothing else:
 {"summary": "<one line>", "tasks": [{"agent": "<name from the list>", "phase": "foundation" | "build" | "verify", "task": "<self-contained instructions>", "files": ["<path relative to the repo root>"], "heavy": false, "skills": []}]}
-Every foundation and build task must list its files, no file may appear in two tasks, and there must be at least one verify task.`;
+Every foundation and build task must list its files, no file may appear in two tasks, and there must be at least one verify task.
+Add a "brief" field (a string) only when asked for one below.`;
 const TASK_FORMAT = `
 
 ## Reply format
@@ -229,6 +236,7 @@ type Config = {
   onLimit?: "wait" | "stop";
   usageCap?: { "5h"?: number; week?: number };
   plugins?: { off?: boolean; disable?: string[]; hooks?: boolean };
+  brief?: boolean;
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -898,7 +906,7 @@ const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 /** `onLimit`: on a Claude usage limit, wait for the reset and retry the goal (default), or stop. */
 type Opts = {
   maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean;
-  models: Models; onLimit: "wait" | "stop"; usageCap: UsageCap; plugins: PluginChoice;
+  models: Models; onLimit: "wait" | "stop"; usageCap: UsageCap; plugins: PluginChoice; brief: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -921,10 +929,25 @@ async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx): Promi
 }
 
 /** Ask the architect for a plan; on bad JSON or a rejected plan, ask once more with the reason. */
-async function makePlan(architect: Entry, workers: Entry[], skills: Entry[], goal: string, failures: string[], note: string, model: string, ctx: RunCtx) {
+/**
+ * `previous`: what the last round planned and changed, so a fix round builds on it instead of starting blind.
+ * `brief`: the project brief if one exists, `""` to ask for one, `null` when briefs are off.
+ */
+async function makePlan(
+  architect: Entry, workers: Entry[], skills: Entry[], goal: string, failures: string[], note: string, model: string, ctx: RunCtx,
+  previous = "", brief: string | null = null,
+) {
   const base =
     `Goal: ${goal}\n\nAvailable agents:\n${workers.map((a) => `- ${a.name}: ${a.description}`).join("\n")}\n\n` +
     `Available skills:\n${skills.map((s) => `- ${s.name}: ${s.description}`).join("\n") || "(none)"}\n` +
+    (brief
+      ? `\nProject brief (your own notes from an earlier run; rely on it instead of re-reading the whole repo, and add a "brief" ` +
+        `field with a corrected version only if it is wrong or missing something important):\n${brief}\n`
+      : brief === ""
+        ? `\nNo project brief exists yet. Add a "brief" field: your notes on this repo for later rounds and goals (at most 250 ` +
+          `words: stack, layout, conventions, how to run the checks).\n`
+        : "") +
+    (previous ? `\n${previous}\n` : "") +
     (failures.length ? `\nPrevious QA failures to fix:\n- ${failures.join("\n- ")}\n` : "") +
     (note ? `\n${note}\n` : "") +
     "\nProduce the plan." +
@@ -950,10 +973,12 @@ async function makePlan(architect: Entry, workers: Entry[], skills: Entry[], goa
  * Fast-path plan: one `dev` task for the whole goal on the tier's strong model (heavy), no file list.
  * Verified by the repo's checks; when there are none, a QA task is added so something still verifies.
  */
-function directPlan(goal: string, checks: Record<string, string>): Plan {
+function directPlan(goal: string, checks: Record<string, string>, brief: string | null = null): Plan {
   const commands = Object.values(checks);
   const task =
-    `Goal: ${goal}\n\nYou are doing this goal alone: read the relevant code, then make the complete change ` +
+    `Goal: ${goal}\n\n` +
+    (brief ? `Project brief (notes on this repo from an earlier run):\n${brief}\n\n` : "") +
+    `You are doing this goal alone: read the relevant code, then make the complete change ` +
     `(code and tests) following the repository's conventions.` +
     (commands.length
       ? ` Afterwards the orchestrator runs these checks and they must pass (you can run them yourself): ${commands.join(", ")}.`
@@ -972,6 +997,28 @@ const failureKey = (fs: string[]) =>
   fs.map((f) => f.toLowerCase().replace(/\d+(\.\d+)?/g, "#").replace(/\s+/g, " ").trim()).sort().join("\n");
 
 type LastRun = { goal: string; status: "running" | "passed" | "failed"; checkpoint?: string; cost: number; state: unknown[] };
+
+const readBrief = (): string => (existsSync(BRIEF_FILE) ? readFileSync(BRIEF_FILE, "utf8").trim() : "");
+function writeBrief(text: unknown) {
+  if (typeof text !== "string" || text.trim().length < 20) return;
+  const existed = existsSync(BRIEF_FILE);
+  mkdirSync(DIR, { recursive: true });
+  writeFileSync(BRIEF_FILE, text.trim().slice(0, MAX_BRIEF) + "\n");
+  console.log(`project brief ${existed ? "updated" : "written"}: ${BRIEF_FILE}`);
+}
+
+/** What a round planned, how each task ended and what changed: the next round's architect builds on it. */
+function previousRound(round: number, plan: Plan, statuses: Map<Task, string>, cp: string): string {
+  const tasks = plan.tasks
+    .map((t) => `- [${t.phase}] ${t.agent} -> ${statuses.get(t) ?? "not run"}: ${t.task.replace(/\s+/g, " ").slice(0, 200)}${t.files?.length ? ` (files: ${t.files.join(", ")})` : ""}`)
+    .join("\n");
+  const diff = cp ? diffSummary(cp) : "";
+  return (
+    `What round ${round} did (keep what is right, fix what is not; do not redo finished work):\n` +
+    `Plan: ${plan.summary}\n${tasks}` +
+    (diff ? `\nChanges since the start of the goal (committed):\n${diff.slice(0, 3000)}` : "")
+  );
+}
 const writeLastRun = (lr: LastRun) => (mkdirSync(DIR, { recursive: true }), writeFileSync(LAST_RUN, JSON.stringify(lr, null, 2)));
 
 // ---------- one goal: architect -> foundation -> build (parallel) -> verify, repeat ----------
@@ -1032,39 +1079,54 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   let failures: string[] = [];
   let note = "";
   let stuck = 0;
+  let previous = "";
+  /** Per-task escalation: agents moved up on their own after a stuck round (tier, and models with aliases stepped up). */
+  const agentPower = new Map<string, Power>();
+  const agentModels = new Map<string, Models>();
 
   for (let round = 1; round <= o.maxRounds; round++) {
     const spentBefore = ctx.budget.spent;
     // Fast path: the first round skips the architect; one generalist agent does the whole goal.
     const direct = o.fast && round === 1 && byName.has("dev");
     console.log(`\n=== round ${round}/${o.maxRounds} (${power}${direct ? ", direct attempt" : ""}) ===`);
-    emit("round_start", { round, power, models: effectiveModels(power, models), ...(direct ? { mode: "direct" } : {}) });
+    emit("round_start", {
+      round, power, models: effectiveModels(power, models), ...(direct ? { mode: "direct" } : {}),
+      ...(agentPower.size ? { agentPower: Object.fromEntries(agentPower) } : {}),
+    });
     let plan: Plan;
     let planCost = 0;
-    if (direct) plan = directPlan(goal, checks);
+    const brief = o.brief ? readBrief() : null;
+    if (direct) plan = directPlan(goal, checks, brief || null);
     else {
       emit("architect_start", { round });
-      ({ plan, cost: planCost } = await makePlan(architect, workers, skills, goal, failures, note, modelFor(power, models, "architect", "architect"), ctx));
+      ({ plan, cost: planCost } = await makePlan(
+        architect, workers, skills, goal, failures, note, modelFor(power, models, "architect", "architect"), ctx, previous, brief,
+      ));
+      if (o.brief && plan.brief) writeBrief(plan.brief);
     }
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
     emit("plan", { round, summary: plan.summary, cost: round4(planCost), tasks: plan.tasks.map((t, id) => ({ id, ...t })) });
     if (o.dryRun) return true;
 
     const idOf = new Map(plan.tasks.map((t, id) => [t, id]));
-    const skip = (t: Task) => emit("task_end", { round, id: idOf.get(t)!, agent: t.agent, phase: t.phase, status: "SKIPPED", touched: [] });
+    const statuses = new Map<Task, string>();
+    const skip = (t: Task) => (statuses.set(t, "SKIPPED"), emit("task_end", { round, id: idOf.get(t)!, agent: t.agent, phase: t.phase, status: "SKIPPED", touched: [] }));
     /** Never throws: a failed task becomes a failure for the next round, and its siblings run to the end. */
     const exec = async (t: Task): Promise<Result> => {
       const id = idOf.get(t)!;
       emit("task_start", { round, id, agent: t.agent, phase: t.phase });
       try {
         const role: Role = t.agent === "dev" ? "dev" : t.heavy ? "heavy" : "impl";
-        const r = await execute(t, byName.get(t.agent)!, modelFor(power, models, role, t.agent), ctx);
+        const model = modelFor(agentPower.get(t.agent) ?? power, agentModels.get(t.agent) ?? models, role, t.agent);
+        const r = await execute(t, byName.get(t.agent)!, model, ctx);
         const status = /Status:\s*(COMPLETE|PARTIAL|FAILED)/i.exec(r.out)?.[1]?.toUpperCase() ?? (r.out.startsWith("PHANTOM") ? "PHANTOM" : "UNKNOWN");
+        statuses.set(t, status);
         emit("task_end", { round, id, agent: t.agent, phase: t.phase, status, touched: r.touched, cost: round4(r.cost) });
-        return r;
+        return { ...r, status };
       } catch (e) {
+        statuses.set(t, "ERROR");
         emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: "ERROR", error: msg(e), touched: [] });
-        return { agent: t.agent, out: `ERROR: ${msg(e)}`, touched: [], cost: 0, error: msg(e), fatal: isFatal(e) ? e : undefined };
+        return { agent: t.agent, out: `ERROR: ${msg(e)}`, touched: [], cost: 0, error: msg(e), fatal: isFatal(e) ? e : undefined, status: "ERROR" };
       }
     };
 
@@ -1114,6 +1176,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         try {
           const r = await run(byName.get(t.agent)!, modelFor(power, models, "qa", t.agent), `Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`, ctx, true);
           const v = asVerdict(extractJson<Verdict>(r.text));
+          statuses.set(t, v.passed ? "PASS" : "FAIL");
           emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: v.passed ? "PASS" : "FAIL", failures: v.failures, touched: [], cost: round4(r.cost) });
           verdicts.push(v);
         } catch (e) {
@@ -1142,6 +1205,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     emit("round_end", { round, passed, failures, cost: roundCost });
     if (passed) return console.log("\nQA passed."), true;
     console.log(`QA failed (${failures.length}):\n- ${failures.join("\n- ")}`);
+    previous = direct ? "" : previousRound(round, plan, statuses, cp);
 
     // Stuck detection: no file changed, or exactly the same failures as the round before.
     const repeated = round > 1 && failureKey(failures) === prevKey;
@@ -1153,12 +1217,27 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         console.error(`\nStopped: no progress in ${stuck} rounds in a row (${why}).`);
         return false;
       }
-      const next = TIERS[TIERS.indexOf(power) + 1];
-      emit("stuck", { round, action: next ? "escalate" : "retry", reason: why, power: next ?? power });
-      console.warn(`no progress (${why}); ${next ? `moving up to power ${next}` : "already at max power, retrying"}`);
-      if (next) {
-        power = next;
-        models = bumpAliases(models);
+      // Per-task escalation: when some implementer tasks failed outright, move only their agents up a tier;
+      // when every task claims success (the plan or the verification is the problem), move the whole round up.
+      const failedAgents = [...new Set(results.filter((r) => r.status && !["COMPLETE", "SKIPPED"].includes(r.status)).map((r) => r.agent))];
+      const someWorked = results.some((r) => r.status === "COMPLETE");
+      const raisable = failedAgents.filter((a) => TIERS.indexOf(agentPower.get(a) ?? power) < TIERS.length - 1);
+      if (failedAgents.length && someWorked && raisable.length) {
+        for (const a of raisable) {
+          agentPower.set(a, TIERS[TIERS.indexOf(agentPower.get(a) ?? power) + 1]);
+          agentModels.set(a, bumpAliases(agentModels.get(a) ?? models));
+        }
+        const moved = raisable.map((a) => `${a} -> ${agentPower.get(a)}`).join(", ");
+        emit("stuck", { round, action: "escalate", reason: why, power, agents: Object.fromEntries(raisable.map((a) => [a, agentPower.get(a)])) });
+        console.warn(`no progress (${why}); moving up only the failing tasks' agents: ${moved}`);
+      } else {
+        const next = TIERS[TIERS.indexOf(power) + 1];
+        emit("stuck", { round, action: next ? "escalate" : "retry", reason: why, power: next ?? power });
+        console.warn(`no progress (${why}); ${next ? `moving up to power ${next}` : "already at max power, retrying"}`);
+        if (next) {
+          power = next;
+          models = bumpAliases(models);
+        }
       }
       note = `Note: ${why}. Do not repeat the previous plan; find the real cause and take a different approach.`;
     } else {
@@ -1275,9 +1354,10 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   if (onLimit !== "wait" && onLimit !== "stop") throw new Error(`--on-limit must be wait or stop, got "${onLimit}"`);
   const usageCap = parseUsageCap(String(values["usage-cap"] ?? ""), cfg.usageCap);
   const plugins = parsePlugins(values, cfg.plugins);
+  const brief = !values["no-brief"] && cfg.brief !== false;
   return {
     maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost,
-    fast: !!values.fast, models, onLimit, usageCap, plugins,
+    fast: !!values.fast, models, onLimit, usageCap, plugins, brief,
   };
 }
 
@@ -1299,6 +1379,7 @@ async function main() {
       plugins: { type: "string" },
       "disable-plugins": { type: "string" },
       "no-hooks": { type: "boolean", default: false },
+      "no-brief": { type: "boolean", default: false },
       details: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },

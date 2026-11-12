@@ -70,6 +70,8 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
           ...r,
           note:
             ev.action === "stop" ? `No progress again (${ev.reason}): stopped the goal.`
+            : ev.action === "escalate" && ev.agents
+              ? `No progress (${ev.reason}): only the failing tasks move up next round (${Object.entries(ev.agents as Record<string, string>).map(([a, p]) => `${a} at ${p}`).join(", ")}).`
             : ev.action === "escalate" ? `No progress (${ev.reason}): next round runs at power ${ev.power}.`
             : `No progress (${ev.reason}): already at max power, retrying with a different approach.`,
         }))

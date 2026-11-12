@@ -109,6 +109,8 @@ if (prompt.includes("Produce the plan")) {
   } else {
     if (prompt.includes("previous reply was rejected")) log("architect: got rejection reason");
     if (prompt.includes("Do not repeat the previous plan")) log("architect: got stuck note");
+    // Context between rounds and the project brief, as the architect sees them.
+    log(`architect: previousRound=${/What round \d+ did/.test(prompt) && prompt.includes("Plan: fake plan")} brief=${prompt.includes("FAKE BRIEF") ? "seen" : prompt.includes("No project brief exists yet") ? "asked" : "none"}`);
     const plan = {
       summary: "fake plan",
       tasks: [
@@ -117,6 +119,7 @@ if (prompt.includes("Produce the plan")) {
         { agent: "fe", phase: "build", task: "ui", files: [".\\src\\ui.ts"] },
         { agent: "qa", phase: "verify", task: "check it" },
       ],
+      ...(prompt.includes("No project brief exists yet") ? { brief: "FAKE BRIEF: a fake repo with src/ and no checks." } : {}),
     };
     reply("```json\n" + JSON.stringify(plan) + "\n```");
   }

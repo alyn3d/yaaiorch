@@ -203,6 +203,37 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.last("goal_end").cost, 0.25);
   });
 
+  test("fix rounds see the previous round; the project brief is written once and reused", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "2"], { FAKE_QA: "fail" });
+    assert.equal(r.code, 1, r.out);
+    const arch = r.calls.filter((c) => c.startsWith("architect: previousRound"));
+    assert.deepEqual(arch, ["architect: previousRound=false brief=asked", "architect: previousRound=true brief=seen"], r.calls.join("\n"));
+    assert.match(readFileSync(join(dir, ".orchestrator", "brief.md"), "utf8"), /FAKE BRIEF/);
+    assert.equal(dirty(dir), "", "the brief stays out of commits");
+
+    git(dir, "reset", "-q", "--hard", branches(dir, "orchestrator/checkpoint-*")[0] ?? "HEAD");
+    const r2 = orch(dir, ["run", "y", "--max-rounds", "1", "--dry-run"]);
+    assert.ok(r2.calls.includes("architect: previousRound=false brief=seen"), "the next goal reuses the brief");
+    const r3 = orch(dir, ["run", "y", "--max-rounds", "1", "--dry-run", "--no-brief"]);
+    assert.ok(r3.calls.includes("architect: previousRound=false brief=none"), "--no-brief leaves it out");
+  });
+
+  test("a stuck round with one failing task moves only that agent up a tier", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "3"], { FAKE_FAIL_AGENT: "be", FAKE_QA: "pass" });
+    assert.equal(r.code, 1, r.out);
+    const stuck = r.ev("stuck");
+    assert.equal(stuck[0].action, "escalate");
+    assert.deepEqual(stuck[0].agents, { be: "max" }, JSON.stringify(stuck));
+    assert.equal(stuck[0].power, "heavy", "the round's tier stays");
+    const models = (agent) => r.calls.filter((c) => c.startsWith(`call agent=${agent} `)).map((c) => /model=(\S+)/.exec(c)[1]);
+    assert.deepEqual(models("be"), ["sonnet", "sonnet", "opus"], "be: heavy impl, then max impl");
+    assert.ok(models("fe").every((m) => m === "sonnet"), `fe stays: ${models("fe")}`);
+    assert.ok(models("architect").every((m) => m === "opus"));
+    assert.deepEqual(r.ev("round_start").at(-1).agentPower, { be: "max" });
+  });
+
   test("budget cap stops the goal", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "3", "--max-cost", "0.12"]);

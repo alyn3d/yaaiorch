@@ -47,7 +47,7 @@ Map each role to a model. The architect and QA get the strongest models; impleme
 ### Round lifecycle (`runGoal`)
 
 1. **Checkpoint** (skipped for `--dry-run`). If the target is a git repo: refuse a dirty tree or a repo with no commits, then create branch `orchestrator/checkpoint-<ts>` and emit `checkpoint`. Without git there is no rollback, no commits and no phantom-completion check.
-2. **Architect.** Gets the goal, the agent roster (minus itself), the skill list, the previous round's failures, and the plan reply format. Must answer with one JSON `Plan`. A reply that is not valid JSON or fails validation is sent back once with the reason.
+2. **Architect.** Gets the goal, the agent roster (minus itself), the skill list, the project brief, and from round 2 on what the previous round did (its plan, how each task ended, and the diff stat since the checkpoint) plus its failures, and the plan reply format. Must answer with one JSON `Plan`. **Project brief:** `.orchestrator/brief.md` holds the architect's notes on the repo (stack, layout, conventions, commands). With none, the architect is asked for a `brief` field and orch writes it; later rounds and goals get it in the prompt (and the fast path's `dev` agent too), so they need not re-read the repo. The architect returns `brief` again only to correct it. `--no-brief` (config `"brief": false`) turns this off; delete the file to start over. A reply that is not valid JSON or fails validation is sent back once with the reason.
 3. **Validate.** Rejects a malformed plan, unknown agents, invalid phases, foundation/build tasks without files, a file owned by two tasks (paths normalized: `./`, `\`, case on Windows), and plans with no `verify` task.
 4. **Foundation** tasks run one at a time (shared types, tokens, API client). If one errors, the rest of the round is skipped (`SKIPPED`).
 5. **Build** tasks run in parallel. File ownership is what makes this safe. A task that errors does not stop its siblings; its error becomes a round failure.
@@ -55,7 +55,7 @@ Map each role to a model. The architect and QA get the strongest models; impleme
 7. **Checks.** The orchestrator runs the repo's check commands itself (10 min timeout each) and emits `checks`. Commands come from `.orchestrator/config.json` `checks`, else from the package.json scripts `typecheck`, `lint`, `test`, `build` (npm's placeholder test is skipped).
 8. **Verify** tasks run sequentially, never edit. Each returns `{passed, failures[]}`. They receive the implementer reports, the diff stat against the checkpoint, any uncommitted new files, and the check results with output tails. A verify call that errors counts as a failure.
 9. Write `.orchestrator/last-run.json`. The round passes only if no task errored, every check exited 0, and every verdict passed. A failed check is a failure whatever QA says. Otherwise feed the failures to the next architect round.
-10. **Stuck detection.** A failed round that changed no files, or ended with the same failures as the round before (compared ignoring case, spacing and numbers), counts as stuck. The first time, the next round runs one power tier up (economy → balanced → heavy → max) and the architect is told not to repeat its plan (emits `stuck` with action `escalate`, or `retry` at max). Two stuck rounds in a row stop the goal (`stuck`, action `stop`).
+10. **Stuck detection.** A failed round that changed no files, or ended with the same failures as the round before (compared ignoring case, spacing and numbers), counts as stuck. The first time the architect is told not to repeat its plan, and something moves one power tier up (economy → balanced → heavy → max): if some implementer tasks failed outright (FAILED, PARTIAL, PHANTOM, ERROR, UNKNOWN) while others completed, only those tasks' agents move up (their tier and alias overrides; `stuck` carries `agents`, `round_start` then `agentPower`); otherwise, when every task claims success and the plan or verification is the problem, the whole round moves up (`stuck` with action `escalate`, or `retry` at max). Two stuck rounds in a row stop the goal (`stuck`, action `stop`).
 11. **Finish** (git only). On pass, delete the checkpoint. On failure in `loop`, move the goal's commits to `orchestrator/failed-<ts>` and reset the branch to the checkpoint, so the next goal starts clean. On failure in `run`, leave the commits; `orch rollback` (or the UI button) undoes them.
 
 ### Fast path (`--fast`, experimental)
@@ -115,14 +115,14 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `goal_start` | goal, maxRounds, dryRun, power, maxCost?, models ({roles, agents} overrides), onLimit |
 | `queue_item` | id, goal (loop only) |
 | `checkpoint` | branch (git only, not on dry run) |
-| `round_start` | round, power, models (effective model per role), mode? (`direct` on the fast path) |
+| `round_start` | round, power, models (effective model per role), mode? (`direct` on the fast path), agentPower? ({agent: power} for agents escalated on their own) |
 | `architect_start` | round |
 | `plan` | round, summary, cost, tasks[] (each with `id`) |
 | `checks` | round, results[] ({name, command, ok, code, ms}) |
 | `task_start` | round, id, agent, phase |
 | `task_end` | round, id, agent, phase, status, touched[], cost?, failures?, error? |
 | `round_end` | round, passed, failures[], cost |
-| `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power? |
+| `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power?, agents? ({agent: power} when only the failing tasks' agents move up) |
 | `usage_limit` | message, resetAt? (epoch ms) |
 | `goal_end` | passed, cost, error?, usageLimit?, resetAt? |
 | `waiting` | reason (`usage_limit` between goals, or `usage_cap` before an agent call, with `window`), until |
@@ -236,6 +236,7 @@ a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 | `<target>/.orchestrator/last-run.json` | orch.ts | Latest goal: status, total cost, `checkpoint` (only while that branch exists; drives the UI's rollback offer), and per round power, plan, touched files, checks, failures, cost |
 | `<target>/.orchestrator/readonly-settings.json` | orch.ts | Allow-list plus edit-tool deny for the architect and verifiers |
 | `<target>` git branches `orchestrator/discarded-*` | orch.ts | Work thrown away by `orch rollback` |
+| `<target>/.orchestrator/brief.md` | orch.ts (written by the architect) | Project brief reused by later rounds and goals; never committed |
 | `<target>/.orchestrator/builtin-agents.json` | orch.ts | Built-in agent definitions passed to `claude --agents` |
 | `<target>/.orchestrator/agent-settings.json` | orch.ts | Permission allow-list passed to `claude --settings`, plus `enabledPlugins` (ids set to false) and `disableAllHooks` when plugins or hooks are switched off |
 | `<target>/.orchestrator/config.json` | user | Optional: `{"checks": {"name": "command"}, "allow": ["Bash(...)"]}` |
