@@ -120,4 +120,5 @@ node evals/run.ts --cases node-chunk-bug,api-post,py-roman --power economy --rep
 
 ## License
 
-By contributing you agree that your contributions are licensed under the [MIT License](LICENSE).
+YAAIORCH is licensed under the [GNU General Public License v3.0](LICENSE) (GPL-3.0-only). By contributing
+you agree that your contributions are licensed under the same terms.

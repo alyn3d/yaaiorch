@@ -60,7 +60,7 @@ process exits without `goal_end`.
 - `README.md` (users), `CONTRIBUTING.md` (setup, checks, conventions), `docs/ARCHITECTURE.md` (design, event table, data on disk).
 - `ROADMAP.md` (milestones), `TODO.md` (open tasks by milestone), `CHANGELOG.md` (what shipped; add to `[Unreleased]` in the same change).
 - `docs/review-2026-11.md` is the original code review, kept for history.
-- MIT licensed. Open source: never commit personal data, local paths, secrets or eval results.
+- GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
 0.2.0 shipped several repos at once and cost control. Next milestone is 0.3 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then hardening (browser CSRF, queue lock, retries, loop budget, graceful stop).

@@ -2,7 +2,7 @@
   "name": "yaaiorch-ui",
   "version": "0.2.0",
   "description": "YAAIORCH (Yet Another AI Orchestrator): browser UI and desktop app",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alyn3d/yaaiorch.git"

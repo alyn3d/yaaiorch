@@ -223,4 +223,14 @@ Contributions are welcome: bug reports, eval cases, agents, docs and code. Read
 
 ## License
 
-[MIT](LICENSE). YAAIORCH is an independent project and is not affiliated with Anthropic.
+Copyright (C) 2026 alyn3d and contributors.
+
+YAAIORCH is free software: you can redistribute it and/or modify it under the terms of the
+[GNU General Public License version 3](LICENSE) (GPL-3.0-only), as published by the Free Software
+Foundation. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see the
+license for details.
+
+Releases up to and including 0.2.0 were published under the MIT License, and those copies stay
+available under it; later versions are GPL-3.0.
+
+YAAIORCH is an independent project and is not affiliated with Anthropic.

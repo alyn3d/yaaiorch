@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Changed
+- **License: GPL-3.0-only** (was MIT). Versions up to and including 0.2.0 remain available under MIT.
+
 ### Added
 - **Project brief**: the architect writes `.orchestrator/brief.md` (stack, layout, conventions,
   commands) on the first run; later rounds, later goals and the fast path's agent reuse it instead of
