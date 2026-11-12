@@ -56,6 +56,7 @@ process exits without `goal_end`.
 - `node evals/run.ts --reference`: checks every case's hidden tests fail on the fixture and pass with the reference. Run after editing a case.
 - `node evals/run.ts --cases <ids> --power economy,heavy`: real runs (costs money), graded by hidden tests the agents never see. Results in `evals/results/` (git-ignored).
 - Use it to judge prompt, agent or tier changes: compare hidden pass rate, false passes and cost before and after, with `--repeat 3` or more.
+- Config suffixes: `economy+fast`, `+nomem` (no brief or notes), `+critic`, combinable. Series cases (`goals: [...]` in `cases.json`) run each goal in turn on one repo and grade at the end; they measure the brief and notes (`--power economy,economy+nomem`).
 
 ## Docs
 - `README.md` (users), `CONTRIBUTING.md` (setup, checks, conventions), `docs/ARCHITECTURE.md` (design, event table, data on disk).

@@ -10,7 +10,8 @@
 //
 // Options:
 //   --cases a,b          case ids (default: all)          --power economy,heavy  orch tiers (default: economy; "none" for no orch runs;
-//                                                                              "economy+fast" adds orch's --fast)
+//                                                                              suffixes: +fast (--fast), +nomem (--no-brief --no-notes),
+//                                                                              +critic (--critic), e.g. economy+nomem)
 //   --single m1,m2       also run a single agent with these models (control group), e.g. sonnet,opus
 //   --orch-model SPEC    passed to orch as --model for every orch run, e.g. "architect=opus,impl=haiku"
 //   --repeat N           runs per case and tier (1)       --parallel N           runs at once (1)
@@ -23,7 +24,8 @@
 //
 // A run cut short by the usage limit (orch exit code 3) is never recorded as a failure.
 //
-// Each run copies a fixture into a fresh git repo under the OS temp dir, runs `orch run "<goal>"` there,
+// Each run copies a fixture into a fresh git repo under the OS temp dir, runs `orch run "<goal>"` there
+// (a series case runs each of its goals in turn on the same repo, so the project brief and notes carry over),
 // then copies the case's hidden tests in (agents never see them) and runs the case's grade command.
 // Results: evals/results/<stamp>.jsonl (one line per run) and <stamp>.md (summary). Work dirs are kept.
 import { spawn, spawnSync, execFileSync } from "node:child_process";
@@ -33,11 +35,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-type Case = { id: string; fixture: string; kind: string; difficulty: string; goal: string; grade: string };
+/** `goals`: a series, run one after another on the same repo and graded once at the end. */
+type Case = { id: string; fixture: string; kind: string; difficulty: string; goal?: string; goals?: string[]; grade: string };
+const goalsOf = (c: Case): string[] => c.goals ?? [c.goal!];
 /** `power` is the configuration label: an orch tier ("economy"), or "single:<model>" for the control group. */
 type Run = {
   case: string; kind: string; difficulty: string; power: string; rep: number; runner?: "orch" | "single";
-  claimed: boolean; hidden: boolean; rounds: number; cost: number; seconds: number;
+  claimed: boolean; hidden: boolean; rounds: number; cost: number; seconds: number; goals?: number;
   stuck: number; finalPower?: string; error?: string; exit: number | null; timedOut: boolean; dir: string; gradeTail: string;
 };
 
@@ -73,9 +77,17 @@ const unknown = wanted?.filter((id) => !allCases.some((c) => c.id === id)) ?? []
 if (unknown.length) fail(`unknown case(s): ${unknown.join(", ")}. Known: ${allCases.map((c) => c.id).join(", ")}`);
 const cases = wanted ? allCases.filter((c) => wanted.includes(c.id)) : allCases;
 const powers = a.power === "none" ? [] : a.power!.split(",").map((s) => s.trim()).filter(Boolean);
-// "economy+fast" runs orch with --fast (direct attempt first).
-const tierOf = (label: string) => label.replace(/\+fast$/, "");
-for (const p of powers) if (!TIERS.includes(tierOf(p))) fail(`unknown power "${p}"; use ${TIERS.join(", ")} (optionally +fast) or none`);
+// Suffixes add orch options: "economy+fast" (direct attempt first), "economy+nomem" (no project brief or notes,
+// to measure what they are worth), "economy+critic" (plan critic). They combine: "heavy+nomem+critic".
+const SUFFIXES: Record<string, string[]> = { fast: ["--fast"], nomem: ["--no-brief", "--no-notes"], critic: ["--critic"] };
+const tierOf = (label: string) => label.split("+")[0];
+const suffixArgs = (label: string) => label.split("+").slice(1).flatMap((x) => SUFFIXES[x] ?? []);
+for (const p of powers) {
+  const bad = p.split("+").slice(1).filter((x) => !SUFFIXES[x]);
+  if (!TIERS.includes(tierOf(p)) || bad.length)
+    fail(`unknown power "${p}"; use ${TIERS.join(", ")} with optional ${Object.keys(SUFFIXES).map((x) => `+${x}`).join(", ")}, or none`);
+}
+for (const c of allCases) if (!c.goal && !c.goals?.length) fail(`case ${c.id} has neither goal nor goals`);
 const singles = (a.single ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 for (const m of singles) if (!/^[\w.:-]+$/.test(m)) fail(`bad model name "${m}"`);
 /** Configuration labels, in table order: orch tiers, then the single-agent control group. */
@@ -153,13 +165,13 @@ function killTree(pid?: number) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function runOrch(dir: string, c: Case, power: string): Promise<{ exit: number | null; events: any[]; seconds: number; timedOut: boolean }> {
+function runOrch(dir: string, goal: string, power: string): Promise<{ exit: number | null; events: any[]; seconds: number; timedOut: boolean }> {
   return new Promise((resolve) => {
     const start = Date.now();
     const args = [
-      ...orchArgs, "run", c.goal,
+      ...orchArgs, "run", goal,
       "--power", tierOf(power),
-      ...(power.endsWith("+fast") ? ["--fast"] : []),
+      ...suffixArgs(power),
       // The runner handles the usage limit itself (stop or --wait-on-limit), so orch must not wait.
       "--on-limit", "stop",
       ...(a["orch-model"] ? ["--model", a["orch-model"]] : []),
@@ -220,14 +232,14 @@ function checksIn(dir: string): Record<string, string> {
 
 type SingleResult = { exit: number | null; seconds: number; timedOut: boolean; result?: { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number } };
 
-function runSingle(dir: string, c: Case, model: string): Promise<SingleResult> {
+function runSingle(dir: string, goal: string, model: string): Promise<SingleResult> {
   const checks = checksIn(dir);
   const cmds = [...Object.values(checks), ...(checks.test ? ["npm test"] : []), "git status", "git diff", "git log", "git show"];
   const allow = cmds.flatMap((cmd) => [`Bash(${cmd}:*)`, `PowerShell(${cmd}:*)`]);
   mkdirSync(join(dir, ".orchestrator"), { recursive: true });
   writeFileSync(join(dir, ".orchestrator", "single-settings.json"), JSON.stringify({ permissions: { allow } }, null, 2));
   const prompt =
-    `Complete this task in the repository in the current directory.\n\nTask: ${c.goal}\n\n` +
+    `Complete this task in the repository in the current directory.\n\nTask: ${goal}\n\n` +
     `Follow the repository's existing conventions and add or update tests. ` +
     `You can run the repository's checks: ${Object.values(checks).join(", ") || "none are configured"}.\n` +
     `When you are done, end your reply with exactly one of these lines: "Status: COMPLETE", "Status: PARTIAL" or "Status: FAILED".`;
@@ -318,17 +330,23 @@ async function oneSingle(job: Job, model: string) {
   const dir = join(workRoot, `${c.id}-${power.replace(":", "-")}-${rep}`);
   rmSync(dir, { recursive: true, force: true });
   setupRepo(dir, c);
-  const r = await runSingle(dir, c, model);
-  const text = typeof r.result?.result === "string" ? r.result.result : "";
-  if ((r.result?.is_error || r.exit !== 0) && LIMIT_RE.test(text)) return onLimit(job);
+  // A series: one call per goal, in order, on the same repo (the single agent keeps no memory between them).
+  let claimed = true, cost = 0, seconds = 0, error: string | undefined, last: SingleResult | undefined;
+  for (const goal of goalsOf(c)) {
+    const r = (last = await runSingle(dir, goal, model));
+    const text = typeof r.result?.result === "string" ? r.result.result : "";
+    if ((r.result?.is_error || r.exit !== 0) && LIMIT_RE.test(text)) return onLimit(job);
+    const failed = r.timedOut || !r.result || r.result.is_error || r.exit !== 0;
+    claimed &&= !failed && /Status:\s*COMPLETE/i.test(text);
+    cost += r.result?.total_cost_usd ?? 0;
+    seconds += r.seconds;
+    error ??= r.timedOut ? "eval timeout" : !r.result ? `claude exited ${r.exit} without JSON` : failed ? `claude: ${r.result.subtype ?? `exit ${r.exit}`} ${text.slice(0, 120)}`.trim() : undefined;
+  }
   const g = grade(dir, c);
-  const failed = r.timedOut || !r.result || r.result.is_error || r.exit !== 0;
   record({
     case: c.id, kind: c.kind, difficulty: c.difficulty, power, rep, runner: "single",
-    claimed: !failed && /Status:\s*COMPLETE/i.test(text), hidden: g.pass,
-    rounds: 1, cost: r.result?.total_cost_usd ?? 0, seconds: r.seconds, stuck: 0,
-    error: r.timedOut ? "eval timeout" : !r.result ? `claude exited ${r.exit} without JSON` : failed ? `claude: ${r.result.subtype ?? `exit ${r.exit}`} ${text.slice(0, 120)}`.trim() : undefined,
-    exit: r.exit, timedOut: r.timedOut, dir, gradeTail: g.pass ? "" : g.tail,
+    claimed, hidden: g.pass, rounds: goalsOf(c).length, cost, seconds, stuck: 0, goals: goalsOf(c).length, error,
+    exit: last?.exit ?? null, timedOut: !!last?.timedOut, dir, gradeTail: g.pass ? "" : g.tail,
   });
 }
 
@@ -338,20 +356,33 @@ async function one(job: Job) {
   const dir = join(workRoot, `${c.id}-${power}-${rep}`);
   rmSync(dir, { recursive: true, force: true }); // a retried run starts from a clean copy
   setupRepo(dir, c);
-  const r = await runOrch(dir, c, power);
-  const end = [...r.events].reverse().find((e) => e.type === "goal_end");
-  // Usage limit: not the orchestrator's fault and not a result.
-  if (r.exit === 3 || end?.usageLimit) return onLimit(job, end?.resetAt);
+  // A series runs its goals in turn on the same repo; a failed goal does not stop the next one (a user
+  // would go on too), and the series counts as claimed only if every goal passed.
+  const all: any[] = [];
+  let claimed = true, cost = 0, seconds = 0, error: string | undefined;
+  let last: Awaited<ReturnType<typeof runOrch>> | undefined;
+  for (const [i, goal] of goalsOf(c).entries()) {
+    const r = (last = await runOrch(dir, goal, power));
+    const end = [...r.events].reverse().find((e) => e.type === "goal_end");
+    // Usage limit: not the orchestrator's fault and not a result.
+    if (r.exit === 3 || end?.usageLimit) return onLimit(job, end?.resetAt);
+    all.push(...r.events);
+    claimed &&= !!end?.passed;
+    cost += end?.cost ?? 0;
+    seconds += r.seconds;
+    const why = r.timedOut ? "eval timeout" : end?.error ?? (end ? undefined : `orch exited ${r.exit} without goal_end`);
+    if (why && !error) error = goalsOf(c).length > 1 ? `goal ${i + 1}: ${why}` : why;
+  }
   const g = grade(dir, c);
-  const rounds = r.events.filter((e) => e.type === "round_start");
+  const rounds = all.filter((e) => e.type === "round_start");
   record({
     case: c.id, kind: c.kind, difficulty: c.difficulty, power, rep, runner: "orch",
-    claimed: !!end?.passed, hidden: g.pass,
-    rounds: rounds.length, cost: end?.cost ?? 0, seconds: r.seconds,
-    stuck: r.events.filter((e) => e.type === "stuck").length,
+    claimed, hidden: g.pass,
+    rounds: rounds.length, cost: Math.round(cost * 10_000) / 10_000, seconds, goals: goalsOf(c).length,
+    stuck: all.filter((e) => e.type === "stuck").length,
     finalPower: rounds.at(-1)?.power,
-    error: r.timedOut ? "eval timeout" : end?.error ?? (end ? undefined : `orch exited ${r.exit} without goal_end`),
-    exit: r.exit, timedOut: r.timedOut, dir, gradeTail: g.pass ? "" : g.tail,
+    error,
+    exit: last?.exit ?? null, timedOut: !!last?.timedOut, dir, gradeTail: g.pass ? "" : g.tail,
   });
 }
 
@@ -398,6 +429,8 @@ for (const p of configs) {
   );
 }
 lines.push("", "False pass: the run reported success (orch: QA passed; single: Status: COMPLETE) but the hidden tests failed.", "");
+if (cases.some((c) => c.goals))
+  lines.push("Series cases run several goals in a row on one repo; their rounds and cost are totals over all goals, and they count as claimed only if every goal passed.", "");
 lines.push("## By case", "");
 lines.push(`| case | kind | ${configs.join(" | ")} |`);
 lines.push(`|---|---|${configs.map(() => "---").join("|")}|`);

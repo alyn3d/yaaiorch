@@ -166,5 +166,29 @@
     "difficulty": "long",
     "goal": "Add partial refunds. Add refund(orderId, sku, qty) to src/orders.js and export it from src/index.js. It refunds qty units of one line of an order: the order must exist, the order must have a line for that sku, qty must be a positive integer, and the total refunded units of a line can never exceed the units bought on it; any violation throws an Error. Refunded units go back into stock. The amount of a refund is unitPrice * qty plus a share of the order's tax: round half up of order.tax * (unitPrice * qty) / order.subtotal, except that when this refund makes every unit of the whole order refunded, the tax share is all of the order's tax not yet refunded, so a fully refunded order gives back exactly its total. Every order gets refunds: [{ sku, qty, amount }] and refunded (the sum of the amounts), which are [] and 0 for an order without refunds. refund returns the new { sku, qty, amount } entry. salesReport adds refunds (the sum of all refunded amounts) and netRevenue (revenue minus refunds), and its bySku counts net units (bought minus refunded). Add tests.",
     "grade": "node --test test/__hidden__/refunds.test.js test/shop.test.js"
+  },
+  {
+    "id": "tickets-series",
+    "fixture": "node-tickets",
+    "kind": "series",
+    "difficulty": "series: 3 goals in a row on one repo (tags, tag filter, tag stats)",
+    "goals": [
+      "Add tags to tickets. A ticket has tags, an array of strings; a valid tag is 1 to 20 characters of lowercase letters, digits and hyphens, starting with a letter. Tags given by callers are trimmed and lower-cased before they are checked. create() accepts an optional tags array (default []): duplicates are dropped keeping the first occurrence, at most 10 tags, and an invalid tag or a tags value that is not an array is a ValidationError. Add service methods addTag(id, tag), which adds the normalized tag if it is not there yet (adding one that is there is not an error, but an 11th tag is), and removeTag(id, tag), which removes it if present (removing a missing tag is not an error). Both validate the tag and throw NotFoundError for an unknown ticket. Over HTTP: POST /tickets accepts tags; POST /tickets/:id/tags with body { tag } returns 200 and the ticket; DELETE /tickets/:id/tags/:tag returns 200 and the ticket. Errors keep the existing statuses and { error } body. Update the README and the tests.",
+      "Let tickets be filtered by tag. list() accepts tag (normalized like stored tags: trimmed and lower-cased; an invalid tag is a ValidationError) and combines it with the status and assignee filters. GET /tickets accepts ?tag=. Tickets stored before tags existed have no tags field: treat them as having no tags, and return them with tags: [] from get() and list(). Update the README and the tests.",
+      "Add tag statistics. A service method tagStats() returns [{ tag, open, total }] for every tag on any ticket, where total is the number of tickets with that tag and open the number of those whose status is open, sorted by total descending and then by tag name ascending. GET /tags returns that list. Update the README and the tests."
+    ],
+    "grade": "node --test test/__hidden__/tags.test.js test/http.test.js test/service.test.js"
+  },
+  {
+    "id": "api-series",
+    "fixture": "node-api",
+    "kind": "series",
+    "difficulty": "series: 3 goals in a row on one repo (create, update/delete, filters)",
+    "goals": [
+      "Add POST /todos: the JSON body has a title (a string, trimmed, 1 to 100 characters); create the todo with the next id (one more than the highest id ever used in this server, starting after the seeded todos) and done false, and respond 201 with it. A missing, empty or too long title, a body that is not valid JSON or not a JSON object gives 400 with the usual { error } body. Add tests.",
+      "Add PATCH /todos/:id with a JSON body containing title and/or done (title validated as for POST, done must be a boolean; a body with neither is invalid) that responds 200 with the updated todo, and DELETE /todos/:id that responds 204 with an empty body. An id that is not a positive integer gives 400, an unknown todo 404, an invalid body 400, all with the usual { error } body, and a rejected update changes nothing. Ids of deleted todos are never reused. Add tests.",
+      "Let GET /todos filter: ?done=true or ?done=false keeps only todos with that done value (any other value gives 400), and ?q=text keeps todos whose title contains the trimmed text, ignoring case (an empty q does not filter). The filters can be combined, and the list stays in id order. Add tests."
+    ],
+    "grade": "node --test test/__hidden__/todos.test.js test/server.test.js"
   }
 ]

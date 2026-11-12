@@ -29,12 +29,12 @@ Runs orch for real (this spends money). Options:
 | option | default | meaning |
 |---|---|---|
 | `--cases a,b` | all | case ids from `cases.json` |
-| `--power economy,heavy` | economy | orch tiers to compare (`none` to skip orch) |
+| `--power economy,heavy` | economy | orch configurations to compare (`none` to skip orch): a tier, optionally with `+fast` (`--fast`), `+nomem` (`--no-brief --no-notes`) or `+critic` (`--critic`), combinable, e.g. `economy,economy+nomem` |
 | `--single sonnet,opus` | | also run the **control group**: one `claude -p` call per case with this model, the same goal, permissions, check commands and budget |
 | `--repeat N` | 1 | runs per case and tier (LLM runs vary; use 3+ for decisions) |
 | `--parallel N` | 1 | runs at once |
 | `--max-rounds N` | 4 | passed to orch |
-| `--max-cost USD` | 3 | passed to orch, per run |
+| `--max-cost USD` | 3 | passed to orch, per run (per goal in a series) |
 | `--agent-timeout MIN` | 15 | passed to orch |
 | `--eval-timeout MIN` | 30 | kills a whole run |
 | `--claude-bin PATH` | | a different `claude`, e.g. a fake, to test the runner for free |
@@ -97,6 +97,19 @@ means QA or the checks are too lenient.
 | tickets-sla | node-tickets | feature | long: business-hours due dates, recompute on priority change, overdue filter |
 | tickets-import | node-tickets | feature | long: CSV import, all-or-nothing validation with per-row errors, dedupe |
 | shop-refunds | node-shop | feature | long: partial refunds, restock, proportional tax with exact remainder, net report |
+| tickets-series | node-tickets | series | 3 goals: tags with validation, tag filter (old tickets without tags), tag stats |
+| api-series | node-api | series | 3 goals: create, update and delete, filters |
+
+**Series** cases (`goals` instead of `goal`) run several goals one after another on the same repo, like a
+user working through a backlog, and are graded once at the end with hidden tests covering every goal. A
+later goal builds on the earlier ones, so this is where the project brief and the notes between goals
+(`.orchestrator/brief.md`, `notes.md`) should pay off: compare `--power economy,economy+nomem` on them. Their
+rounds and cost are totals over the goals, and a series counts as claimed only if every goal passed. The
+single-agent control runs one call per goal, with no memory in between.
+
+```bash
+node evals/run.ts --cases tickets-series,api-series --power economy,economy+nomem --repeat 3
+```
 
 The `long` cases are meant to be more than one model call can comfortably hold: several dependent
 changes across layers in one goal. They are where the loop should beat the single-agent control.
@@ -108,7 +121,7 @@ git-ignored elsewhere, so add it with `git add -f`.
 ## Adding a case
 
 1. Add an entry to `cases.json`: `id`, `fixture`, `kind`, `difficulty`, `goal` (written the way a user
-   would ask, with enough detail that the hidden tests are fair), `grade` (a shell command run in the repo
+   would ask, with enough detail that the hidden tests are fair; or `goals`, a list, for a series), `grade` (a shell command run in the repo
    root; exit 0 means pass; include the fixture's own tests).
 2. Put the hidden tests in `hidden/<id>/`, laid out as repo paths (they are copied over the repo).
 3. Put a reference solution in `reference/<id>/`, also as repo paths.

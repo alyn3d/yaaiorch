@@ -91,6 +91,8 @@ Each item should show its effect in the evals before it becomes the default.
   no longer apply, instead of cutting the oldest.
 - [ ] **Share what was learned**: optionally propose the brief and lasting lessons as a section of the
   repo's CLAUDE.md, as a commit to review, so teammates and fresh clones get it.
+- [x] **Cases to measure them with**: two series cases (`tickets-series`, `api-series`: three goals in a row
+  on one repo) and runner configs `+nomem` and `+critic`.
 - [ ] **Measure these** (brief, notes, context between rounds, per-task escalation, plan critic): they were built
   without an eval, because the current cases all pass in round 1. Needs cases that take several
   rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.

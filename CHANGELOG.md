@@ -27,6 +27,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - **License: GPL-3.0-only** (was MIT). Versions up to and including 0.2.0 remain available under MIT.
 
 ### Added
+- Evals: **series cases** (`tickets-series`, `api-series`): three goals in a row on one repo, graded at the
+  end, to measure the project brief and notes; runner configs `+nomem` (`--no-brief --no-notes`) and
+  `+critic`, combinable with a tier and `+fast`.
 - **Stop after this goal** for queue loops: `orch stop-after` or a button in the UI while a queue runs;
   the current goal finishes and the rest stay pending.
 - **Project brief**: the architect writes `.orchestrator/brief.md` (stack, layout, conventions,
