@@ -214,9 +214,9 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(dirty(dir), "");
   });
 
-  test("usage limit in run: exit 3, no stuck round, reset time reported", () => {
+  test("usage limit in run with --on-limit stop: exit 3, no stuck round, reset time reported", () => {
     const dir = repo();
-    const r = orch(dir, ["run", "x", "--max-rounds", "3"], { FAKE_LIMIT_AFTER: "2" });
+    const r = orch(dir, ["run", "x", "--max-rounds", "3", "--on-limit", "stop"], { FAKE_LIMIT_AFTER: "2" });
     assert.equal(r.code, 3, r.out);
     const lim = r.last("usage_limit");
     assert.ok(lim, "usage_limit event");
@@ -273,6 +273,93 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "1"]);
     assert.equal(r.code, 0, r.out);
     assert.deepEqual(r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]), ["dev", "qa"]);
+  });
+
+  test("usage limit in run (default wait): work set aside, waits, retries and passes", () => {
+    const dir = repo();
+    const base = git(dir, "rev-parse", "HEAD");
+    // The 3rd call (a build task, after the foundation task wrote a file) hits the limit.
+    const r = orch(dir, ["run", "x", "--max-rounds", "2"], { FAKE_LIMIT_ON: "3", ORCH_LIMIT_WAIT_MS: "1500" });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.ev("waiting").length, 1);
+    assert.equal(r.ev("goal_start").length, 2, "the goal is retried after the wait");
+    assert.equal(r.last("goal_end").passed, true);
+    assert.equal(branches(dir, "orchestrator/interrupted-*").length, 1, "the first attempt's work is kept aside");
+    assert.notEqual(git(dir, "rev-parse", "HEAD"), base);
+    assert.equal(dirty(dir), "");
+  });
+
+  test("usage limit in loop with --on-limit stop: goal left pending, exit 3", () => {
+    const dir = repo();
+    orch(dir, ["add", "goal one"]);
+    orch(dir, ["add", "goal two"]);
+    const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "2", "--on-limit", "stop"], { FAKE_LIMIT_ON: "3" });
+    assert.equal(r.code, 3, r.out);
+    assert.equal(r.ev("waiting").length, 0);
+    const queue = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    assert.deepEqual(queue.map((i) => i.status), ["pending", "pending"]);
+    assert.match(queue[0].note, /usage limit: stopped/);
+    assert.equal(branches(dir, "orchestrator/interrupted-*").length, 1);
+    assert.equal(dirty(dir), "");
+  });
+
+  test("onLimit in config.json works like the flag", () => {
+    const dir = repo();
+    writeConfig(dir, { onLimit: "stop" });
+    const r = orch(dir, ["run", "x", "--max-rounds", "2"], { FAKE_LIMIT_ON: "2" });
+    assert.equal(r.code, 3, r.out);
+    assert.equal(r.ev("waiting").length, 0);
+  });
+
+  test("models: role and agent overrides on top of the tier", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--power", "economy", "--model", "architect=opus,qa=haiku,be=claude-test-1"]);
+    assert.equal(r.code, 0, r.out);
+    const model = (agent) => /model=(\S+)/.exec(r.calls.find((c) => c.startsWith(`call agent=${agent} `)))[1];
+    assert.equal(model("architect"), "opus");
+    assert.equal(model("fe"), "haiku", "impl from the economy tier");
+    assert.equal(model("be"), "claude-test-1", "agent override");
+    assert.equal(model("qa"), "haiku");
+    assert.deepEqual(r.ev("round_start")[0].models, { architect: "opus", impl: "haiku", heavy: "sonnet", qa: "haiku", dev: "sonnet" });
+    assert.deepEqual(r.ev("goal_start")[0].models, { roles: { architect: "opus", qa: "haiku" }, agents: { be: "claude-test-1" } });
+  });
+
+  test("models: config.json, CLI on top, agent beats role", () => {
+    const dir = repo();
+    writeConfig(dir, { models: { impl: "sonnet", agents: { fe: "opus" } } });
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--power", "economy", "--model", "impl=haiku"]);
+    assert.equal(r.code, 0, r.out);
+    const models = r.calls.filter((c) => /agent=(fe|be) /.test(c)).map((c) => `${/agent=(\S+)/.exec(c)[1]}=${/model=(\S+)/.exec(c)[1]}`);
+    assert.deepEqual(models, ["fe=opus", "be=haiku", "fe=opus"]);
+  });
+
+  test("models: aliases step up on escalation, full IDs stay pinned", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "5", "--power", "economy", "--model", "impl=haiku,be=claude-pinned-1"], {
+      FAKE_QA: "fail",
+      FAKE_NOWRITE: "1",
+    });
+    assert.equal(r.code, 1);
+    const rounds = r.ev("round_start");
+    assert.deepEqual(rounds.map((e) => e.power), ["economy", "balanced"]);
+    assert.equal(rounds[0].models.impl, "haiku");
+    assert.equal(rounds[1].models.impl, "sonnet", "alias moved up with the tier");
+    const beModels = r.calls.filter((c) => c.startsWith("call agent=be ")).map((c) => /model=(\S+)/.exec(c)[1]);
+    assert.ok(beModels.length >= 2 && beModels.every((m) => m === "claude-pinned-1"), beModels.join(","));
+  });
+
+  test("models and on-limit: bad values are rejected", () => {
+    const dir = repo();
+    for (const [args, message] of [
+      [["--model", "architect="], /expected key=model/],
+      [["--model", "qa=bad name"], /invalid model name/],
+      [["--model", "nobody=opus"], /model override for unknown agent "nobody"/],
+      [["--on-limit", "maybe"], /--on-limit must be wait or stop/],
+    ]) {
+      const r = orch(dir, ["run", "x", "--max-rounds", "1", ...args]);
+      assert.equal(r.code, 1, args.join(" "));
+      assert.match(r.out, message);
+    }
   });
 
   test("prune deletes only old orchestrator branches", () => {

@@ -93,7 +93,7 @@ Other commands:
 | `orch prune` | delete old `orchestrator/*` branches |
 | `orch agents` | list the agents and skills the architect can use |
 
-Options: `--power economy|balanced|heavy|max` (heavy), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
+Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
 `--agent-timeout MIN` (30), `--dry-run` (plan only). Run `orch` without arguments for the full usage.
 
 ### Browser UI
@@ -123,6 +123,17 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   built-ins with the same name, so you can bring your own specialists.
 - **Plans** are JSON: tasks with a phase (`foundation`, `build`, `verify`) and the files each task owns.
   No file is owned twice, which is what makes parallel builds in one working tree safe.
+- **Models.** Each power tier maps the roles (architect, implementers, heavy tasks, QA, fast-path agent)
+  to models. Override any role, or a single agent, with `--model` or in `.orchestrator/config.json`;
+  aliases (`haiku`, `sonnet`, `opus`) or full model IDs. In the UI: the **Models** section.
+
+  ```json
+  { "models": { "architect": "opus", "impl": "haiku", "agents": { "be": "sonnet" } }, "onLimit": "wait" }
+  ```
+
+- **Usage limit.** By default a goal that hits the Claude usage limit is set aside, YAAIORCH waits until
+  the reset and continues (for `run` and the queue). Choose **Stop** (`--on-limit stop`) to end instead;
+  the goal stays pending for later.
 - **Checks** come from `.orchestrator/config.json` in your repo, or from the `typecheck`, `lint`,
   `test` and `build` scripts in `package.json`:
 

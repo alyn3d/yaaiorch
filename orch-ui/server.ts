@@ -108,11 +108,17 @@ function stop() {
   }
 }
 
-const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCost?: number }) => [
+/** Model spec ("architect=opus,be=sonnet"): only key=value pairs of safe characters reach orch. */
+const MODEL_SPEC = /^[\w-]+=[\w.:[\]-]+(,[\w-]+=[\w.:[\]-]+)*$/;
+
+const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCost?: number; models?: string; onLimit?: string; fast?: boolean }) => [
   "--power", b.power ?? "heavy",
   "--max-rounds", String(b.maxRounds ?? 5),
   ...(b.dryRun ? ["--dry-run"] : []),
   ...(typeof b.maxCost === "number" && b.maxCost > 0 ? ["--max-cost", String(b.maxCost)] : []),
+  ...(typeof b.models === "string" && MODEL_SPEC.test(b.models) ? ["--model", b.models] : []),
+  ...(b.onLimit === "wait" || b.onLimit === "stop" ? ["--on-limit", b.onLimit] : []),
+  ...(b.fast ? ["--fast"] : []),
 ];
 
 /** `orch doctor --json`, without blocking the event loop (SSE keeps flowing). */

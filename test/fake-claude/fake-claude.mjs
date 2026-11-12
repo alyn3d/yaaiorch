@@ -9,7 +9,7 @@
 //                                      (the fast path's `dev` agent writes src/direct.txt instead)
 //
 // Switches (environment):
-//   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, budget cap
+//   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap
 //   FAKE_QA=pass|fail|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts
 //   FAKE_COST=<usd>          total_cost_usd per call (default 0.05)
 //   FAKE_FAIL_AGENT=<name>   that implementer exits 1
@@ -53,7 +53,7 @@ if (agentsFile) {
     process.exit(1);
   }
 }
-log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} cap=${cap}`);
+log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap}`);
 
 // Usage limit, exactly as the real CLI reports it.
 if (env.FAKE_LIMIT_ON || env.FAKE_LIMIT_AFTER) {

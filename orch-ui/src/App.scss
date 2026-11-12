@@ -56,3 +56,12 @@ button { cursor: pointer; &:hover:not(:disabled) { border-color: $accent; } &:di
 .notice { border-color: $warn; gap: 6px; code { font-size: 12px; } }
 .finding { margin: 0; &.fail strong { color: $bad; } }
 .note { margin: 4px 0; color: $warn; font-size: 13px; }
+
+// Run settings: usage-limit choice, fast path, models per role.
+.models { border: 1px solid $border; border-radius: 6px; padding: 6px 10px;
+  summary { cursor: pointer; color: $muted; display: flex; gap: 8px; align-items: center; }
+  .muted { font-size: 12px; margin-top: 6px; } }
+.model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin-top: 8px;
+  label { flex-direction: column; align-items: stretch; gap: 2px; font-size: 12px; }
+  input { width: 100%; }
+  .wide { grid-column: 1 / -1; } }

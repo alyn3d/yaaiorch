@@ -224,14 +224,46 @@ fn kill_tree(pid: u32) {
     }
 }
 
-fn flags(power: &str, max_rounds: u32, dry_run: bool, max_cost: Option<f64>) -> Vec<String> {
+/// Options beyond power and rounds (the UI sends them as camelCase command arguments).
+#[derive(Default)]
+struct Extra {
+    max_cost: Option<f64>,
+    /// "architect=opus,be=sonnet"
+    models: Option<String>,
+    /// "wait" or "stop"
+    on_limit: Option<String>,
+    fast: Option<bool>,
+}
+
+/// A model spec of key=value pairs with safe characters only (orch validates the names again).
+fn valid_model_spec(s: &str) -> bool {
+    let safe = |p: &str, extra: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "_-".contains(c) || extra.contains(c));
+    !s.is_empty()
+        && s.split(',').all(|pair| match pair.split_once('=') {
+            Some((k, v)) => safe(k, "") && safe(v, ".:[]"),
+            None => false,
+        })
+}
+
+fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<String> {
     let mut v = vec!["--power".into(), power.into(), "--max-rounds".into(), max_rounds.to_string()];
     if dry_run {
         v.push("--dry-run".into());
     }
-    if let Some(c) = max_cost.filter(|c| *c > 0.0) {
+    if let Some(c) = extra.max_cost.filter(|c| *c > 0.0) {
         v.push("--max-cost".into());
         v.push(c.to_string());
+    }
+    if let Some(m) = extra.models.as_deref().filter(|m| valid_model_spec(m)) {
+        v.push("--model".into());
+        v.push(m.into());
+    }
+    if let Some(l) = extra.on_limit.as_deref().filter(|l| *l == "wait" || *l == "stop") {
+        v.push("--on-limit".into());
+        v.push(l.into());
+    }
+    if extra.fast.unwrap_or(false) {
+        v.push("--fast".into());
     }
     v
 }
@@ -268,12 +300,16 @@ fn run_goal(
     max_rounds: u32,
     dry_run: Option<bool>,
     max_cost: Option<f64>,
+    models: Option<String>,
+    on_limit: Option<String>,
+    fast: Option<bool>,
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
         return Err("goal required".into());
     }
+    let extra = Extra { max_cost, models, on_limit, fast };
     let mut args = vec!["run".to_string()];
-    args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), max_cost));
+    args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     let label = format!("run: {}", goal.chars().take(60).collect::<String>());
     args.push(goal);
     spawn_orch(&app, args, label)
@@ -287,9 +323,13 @@ fn run_loop(
     dry_run: Option<bool>,
     until_empty: Option<bool>,
     max_cost: Option<f64>,
+    models: Option<String>,
+    on_limit: Option<String>,
+    fast: Option<bool>,
 ) -> Result<(), String> {
+    let extra = Extra { max_cost, models, on_limit, fast };
     let mut args = vec!["loop".to_string()];
-    args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), max_cost));
+    args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     if until_empty.unwrap_or(false) {
         args.push("--until-empty".into());
     }
@@ -402,7 +442,7 @@ mod tests {
         h.state::<AppState>().0.lock().unwrap().repo = Some(PathBuf::from(repo));
 
         let mut args = vec!["run".to_string()];
-        args.extend(flags("heavy", 5, false, None));
+        args.extend(flags("heavy", 5, false, &Extra::default()));
         args.push("hello".into());
         spawn_orch(&h, args, "test".into()).unwrap();
         assert!(spawn_orch(&h, vec!["agents".into()], "x".into()).is_err(), "second run must be refused");

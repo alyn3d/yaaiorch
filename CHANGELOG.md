@@ -5,6 +5,20 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Model selection per role (architect, implementers, heavy tasks, QA, fast-path agent) and per agent:
+  `--model architect=opus,impl=haiku,be=<model id>`, `"models"` in `.orchestrator/config.json`, and a
+  **Models** section in the UI. Aliases step up with the tier when a round gets stuck; full IDs stay.
+- **When the usage limit is hit** setting: `--on-limit wait|stop`, `"onLimit"` in config, and a UI
+  choice. `wait` (default) now applies to `orch run` too: the interrupted work is set aside and the
+  goal is retried after the reset.
+- UI: Fast path checkbox; the run panel shows the models used per round.
+- Eval runner: `--orch-model` passes a model spec to every orch run.
+
+### Changed
+- `orch run` waits for the usage-limit reset by default instead of exiting with code 3; use
+  `--on-limit stop` for the old behaviour (the eval runner does).
+
 ## [0.1.0] - 2026-11-12
 
 First public release.

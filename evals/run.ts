@@ -12,6 +12,7 @@
 //   --cases a,b          case ids (default: all)          --power economy,heavy  orch tiers (default: economy; "none" for no orch runs;
 //                                                                              "economy+fast" adds orch's --fast)
 //   --single m1,m2       also run a single agent with these models (control group), e.g. sonnet,opus
+//   --orch-model SPEC    passed to orch as --model for every orch run, e.g. "architect=opus,impl=haiku"
 //   --repeat N           runs per case and tier (1)       --parallel N           runs at once (1)
 //   --max-rounds N       passed to orch (4)               --max-cost USD         per run, passed to orch (3)
 //   --agent-timeout MIN  passed to orch (15)              --eval-timeout MIN     kill a whole run after (30)
@@ -50,6 +51,7 @@ const { values: a } = parseArgs({
     cases: { type: "string" },
     power: { type: "string", default: "economy" },
     single: { type: "string" },
+    "orch-model": { type: "string" },
     repeat: { type: "string", default: "1" },
     parallel: { type: "string", default: "1" },
     "max-rounds": { type: "string", default: "4" },
@@ -158,6 +160,9 @@ function runOrch(dir: string, c: Case, power: string): Promise<{ exit: number | 
       ...orchArgs, "run", c.goal,
       "--power", tierOf(power),
       ...(power.endsWith("+fast") ? ["--fast"] : []),
+      // The runner handles the usage limit itself (stop or --wait-on-limit), so orch must not wait.
+      "--on-limit", "stop",
+      ...(a["orch-model"] ? ["--model", a["orch-model"]] : []),
       "--max-rounds", a["max-rounds"]!,
       "--max-cost", a["max-cost"]!,
       "--agent-timeout", a["agent-timeout"]!,
@@ -372,7 +377,7 @@ const avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.le
 const lines: string[] = [];
 lines.push(`# Eval ${stamp}`, "");
 lines.push(`Cases: ${cases.map((c) => c.id).join(", ")}  `);
-lines.push(`Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}`, "");
+lines.push(`Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["orch-model"] ? `, orch models ${a["orch-model"]}` : ""}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}`, "");
 if (stoppedBy)
   lines.push(
     `**Stopped early: ${stoppedBy}.** ${jobs.length} run(s) not done. Finish with:`, "",

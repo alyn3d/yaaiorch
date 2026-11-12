@@ -73,12 +73,18 @@ export function RunPanel({ run }: { run: Run }) {
           <div className="row">
             <strong>Round {r.round}/{run.maxRounds}</strong>
             {r.power && <span className="badge" title="Power tier for this round">{r.power}</span>}
+            {r.mode === "direct" && <span className="badge" title="Fast path: one agent did the whole goal">direct</span>}
             {r.architect === "running" && <span className="badge running">architect planning</span>}
             {r.passed !== undefined && <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>}
             <span className="spacer" />
             {r.cost !== undefined && <span className="cost" title="Cost of this round">{money(r.cost)}</span>}
           </div>
           {r.summary && <p>{r.summary}{r.architectCost !== undefined && <span className="cost"> (plan {money(r.architectCost)})</span>}</p>}
+          {r.models && (
+            <p className="cost" title="Model used per role in this round">
+              {Object.entries(r.models).map(([role, model]) => `${role}: ${model}`).join(" · ")}
+            </p>
+          )}
           {r.note && <p className="note">{r.note}</p>}
           {r.checks && (
             <div className="row">

@@ -67,7 +67,13 @@ Round 1 skips the architect: one generalist `dev` agent does the whole goal on t
 - **Agent timeout** (`--agent-timeout`, 30 min): a call that runs longer is killed with its whole process tree (`taskkill /T` on Windows) and becomes a task error.
 - **Budget** (`--max-cost`): every call's `total_cost_usd` is added to the goal's total, also for failed calls. Each call gets `--max-budget-usd` set to what is left (at least $0.01). When the CLI reports `error_max_budget_usd`, or the total reaches the cap before a call, the goal stops with `Stopped: budget of $X used up`. The CLI checks its limit after each turn, and parallel calls each get the full remainder, so a goal can overshoot the cap by up to one turn per parallel call.
 
-- **Usage limit**: the Claude subscription limit comes back as an error result with subtype `success` and text like `You've hit your 5-hour limit · resets 1:30am (Europe/London)`. `run()` turns it into a `UsageLimit` error (reset time parsed in the named IANA zone) that ends the goal instead of becoming a task failure, so it never triggers stuck detection. It emits `usage_limit`, then `goal_end` with `usageLimit: true, resetAt`, and `orch run` exits with **code 3**. In `loop` the goal's work moves to `orchestrator/interrupted-*`, the item goes back to `pending` with a `note`, and the loop waits until a minute after the reset (30 min if the reply has no time; `ORCH_LIMIT_WAIT_MS` overrides it for tests), then retries.
+- **Usage limit**: the Claude subscription limit comes back as an error result with subtype `success` and text like `You've hit your 5-hour limit · resets 1:30am (Europe/London)`. `run()` turns it into a `UsageLimit` error (reset time parsed in the named IANA zone) that ends the goal instead of becoming a task failure, so it never triggers stuck detection. It emits `usage_limit`, then `goal_end` with `usageLimit: true, resetAt`. What happens next is the **"when the usage limit is hit"** setting (`--on-limit`, config `onLimit`):
+  - `wait` (default): the goal's work moves to `orchestrator/interrupted-*` and the branch is reset to the checkpoint; orch waits until a minute after the reset (30 min if the reply has no time; `ORCH_LIMIT_WAIT_MS` overrides it for tests), emits `waiting`, and retries the goal. In `loop` the item goes back to `pending` with a `note` meanwhile.
+  - `stop`: `orch run` exits with **code 3** (commits kept, `orch rollback` available). In `loop` the work is set aside, the item stays `pending` with a "stopped" `note`, and orch exits 3.
+
+### Models
+
+Each power tier maps the roles `architect`, `impl`, `heavy`, `qa` and `dev` (the fast path's agent, the tier's heavy model by default) to models. `--model architect=opus,impl=haiku,be=claude-…` and `.orchestrator/config.json` `"models": { "architect": …, "agents": { "be": … } }` override them: a per-agent override beats a per-role override, and the CLI beats the config. An override for an agent that does not exist fails the goal. When a stuck round moves up a tier, alias overrides (`haiku` → `sonnet` → `opus`) move up with it; full model IDs stay as set. Each `round_start` carries the effective `models`.
 
 ### Rollback and pruning
 
@@ -106,10 +112,10 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 
 | type | fields |
 |---|---|
-| `goal_start` | goal, maxRounds, dryRun, power, maxCost? |
+| `goal_start` | goal, maxRounds, dryRun, power, maxCost?, models ({roles, agents} overrides), onLimit |
 | `queue_item` | id, goal (loop only) |
 | `checkpoint` | branch (git only, not on dry run) |
-| `round_start` | round, power |
+| `round_start` | round, power, models (effective model per role), mode? (`direct` on the fast path) |
 | `architect_start` | round |
 | `plan` | round, summary, cost, tasks[] (each with `id`) |
 | `checks` | round, results[] ({name, command, ok, code, ms}) |

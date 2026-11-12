@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useOrch } from "./useOrch";
 import type { Power } from "./types";
 import { RunPanel } from "./RunView";
+import { SettingsPanel, modelSpec, useRepoSettings } from "./Settings";
 
 const POWERS: Power[] = ["max", "heavy", "balanced", "economy"];
 
@@ -24,7 +25,13 @@ export function App() {
   const noRepo = !state?.repo;
   // An empty or out-of-range field must not reach orch.ts as 0 or NaN.
   const cap = Number(maxCost);
-  const opts = { power, maxRounds: Math.min(20, Math.max(1, Math.round(maxRounds) || 1)), dryRun, maxCost: cap > 0 ? cap : undefined };
+  const [settings, setSettings] = useRepoSettings(state?.repo);
+  const models = modelSpec(settings);
+  const opts = {
+    power, maxRounds: Math.min(20, Math.max(1, Math.round(maxRounds) || 1)), dryRun, maxCost: cap > 0 ? cap : undefined,
+    models: models.spec, onLimit: settings.onLimit, fast: settings.fast,
+  };
+  const badSettings = !!models.error;
   const rounds = state?.lastRun?.state ?? [];
   // last-run.json names the checkpoint only while that branch exists, so this survives restarts.
   const checkpoint = busy ? undefined : state?.lastRun?.checkpoint;
@@ -98,8 +105,9 @@ export function App() {
           </label>
           <span className="spacer" />
           <button disabled={noRepo || !goal.trim()} onClick={() => { call("add", { goal }); setGoal(""); }}>Add to queue</button>
-          <button className="primary" disabled={noRepo || busy || !goal.trim()} onClick={() => call("run", { goal, ...opts })}>Run now</button>
+          <button className="primary" disabled={noRepo || busy || !goal.trim() || badSettings} onClick={() => call("run", { goal, ...opts })}>Run now</button>
         </div>
+        <SettingsPanel power={power} settings={settings} onChange={setSettings} />
         {error && <p className="error">{error}</p>}
       </section>
 
@@ -109,8 +117,8 @@ export function App() {
             <h2>Queue</h2>
             <span className="spacer" />
             {/* "Plan only" would leave each goal pending and replan it forever, so the loop refuses it. */}
-            <button disabled={noRepo || busy || dryRun} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", { ...opts, untilEmpty: true })}>Process queue</button>
-            <button disabled={noRepo || busy || dryRun} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", opts)}>Loop (watch)</button>
+            <button disabled={noRepo || busy || dryRun || badSettings} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", { ...opts, untilEmpty: true })}>Process queue</button>
+            <button disabled={noRepo || busy || dryRun || badSettings} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", opts)}>Loop (watch)</button>
           </div>
           {state?.queue.length ? (
             <ul className="queue">

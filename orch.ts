@@ -20,6 +20,11 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
 Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
          --max-cost USD (per goal, no limit by default)  --agent-timeout MINUTES (30)
          --poll SECONDS (15)  --until-empty  --dry-run (plan only; not with loop)
+         --model architect=opus,impl=haiku,qa=sonnet,heavy=opus,dev=sonnet,<agent>=<model>
+                  override the tier's model per role or per agent (aliases or full model IDs);
+                  also "models" in .orchestrator/config.json. Aliases step up with the tier on escalation.
+         --on-limit wait|stop   on a Claude usage limit: wait for the reset and retry (default), or stop
+                  (exit code 3); also "onLimit" in .orchestrator/config.json
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
                   are no checks); if that fails, later rounds run the full architect/build/QA loop
 Agents: built-in (architect, fe, be, qa), overridden by ~/.claude/agents and ./.claude/agents.
@@ -31,8 +36,8 @@ In a git repo the working tree must be clean. Each round's changes are committed
 branch on top of a checkpoint branch (orchestrator/checkpoint-*) that is deleted when QA passes.
 A round that changes nothing or repeats the same failures moves one power tier up; two such
 rounds in a row stop the goal.
-When the Claude usage limit is hit, the goal stops (exit code 3); loop puts it back to pending and
-waits until the reset time from the CLI's message.`;
+When the Claude usage limit is hit, the goal's work is set aside and the goal is retried after the
+reset time from the CLI's message (or, with --on-limit stop, the goal is left pending and orch exits 3).`;
 
 const PHASES = ["foundation", "build", "verify"] as const;
 type Phase = (typeof PHASES)[number];
@@ -53,6 +58,62 @@ const POWER = {
 type Power = keyof typeof POWER;
 /** Escalation order for stuck rounds. */
 const TIERS: Power[] = ["economy", "balanced", "heavy", "max"];
+
+// ---------- model selection: per-agent override > per-role override > power tier ----------
+/** Roles that call a model. `dev` is the fast path's single agent; by default it uses the tier's heavy model. */
+const ROLES = ["architect", "impl", "heavy", "qa", "dev"] as const;
+type Role = (typeof ROLES)[number];
+/** Overrides from --model and .orchestrator/config.json; anything unset comes from the power tier. */
+type Models = { roles: Partial<Record<Role, string>>; agents: Record<string, string> };
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]*$/;
+/** Aliases move one step up this ladder when a stuck round escalates; full model IDs stay as set. */
+const ALIAS_LADDER = ["haiku", "sonnet", "opus"];
+
+function checkModel(name: string, where: string) {
+  if (!MODEL_RE.test(name)) throw new Error(`${where}: invalid model name "${name}"`);
+  return name;
+}
+
+/** "architect=opus,qa=sonnet,be=claude-opus-5-5": role keys set a role, any other key names an agent. */
+function parseModelSpec(spec: string): Models {
+  const m: Models = { roles: {}, agents: {} };
+  for (const part of spec.split(",").map((p) => p.trim()).filter(Boolean)) {
+    const [key, value, ...rest] = part.split("=").map((s) => s.trim());
+    if (!key || !value || rest.length) throw new Error(`--model: expected key=model, got "${part}"`);
+    checkModel(value, "--model");
+    if ((ROLES as readonly string[]).includes(key)) m.roles[key as Role] = value;
+    else m.agents[key] = value;
+  }
+  return m;
+}
+
+/** Config overrides first, then the CLI on top. */
+function mergeModels(cfg: Config["models"], cli: Models): Models {
+  const roles: Partial<Record<Role, string>> = {};
+  for (const r of ROLES) if (cfg?.[r]) roles[r] = checkModel(cfg[r]!, "config.json models");
+  const agents: Record<string, string> = {};
+  for (const [a, v] of Object.entries(cfg?.agents ?? {})) agents[a] = checkModel(v, "config.json models.agents");
+  return { roles: { ...roles, ...cli.roles }, agents: { ...agents, ...cli.agents } };
+}
+
+function tierModel(power: Power, role: Role): string {
+  const t = POWER[power];
+  return role === "architect" ? t.arch : role === "dev" ? t.heavy : t[role];
+}
+
+function modelFor(power: Power, m: Models, role: Role, agent?: string): string {
+  return (agent && m.agents[agent]) || m.roles[role] || tierModel(power, role);
+}
+
+const effectiveModels = (power: Power, m: Models) => Object.fromEntries(ROLES.map((r) => [r, modelFor(power, m, r)]));
+
+function bumpAliases(m: Models): Models {
+  const up = (v: string) => (ALIAS_LADDER.includes(v) ? ALIAS_LADDER[Math.min(ALIAS_LADDER.indexOf(v) + 1, ALIAS_LADDER.length - 1)] : v);
+  return {
+    roles: Object.fromEntries(Object.entries(m.roles).map(([k, v]) => [k, up(v!)])),
+    agents: Object.fromEntries(Object.entries(m.agents).map(([k, v]) => [k, up(v)])),
+  };
+}
 
 const CLAUDE = process.env.CLAUDE_BIN ?? "claude";
 /**
@@ -155,7 +216,12 @@ function discoverSkills(): Entry[] {
 }
 
 // ---------- checks: run by the orchestrator, because headless agents may not get shell access ----------
-type Config = { checks?: Record<string, string>; allow?: string[] };
+type Config = {
+  checks?: Record<string, string>;
+  allow?: string[];
+  models?: Partial<Record<Role, string>> & { agents?: Record<string, string> };
+  onLimit?: "wait" | "stop";
+};
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
 function readJsonFile<T>(path: string, fallback: T): T {
@@ -605,7 +671,11 @@ function doctor(): Finding[] {
 const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 
 /** `fast`: round 1 is one generalist agent doing the whole goal, verified by the checks; later rounds are the full loop. */
-type Opts = { maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean };
+/** `onLimit`: on a Claude usage limit, wait for the reset and retry the goal (default), or stop. */
+type Opts = {
+  maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean;
+  models: Models; onLimit: "wait" | "stop";
+};
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
 async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx): Promise<Result> {
@@ -682,7 +752,7 @@ const writeLastRun = (lr: LastRun) => (mkdirSync(DIR, { recursive: true }), writ
 
 // ---------- one goal: architect -> foundation -> build (parallel) -> verify, repeat ----------
 async function runGoal(goal: string, o: Opts): Promise<boolean> {
-  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost });
+  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit });
   const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost }, timeoutMs: o.agentTimeoutMs };
   const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
   let cp = "";
@@ -706,7 +776,7 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
     });
     throw e;
   } finally {
-    if (cp) finishGit(cp, goal, passed, o.park, interrupted);
+    if (cp) finishGit(cp, goal, passed, o.park || (interrupted && o.onLimit === "wait"), interrupted);
     console.log(`cost: ${usd(ctx.budget.spent)}${o.maxCost !== undefined ? ` of ${usd(o.maxCost)}` : ""}`);
     if (!o.dryRun) {
       lr.status = passed ? "passed" : "failed";
@@ -730,23 +800,25 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   console.log(`checks: ${Object.entries(checks).map(([n, c]) => `${n} (${c})`).join(", ") || "none configured"}`);
 
   let power = o.power;
+  let models = o.models;
+  for (const agent of Object.keys(models.agents))
+    if (!byName.has(agent)) throw new Error(`model override for unknown agent "${agent}" (known: ${[...byName.keys()].join(", ")})`);
   let failures: string[] = [];
   let note = "";
   let stuck = 0;
 
   for (let round = 1; round <= o.maxRounds; round++) {
-    const models = POWER[power];
     const spentBefore = ctx.budget.spent;
     // Fast path: the first round skips the architect; one generalist agent does the whole goal.
     const direct = o.fast && round === 1 && byName.has("dev");
     console.log(`\n=== round ${round}/${o.maxRounds} (${power}${direct ? ", direct attempt" : ""}) ===`);
-    emit("round_start", { round, power, ...(direct ? { mode: "direct" } : {}) });
+    emit("round_start", { round, power, models: effectiveModels(power, models), ...(direct ? { mode: "direct" } : {}) });
     let plan: Plan;
     let planCost = 0;
     if (direct) plan = directPlan(goal, checks);
     else {
       emit("architect_start", { round });
-      ({ plan, cost: planCost } = await makePlan(architect, workers, skills, goal, failures, note, models.arch, ctx));
+      ({ plan, cost: planCost } = await makePlan(architect, workers, skills, goal, failures, note, modelFor(power, models, "architect", "architect"), ctx));
     }
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
     emit("plan", { round, summary: plan.summary, cost: round4(planCost), tasks: plan.tasks.map((t, id) => ({ id, ...t })) });
@@ -759,7 +831,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       const id = idOf.get(t)!;
       emit("task_start", { round, id, agent: t.agent, phase: t.phase });
       try {
-        const r = await execute(t, byName.get(t.agent)!, t.heavy ? models.heavy : models.impl, ctx);
+        const role: Role = t.agent === "dev" ? "dev" : t.heavy ? "heavy" : "impl";
+        const r = await execute(t, byName.get(t.agent)!, modelFor(power, models, role, t.agent), ctx);
         const status = /Status:\s*(COMPLETE|PARTIAL|FAILED)/i.exec(r.out)?.[1]?.toUpperCase() ?? (r.out.startsWith("PHANTOM") ? "PHANTOM" : "UNKNOWN");
         emit("task_end", { round, id, agent: t.agent, phase: t.phase, status, touched: r.touched, cost: round4(r.cost) });
         return r;
@@ -805,7 +878,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         const id = idOf.get(t)!;
         emit("task_start", { round, id, agent: t.agent, phase: t.phase });
         try {
-          const r = await run(byName.get(t.agent)!, models.qa, `Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`, ctx, true);
+          const r = await run(byName.get(t.agent)!, modelFor(power, models, "qa", t.agent), `Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`, ctx, true);
           const v = asVerdict(extractJson<Verdict>(r.text));
           emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: v.passed ? "PASS" : "FAIL", failures: v.failures, touched: [], cost: round4(r.cost) });
           verdicts.push(v);
@@ -849,7 +922,10 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       const next = TIERS[TIERS.indexOf(power) + 1];
       emit("stuck", { round, action: next ? "escalate" : "retry", reason: why, power: next ?? power });
       console.warn(`no progress (${why}); ${next ? `moving up to power ${next}` : "already at max power, retrying"}`);
-      if (next) power = next;
+      if (next) {
+        power = next;
+        models = bumpAliases(models);
+      }
       note = `Note: ${why}. Do not repeat the previous plan; find the real cause and take a different approach.`;
     } else {
       stuck = 0;
@@ -863,6 +939,20 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 // ---------- queue + loop ----------
 const readQueue = (): Item[] => (existsSync(QUEUE) ? JSON.parse(readFileSync(QUEUE, "utf8")) : []);
 const writeQueue = (q: Item[]) => (mkdirSync(DIR, { recursive: true }), writeFileSync(QUEUE, JSON.stringify(q, null, 2)));
+
+/** One minute past the reset (the CLI rounds the time); 30 min if the reply had no time. ORCH_LIMIT_WAIT_MS overrides it for tests. */
+function waitUntil(resetAt?: number) {
+  const override = Number(process.env.ORCH_LIMIT_WAIT_MS);
+  return override > 0 ? Date.now() + override : (resetAt ?? Date.now() + 29 * 60_000) + 60_000;
+}
+
+/** `orch run` with --on-limit wait: sleep until the reset, then the caller retries the goal. */
+async function waitForReset(e: UsageLimit) {
+  const until = waitUntil(e.resetAt);
+  console.log(`usage limit reached; waiting until ${new Date(until).toLocaleString()} and then retrying the goal (Ctrl+C to stop).`);
+  emit("waiting", { reason: "usage_limit", until });
+  while (Date.now() < until) await sleep(Math.min(5000, until - Date.now()));
+}
 
 async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
   if (o.dryRun) throw new Error("--dry-run cannot be used with loop: the goal would stay pending and be planned again forever");
@@ -903,16 +993,22 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
         resetAt = e.resetAt;
       } else console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
     }
-    // Wait one minute past the reset (the CLI rounds the time); if the reply had no time, retry in 30 min.
-    const until = outcome === "limit" ? Number(process.env.ORCH_LIMIT_WAIT_MS) > 0 ? Date.now() + Number(process.env.ORCH_LIMIT_WAIT_MS) : (resetAt ?? Date.now() + 29 * 60_000) + 60_000 : 0;
+    const until = outcome === "limit" ? waitUntil(resetAt) : 0;
     const q2 = readQueue(); // re-read: user may have added goals meanwhile
     const cur = q2.find((i) => i.id === item.id);
     if (cur) {
       // A usage limit is not the goal's fault: put it back and try again after the reset.
       cur.status = outcome === "limit" ? "pending" : outcome;
-      if (outcome === "limit") cur.note = `usage limit: retrying after ${new Date(until).toLocaleString()}`;
+      if (outcome === "limit")
+        cur.note = o.onLimit === "stop"
+          ? `usage limit: stopped; resets ${resetAt ? new Date(resetAt).toLocaleString() : "later"}`
+          : `usage limit: retrying after ${new Date(until).toLocaleString()}`;
     }
     writeQueue(q2);
+    if (outcome === "limit" && o.onLimit === "stop") {
+      console.log(`usage limit reached; goal #${item.id} is pending again. Stopping (--on-limit stop).`);
+      process.exit(3);
+    }
     if (outcome === "limit") {
       console.log(`usage limit reached; goal #${item.id} is pending again. Waiting until ${new Date(until).toLocaleString()} (Ctrl+C to stop).`);
       emit("waiting", { reason: "usage_limit", until });
@@ -939,7 +1035,14 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     maxCost = Number(values["max-cost"]);
     if (!(maxCost > 0)) throw new Error(`--max-cost must be a positive amount in USD, got "${values["max-cost"]}"`);
   }
-  return { maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost, fast: !!values.fast };
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const models = mergeModels(cfg.models, parseModelSpec(String(values.model ?? "")));
+  const onLimit = String(values["on-limit"] ?? cfg.onLimit ?? "wait");
+  if (onLimit !== "wait" && onLimit !== "stop") throw new Error(`--on-limit must be wait or stop, got "${onLimit}"`);
+  return {
+    maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost,
+    fast: !!values.fast, models, onLimit,
+  };
 }
 
 async function main() {
@@ -954,6 +1057,8 @@ async function main() {
       "until-empty": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       fast: { type: "boolean", default: false },
+      model: { type: "string" },
+      "on-limit": { type: "string" },
       json: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
     },
@@ -964,7 +1069,18 @@ async function main() {
   switch (cmd) {
     case "run":
       if (!goal) throw new Error('usage: orch run "<goal>"');
-      process.exit((await runGoal(goal, parseOpts(values))) ? 0 : 1);
+      {
+        const o = parseOpts(values);
+        for (;;) {
+          try {
+            process.exit((await runGoal(goal, o)) ? 0 : 1);
+          } catch (e) {
+            // The interrupted work was moved to orchestrator/interrupted-*, so the retry starts clean.
+            if (e instanceof UsageLimit && o.onLimit === "wait") await waitForReset(e);
+            else throw e;
+          }
+        }
+      }
     case "add": {
       if (!goal) throw new Error('usage: orch add "<goal>"');
       const q = readQueue();

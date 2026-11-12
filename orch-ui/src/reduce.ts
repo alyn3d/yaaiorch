@@ -28,7 +28,13 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       );
     case "round_start":
       return (
-        run && { ...run, rounds: [...run.rounds, { round: ev.round, power: ev.power, architect: "running", summary: "", tasks: [], failures: [] }] }
+        run && {
+          ...run,
+          rounds: [
+            ...run.rounds,
+            { round: ev.round, power: ev.power, models: ev.models, mode: ev.mode, architect: ev.mode === "direct" ? "done" : "running", summary: "", tasks: [], failures: [] },
+          ],
+        }
       );
     case "plan":
       return (

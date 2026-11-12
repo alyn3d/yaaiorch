@@ -27,6 +27,10 @@ export type TaskView = {
 export type RoundView = {
   round: number;
   power?: Power;
+  /** Effective model per role this round (after overrides and escalation). */
+  models?: Record<string, string>;
+  /** "direct" for the fast path's single-agent attempt. */
+  mode?: string;
   architect: "running" | "done";
   architectCost?: number;
   summary: string;
