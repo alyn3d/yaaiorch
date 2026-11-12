@@ -29,6 +29,8 @@ export type RunSettings = {
   agentModels: string;
   onLimit: "wait" | "stop";
   fast: boolean;
+  /** A read-only critic reviews each plan before building (--critic). */
+  critic: boolean;
   plugins: PluginSettings;
 };
 
@@ -37,6 +39,7 @@ export const DEFAULT_SETTINGS: RunSettings = {
   agentModels: "",
   onLimit: "wait",
   fast: false,
+  critic: false,
   plugins: DEFAULT_PLUGINS,
 };
 
@@ -100,6 +103,9 @@ export function SettingsPanel({ repo, power, settings, onChange }: { repo: strin
         </label>
         <label className="check" title="Round 1: one agent does the whole goal, judged by the repo's checks; the full loop runs only if that fails">
           <input type="checkbox" checked={settings.fast} onChange={(e) => onChange({ ...settings, fast: e.target.checked })} /> Fast path
+        </label>
+        <label className="check" title="A read-only critic agent reviews each plan before anything is built; a rejected plan goes back to the architect once. One extra call per round (QA's model).">
+          <input type="checkbox" checked={settings.critic} onChange={(e) => onChange({ ...settings, critic: e.target.checked })} /> Plan critic
         </label>
       </div>
       <details className="models">

@@ -234,6 +234,43 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.deepEqual(r.ev("round_start").at(-1).agentPower, { be: "max" });
   });
 
+  test("notes: QA's lessons and round-1 pitfalls are kept and the next goal's architect reads them", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_QA_NOTE: "FAKE LESSON: run the api tests with --runInBand" });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.calls.includes("architect: notes=none"));
+    const notes = readFileSync(join(dir, ".orchestrator", "notes.md"), "utf8");
+    assert.match(notes, /passed in 1 round\(s\) · x\n- FAKE LESSON: run the api tests with --runInBand/);
+    assert.equal(dirty(dir), "", "notes stay out of commits");
+
+    const failed = orch(dir, ["run", "y", "--max-rounds", "1"], { FAKE_QA: "fail" });
+    assert.equal(failed.code, 1);
+    assert.ok(failed.calls.includes("architect: notes=seen"), failed.calls.join("\n"));
+    assert.match(readFileSync(join(dir, ".orchestrator", "notes.md"), "utf8"), /failed in 1 round\(s\) · y\n- Unresolved: fake failure/);
+
+    git(dir, "reset", "-q", "--hard", branches(dir, "orchestrator/checkpoint-*")[0]);
+    const off = orch(dir, ["run", "z", "--dry-run", "--no-notes"]);
+    assert.ok(off.calls.includes("architect: notes=none"), "--no-notes leaves them out");
+  });
+
+  test("plan critic: a rejected plan goes back to the architect once; off by default", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--critic"], { FAKE_QA: "pass", FAKE_CRITIC: "reject-once" });
+    assert.equal(r.code, 0, r.out);
+    const critic = r.calls.filter((c) => c.startsWith("critic:"));
+    assert.deepEqual(critic, ["critic: rejected sawPlan=true"], "one review per round, not of the revised plan");
+    assert.ok(r.calls.includes("architect: got critic issues"));
+    assert.equal(r.calls.filter((c) => c.startsWith("call agent=architect")).length, 2);
+    assert.ok(r.calls.some((c) => /^call agent=critic mode=default settings=\.orchestrator\/readonly-settings\.json model=opus/.test(c)), "read-only, QA's model");
+    assert.deepEqual(r.last("critic"), { ...r.last("critic"), round: 1, approved: false, issues: ["the plan forgets the tests"], revised: true });
+    assert.ok(!r.last("plan").tasks.some((t) => t.agent === "critic"));
+
+    const plain = orch(repo(), ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_CRITIC: "reject" });
+    assert.equal(plain.code, 0);
+    assert.equal(plain.ev("critic").length, 0);
+    assert.ok(!plain.calls.some((c) => c.startsWith("critic:")));
+  });
+
   test("budget cap stops the goal", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "3", "--max-cost", "0.12"]);

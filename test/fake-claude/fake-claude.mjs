@@ -11,6 +11,8 @@
 // Switches (environment):
 //   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap
 //   FAKE_QA=pass|fail|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts
+//   FAKE_QA_NOTE=<text>      a passing QA verdict carries this in "notes"
+//   FAKE_CRITIC=approve|reject|reject-once   the plan critic's answer (default approve)
 //   FAKE_COST=<usd>          total_cost_usd per call (default 0.05)
 //   FAKE_FAIL_AGENT=<name>   that implementer exits 1
 //   FAKE_HANG_AGENT=<name>   that implementer never returns
@@ -109,6 +111,8 @@ if (prompt.includes("Produce the plan")) {
   } else {
     if (prompt.includes("previous reply was rejected")) log("architect: got rejection reason");
     if (prompt.includes("Do not repeat the previous plan")) log("architect: got stuck note");
+    if (prompt.includes("A reviewer rejected your plan")) log("architect: got critic issues");
+    log(`architect: notes=${prompt.includes("Notes from earlier goals") && prompt.includes("FAKE LESSON") ? "seen" : "none"}`);
     // Context between rounds and the project brief, as the architect sees them.
     log(`architect: previousRound=${/What round \d+ did/.test(prompt) && prompt.includes("Plan: fake plan")} brief=${prompt.includes("FAKE BRIEF") ? "seen" : prompt.includes("No project brief exists yet") ? "asked" : "none"}`);
     const plan = {
@@ -123,13 +127,21 @@ if (prompt.includes("Produce the plan")) {
     };
     reply("```json\n" + JSON.stringify(plan) + "\n```");
   }
+} else if (prompt.includes('{"approved": true | false')) {
+  // Plan critic: FAKE_CRITIC=approve (default) | reject | reject-once.
+  const mode = env.FAKE_CRITIC ?? "approve";
+  const flag = ".orchestrator/fake-critic-done";
+  const reject = mode === "reject" || (mode === "reject-once" && !existsSync(flag));
+  if (mode === "reject-once") writeFileSync(flag, "1");
+  log(`critic: ${reject ? "rejected" : "approved"} sawPlan=${prompt.includes('"fake plan"')}`);
+  reply(reject ? '{"approved": false, "issues": ["the plan forgets the tests"]}' : '{"approved": true, "issues": []}');
 } else if (prompt.includes('{"passed": true | false')) {
   const mode = env.FAKE_QA ?? "pass";
   const sawNew = /ui\.ts/.test(prompt) && /api\.ts/.test(prompt);
   log(`qa: sawNewFiles=${sawNew}`);
   if (mode === "fail") reply('{"passed": false, "failures": ["fake failure"]}');
   else if (mode === "needs-new" && !sawNew) reply('{"passed": false, "failures": ["QA did not see new files"]}');
-  else reply('{"passed": true, "failures": []}');
+  else reply(JSON.stringify({ passed: true, failures: [], ...(env.FAKE_QA_NOTE ? { notes: [env.FAKE_QA_NOTE] } : {}) }));
 } else {
   if (env.FAKE_FAIL_AGENT === agent) {
     log(`${agent}: crashing`);

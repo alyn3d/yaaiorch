@@ -31,6 +31,10 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
          --plugins off   agents run without any Claude Code plugins  --disable-plugins ID,ID  without these
                   (ids from "orch plugins")  --no-hooks  without settings and plugin hooks; also "plugins"
                   in config: {"off": true, "disable": [...], "hooks": false}. Your Claude Code setup is unchanged.
+         --critic   a read-only critic agent reviews each plan before building; a rejected plan goes back to
+                  the architect once; also "critic": true in config
+         --no-notes   do not use or write .orchestrator/notes.md (lessons from earlier goals, read by the
+                  architect); also "notes": false in config
          --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
                   reused across rounds and goals); also "brief": false in config
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
@@ -52,7 +56,9 @@ type Phase = (typeof PHASES)[number];
 type Task = { agent: string; phase: Phase; task: string; files?: string[]; heavy?: boolean; figma?: string; skills?: string[] };
 /** `brief`: the architect's project brief, when there was none yet or the old one was wrong. */
 type Plan = { summary: string; tasks: Task[]; brief?: string };
-type Verdict = { passed: boolean; failures: string[] };
+type Verdict = { passed: boolean; failures: string[]; notes?: string[] };
+/** The plan critic's answer. */
+type Review = { approved: boolean; issues: string[] };
 /** `note` says why a pending goal is waiting (for example a usage-limit reset). */
 type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed"; note?: string };
 type Entry = { name: string; description: string; builtin?: boolean };
@@ -138,6 +144,9 @@ const BUILTIN_FILE = `${DIR}/builtin-agents.json`;
 /** The architect's notes on the repo (stack, layout, conventions, commands), reused by later rounds and goals. */
 const BRIEF_FILE = join(DIR, "brief.md");
 const MAX_BRIEF = 4000;
+/** Lessons from earlier goals (QA's notes, what failed), read by the architect; oldest entries are dropped past MAX_NOTES. */
+const NOTES_FILE = join(DIR, "notes.md");
+const MAX_NOTES = 8000;
 /** Implementers: allow-list for the check commands, run with acceptEdits. */
 const AGENT_SETTINGS = `${DIR}/agent-settings.json`;
 /** Architect and verifiers: same allow-list plus a deny on edit tools, run with permission mode "default". */
@@ -161,12 +170,19 @@ const TASK_FORMAT = `
 
 ## Reply format
 End your reply with exactly one of these lines: "Status: COMPLETE", "Status: PARTIAL" or "Status: FAILED".`;
+const REVIEW_FORMAT = `
+
+## Reply format
+Do not edit any file. Reply with exactly one JSON object and nothing else:
+{"approved": true | false, "issues": ["<what is wrong with the plan and what it should do instead>"]}
+Use an empty issues list when approved is true.`;
 const VERDICT_FORMAT = `
 
 ## Reply format
 Do not edit any file. Reply with exactly one JSON object and nothing else:
-{"passed": true | false, "failures": ["<what is wrong, where, and how to fix it>"]}
+{"passed": true | false, "failures": ["<what is wrong, where, and how to fix it>"], "notes": ["<optional>"]}
 List only problems that need fixing: no notes, no "no defects found". Use an empty failures list when passed is true.
+"notes" is for lessons a later goal in this repo should know (a pitfall, a decision, a convention you found), at most 3 short ones; usually leave it out.
 The check results above were produced by the orchestrator; do not fail only because you could not re-run them yourself.`;
 
 /** Structured events for UIs: one "@@ORCH@@ {json}" line per event, only when ORCH_EVENTS is set. */
@@ -237,6 +253,8 @@ type Config = {
   usageCap?: { "5h"?: number; week?: number };
   plugins?: { off?: boolean; disable?: string[]; hooks?: boolean };
   brief?: boolean;
+  notes?: boolean;
+  critic?: boolean;
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -660,7 +678,15 @@ function asVerdict(v: Verdict): Verdict {
   if (typeof v?.passed !== "boolean") throw new Error('verdict has no boolean "passed"');
   const failures = Array.isArray(v.failures) ? v.failures.map(String) : [];
   if (!v.passed && !failures.length) failures.push("QA failed without listing failures");
-  return { passed: v.passed, failures };
+  const notes = Array.isArray(v.notes) ? v.notes.filter((n) => typeof n === "string" && n.trim()).map((n) => n.trim().slice(0, 300)).slice(0, 3) : [];
+  return { passed: v.passed, failures, ...(notes.length ? { notes } : {}) };
+}
+
+function asReview(v: Review): Review {
+  if (typeof v?.approved !== "boolean") throw new Error('review has no boolean "approved"');
+  const issues = Array.isArray(v.issues) ? v.issues.map(String).filter((x) => x.trim()) : [];
+  // A rejection without issues gives the architect nothing to fix: treat it as approval.
+  return { approved: v.approved || !issues.length, issues };
 }
 
 const sig = (f: string) => {
@@ -907,6 +933,7 @@ const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 type Opts = {
   maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean;
   models: Models; onLimit: "wait" | "stop"; usageCap: UsageCap; plugins: PluginChoice; brief: boolean;
+  notes: boolean; critic: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -935,7 +962,7 @@ async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx): Promi
  */
 async function makePlan(
   architect: Entry, workers: Entry[], skills: Entry[], goal: string, failures: string[], note: string, model: string, ctx: RunCtx,
-  previous = "", brief: string | null = null,
+  previous = "", brief: string | null = null, notes = "",
 ) {
   const base =
     `Goal: ${goal}\n\nAvailable agents:\n${workers.map((a) => `- ${a.name}: ${a.description}`).join("\n")}\n\n` +
@@ -947,6 +974,7 @@ async function makePlan(
         ? `\nNo project brief exists yet. Add a "brief" field: your notes on this repo for later rounds and goals (at most 250 ` +
           `words: stack, layout, conventions, how to run the checks).\n`
         : "") +
+    (notes ? `\nNotes from earlier goals in this repo (pitfalls and decisions; follow them unless this goal says otherwise):\n${notes}\n` : "") +
     (previous ? `\n${previous}\n` : "") +
     (failures.length ? `\nPrevious QA failures to fix:\n- ${failures.join("\n- ")}\n` : "") +
     (note ? `\n${note}\n` : "") +
@@ -973,11 +1001,12 @@ async function makePlan(
  * Fast-path plan: one `dev` task for the whole goal on the tier's strong model (heavy), no file list.
  * Verified by the repo's checks; when there are none, a QA task is added so something still verifies.
  */
-function directPlan(goal: string, checks: Record<string, string>, brief: string | null = null): Plan {
+function directPlan(goal: string, checks: Record<string, string>, brief: string | null = null, notes = ""): Plan {
   const commands = Object.values(checks);
   const task =
     `Goal: ${goal}\n\n` +
     (brief ? `Project brief (notes on this repo from an earlier run):\n${brief}\n\n` : "") +
+    (notes ? `Lessons from earlier goals in this repo:\n${notes}\n\n` : "") +
     `You are doing this goal alone: read the relevant code, then make the complete change ` +
     `(code and tests) following the repository's conventions.` +
     (commands.length
@@ -1007,6 +1036,49 @@ function writeBrief(text: unknown) {
   console.log(`project brief ${existed ? "updated" : "written"}: ${BRIEF_FILE}`);
 }
 
+const readNotes = (): string => (existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8").trim().slice(-4000) : "");
+
+/**
+ * After a goal, append what is worth remembering: QA's notes, the first failures of a goal that needed
+ * more than one round, and what was left unresolved by a failed goal. Nothing for a clean one-round pass.
+ */
+function appendNotes(goal: string, passed: boolean, rounds: number, qaNotes: string[], firstFailures: string[], lastFailures: string[]) {
+  const cut = (f: string) => f.replace(/\s+/g, " ").trim().slice(0, 200);
+  const lines = [
+    ...[...new Set(qaNotes)].map((n) => `- ${cut(n)}`),
+    ...(rounds > 1 ? firstFailures.slice(0, 2).map((f) => `- Pitfall (round 1 failed on): ${cut(f)}`) : []),
+    ...(!passed ? lastFailures.slice(0, 3).map((f) => `- Unresolved: ${cut(f)}`) : []),
+  ];
+  if (!lines.length) return;
+  const day = new Date().toISOString().slice(0, 10);
+  const entry = `## ${day} · ${passed ? "passed" : "failed"} in ${rounds} round(s) · ${short(goal)}\n${lines.join("\n")}\n`;
+  let all = (existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8").trim() + "\n\n" : "# Notes from earlier goals\n\n") + entry;
+  while (all.length > MAX_NOTES) {
+    const i = all.indexOf("\n## ", all.indexOf("## ") + 3); // drop the oldest entry, keep the heading
+    if (i < 0) break;
+    all = all.slice(0, all.indexOf("## ")) + all.slice(i + 1);
+  }
+  mkdirSync(DIR, { recursive: true });
+  writeFileSync(NOTES_FILE, all);
+}
+
+/** The plan critic: a read-only review of the plan before anything is built. Non-fatal errors approve the plan. */
+async function critique(critic: Entry, goal: string, plan: Plan, brief: string | null, model: string, ctx: RunCtx): Promise<Review & { cost: number }> {
+  const prompt =
+    `Goal: ${goal}\n\n` +
+    (brief ? `Project brief:\n${brief}\n\n` : "") +
+    `Plan to review:\n${JSON.stringify({ summary: plan.summary, tasks: plan.tasks }, null, 2)}` +
+    REVIEW_FORMAT;
+  try {
+    const r = await run(critic, model, prompt, ctx, true);
+    return { ...asReview(extractJson<Review>(r.text)), cost: r.cost };
+  } catch (e) {
+    if (isFatal(e)) throw e;
+    console.warn(`plan critic failed (${msg(e)}); going on with the plan`);
+    return { approved: true, issues: [], cost: 0 };
+  }
+}
+
 /** What a round planned, how each task ended and what changed: the next round's architect builds on it. */
 function previousRound(round: number, plan: Plan, statuses: Map<Task, string>, cp: string): string {
   const tasks = plan.tasks
@@ -1022,10 +1094,13 @@ function previousRound(round: number, plan: Plan, statuses: Map<Task, string>, c
 const writeLastRun = (lr: LastRun) => (mkdirSync(DIR, { recursive: true }), writeFileSync(LAST_RUN, JSON.stringify(lr, null, 2)));
 
 // ---------- one goal: architect -> foundation -> build (parallel) -> verify, repeat ----------
+/** QA's notes for the goal being run, written to notes.md when it ends. */
+let goalNotes: string[] = [];
 async function runGoal(goal: string, o: Opts): Promise<boolean> {
-  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit, usageCap: o.usageCap, plugins: o.plugins });
+  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit, usageCap: o.usageCap, plugins: o.plugins, critic: o.critic });
   const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 }, timeoutMs: o.agentTimeoutMs, usageCap: o.usageCap, onLimit: o.onLimit };
   const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
+  goalNotes = [];
   let cp = "";
   let passed = false;
   let interrupted = false;
@@ -1035,6 +1110,10 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
     if (!o.dryRun) writeLastRun(lr); // the UI offers rollback from this even if the run is killed in round 1
     passed = await runGoalInner(goal, o, cp, ctx, lr);
     emit("goal_end", { passed, cost: round4(ctx.budget.spent) });
+    if (o.notes && !o.dryRun) {
+      const rounds = lr.state as { failures: string[] }[];
+      appendNotes(goal, passed, rounds.length, goalNotes, rounds[0]?.failures ?? [], rounds.at(-1)?.failures ?? []);
+    }
     return passed;
   } catch (e) {
     if (e instanceof UsageLimit) {
@@ -1062,7 +1141,9 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const roster = discoverAgents();
   const byName = new Map(roster.map((a) => [a.name, a]));
   const architect = byName.get("architect")!; // always present: built-in unless overridden
-  const workers = roster.filter((a) => a.name !== "architect");
+  // The critic reviews plans; it is never given build or verify tasks.
+  const workers = roster.filter((a) => a.name !== "architect" && a.name !== "critic");
+  const critic = byName.get("critic");
   const skills = discoverSkills();
   writeBuiltins(roster);
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
@@ -1096,13 +1177,28 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     let plan: Plan;
     let planCost = 0;
     const brief = o.brief ? readBrief() : null;
-    if (direct) plan = directPlan(goal, checks, brief || null);
+    const notes = o.notes ? readNotes() : "";
+    if (direct) plan = directPlan(goal, checks, brief || null, notes);
     else {
       emit("architect_start", { round });
-      ({ plan, cost: planCost } = await makePlan(
-        architect, workers, skills, goal, failures, note, modelFor(power, models, "architect", "architect"), ctx, previous, brief,
-      ));
+      const architectModel = modelFor(power, models, "architect", "architect");
+      ({ plan, cost: planCost } = await makePlan(architect, workers, skills, goal, failures, note, architectModel, ctx, previous, brief, notes));
       if (o.brief && plan.brief) writeBrief(plan.brief);
+      if (o.critic && critic) {
+        // The critic sees only the goal, the brief and the plan, never the architect's reasoning.
+        const review = await critique(critic, goal, plan, brief || null, modelFor(power, models, "qa", "critic"), ctx);
+        planCost += review.cost;
+        let revised = false;
+        if (!review.approved) {
+          console.warn(`plan critic rejected the plan:\n- ${review.issues.join("\n- ")}`);
+          const why = `A reviewer rejected your plan for this round:\n- ${review.issues.join("\n- ")}\nRevise the plan to fix these.`;
+          const again = await makePlan(architect, workers, skills, goal, failures, [note, why].filter(Boolean).join("\n\n"), architectModel, ctx, previous, brief, notes);
+          plan = again.plan;
+          planCost += again.cost;
+          revised = true;
+        }
+        emit("critic", { round, approved: review.approved, issues: review.issues, revised, cost: round4(review.cost) });
+      }
     }
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
     emit("plan", { round, summary: plan.summary, cost: round4(planCost), tasks: plan.tasks.map((t, id) => ({ id, ...t })) });
@@ -1176,6 +1272,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         try {
           const r = await run(byName.get(t.agent)!, modelFor(power, models, "qa", t.agent), `Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`, ctx, true);
           const v = asVerdict(extractJson<Verdict>(r.text));
+          if (v.notes) goalNotes.push(...v.notes);
           statuses.set(t, v.passed ? "PASS" : "FAIL");
           emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: v.passed ? "PASS" : "FAIL", failures: v.failures, touched: [], cost: round4(r.cost) });
           verdicts.push(v);
@@ -1355,9 +1452,11 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const usageCap = parseUsageCap(String(values["usage-cap"] ?? ""), cfg.usageCap);
   const plugins = parsePlugins(values, cfg.plugins);
   const brief = !values["no-brief"] && cfg.brief !== false;
+  const notes = !values["no-notes"] && cfg.notes !== false;
+  const critic = !!values.critic || cfg.critic === true;
   return {
     maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost,
-    fast: !!values.fast, models, onLimit, usageCap, plugins, brief,
+    fast: !!values.fast, models, onLimit, usageCap, plugins, brief, notes, critic,
   };
 }
 
@@ -1380,6 +1479,8 @@ async function main() {
       "disable-plugins": { type: "string" },
       "no-hooks": { type: "boolean", default: false },
       "no-brief": { type: "boolean", default: false },
+      "no-notes": { type: "boolean", default: false },
+      critic: { type: "boolean", default: false },
       details: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },

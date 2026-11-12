@@ -13,6 +13,12 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   task ended and the diff since the checkpoint, not only the failure messages.
 - **Per-task escalation**: a stuck round where some tasks failed and others completed moves only the
   failing tasks' agents up a tier (shown in the run panel); otherwise the whole round moves up as before.
+- **Memory between goals**: `.orchestrator/notes.md` collects QA's notes, the first failures of goals
+  that needed several rounds and what failed goals left unresolved; the architect reads it before
+  planning. `--no-notes` or `"notes": false` turns it off.
+- **Plan critic** (off by default): `--critic`, `"critic": true` or **Plan critic** in the run settings.
+  A built-in read-only `critic` agent reviews each plan before building; a rejection goes back to the
+  architect once. The run panel shows its verdict. New `critic` event.
 
 These are not measured by the evals yet (the current cases pass in round 1).
 

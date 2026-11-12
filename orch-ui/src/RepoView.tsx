@@ -48,7 +48,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
   const models = modelSpec(settings);
   const opts = {
     power, maxRounds: Math.min(20, Math.max(1, Math.round(maxRounds) || 1)), dryRun, maxCost: cap > 0 ? cap : undefined,
-    models: models.spec, onLimit: settings.onLimit, fast: settings.fast, plugins: pluginOpts(settings.plugins),
+    models: models.spec, onLimit: settings.onLimit, fast: settings.fast, critic: settings.critic, plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;
   const rounds = state.lastRun?.state ?? [];

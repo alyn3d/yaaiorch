@@ -54,6 +54,8 @@ export type RoundView = {
   cost?: number;
   /** From a `stuck` event: why the next round escalates, or why the goal stopped. */
   note?: string;
+  /** From a `critic` event: the plan critic's review (`revised`: the architect re-planned after a rejection). */
+  critic?: { approved: boolean; issues: string[]; revised: boolean; cost?: number };
 };
 export type RunView = {
   goal: string;

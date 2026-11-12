@@ -85,6 +85,12 @@ export function RunPanel({ run }: { run: Run }) {
               {Object.entries(r.models).map(([role, model]) => `${role}: ${model}`).join(" · ")}
             </p>
           )}
+          {r.critic && (
+            <p className={r.critic.approved ? "cost" : "note"} title={r.critic.issues.join("\n")}>
+              Plan critic: {r.critic.approved ? "approved" : `rejected (${r.critic.issues.length} issue${r.critic.issues.length === 1 ? "" : "s"}): ${r.critic.issues.join("; ")}${r.critic.revised ? ", plan revised" : ""}`}
+              {r.critic.cost !== undefined && <span className="cost"> ({money(r.critic.cost)})</span>}
+            </p>
+          )}
           {r.note && <p className="note">{r.note}</p>}
           {r.checks && (
             <div className="row">

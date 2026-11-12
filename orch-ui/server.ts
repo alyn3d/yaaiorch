@@ -301,7 +301,7 @@ const pluginFlags = (p?: PluginOpts) => {
   const ids = Array.isArray(p.disable) ? p.disable.filter((x): x is string => typeof x === "string" && PLUGIN_ID.test(x)) : [];
   return [...(p.off ? ["--plugins", "off"] : []), ...(ids.length ? ["--disable-plugins", ids.join(",")] : []), ...(p.hooks === false ? ["--no-hooks"] : [])];
 };
-const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCost?: number; models?: string; onLimit?: string; fast?: boolean; plugins?: PluginOpts }) => [
+const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCost?: number; models?: string; onLimit?: string; fast?: boolean; critic?: boolean; plugins?: PluginOpts }) => [
   "--power", b.power ?? "heavy",
   "--max-rounds", String(b.maxRounds ?? 5),
   ...(b.dryRun ? ["--dry-run"] : []),
@@ -309,6 +309,7 @@ const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCos
   ...(typeof b.models === "string" && MODEL_SPEC.test(b.models) ? ["--model", b.models] : []),
   ...(b.onLimit === "wait" || b.onLimit === "stop" ? ["--on-limit", b.onLimit] : []),
   ...(b.fast ? ["--fast"] : []),
+  ...(b.critic ? ["--critic"] : []),
   ...pluginFlags(b.plugins),
 ];
 

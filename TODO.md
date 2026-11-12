@@ -40,7 +40,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   `--fast` mode, and measure it.
 
 ### Test the orchestrator itself
-- [x] Fake `claude` (`test/fake-claude/`) and 35 scenario tests (`npm test`), run in CI on Linux and
+- [x] Fake `claude` (`test/fake-claude/`) and 37 scenario tests (`npm test`), run in CI on Linux and
   Windows; the Rust spawn test is `#[ignore]`d and run explicitly in CI.
 - [ ] **More scenarios**: phantom completion and its re-dispatch, foundation failure skipping the
   round, a commit hook that fails, a pre-existing `.orchestrator/config.json` allow-list reaching the
@@ -69,7 +69,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
 
 Each item should show its effect in the evals before it becomes the default.
 
-- [ ] **Plan critic** (seen in LoopDex and oh-my-claudecode): after the architect, a read-only `critic`
+- [x] **Plan critic** (seen in LoopDex and oh-my-claudecode): after the architect, a read-only `critic`
   agent reviews the plan against the goal and the repo and returns `{approved, issues[]}`; issues go back
   to the architect once. It sees only artifacts (goal, plan, file list), never the architect's
   reasoning. Behind a flag first (`--critic`), compared with and without on the eval suite.
@@ -81,12 +81,12 @@ Each item should show its effect in the evals before it becomes the default.
   not only the failure strings.
 - [ ] **Session resume for fix rounds**: continue the implementer's session (`session_id` from the CLI)
   instead of starting cold.
-- [ ] **Memory between goals**: `.orchestrator/notes.md` with decisions and pitfalls, read by the
+- [x] **Memory between goals**: `.orchestrator/notes.md` with decisions and pitfalls, read by the
   architect, appended by QA.
 - [ ] **Review lens**: optional reviewer pass on the diff for bugs and security, with the user's own
   reviewer agents when present.
 - [x] **Escalate per task**: on a stuck round, move only the failing tasks up a tier.
-- [ ] **Measure the three above** (brief, context between rounds, per-task escalation): they were built
+- [ ] **Measure these** (brief, notes, context between rounds, per-task escalation, plan critic): they were built
   without an eval, because the current cases all pass in round 1. Needs cases that take several
   rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.
 

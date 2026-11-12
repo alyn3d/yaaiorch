@@ -76,6 +76,8 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
             : `No progress (${ev.reason}): already at max power, retrying with a different approach.`,
         }))
       );
+    case "critic":
+      return run && upd(run, ev.round, (r) => ({ ...r, critic: { approved: !!ev.approved, issues: ev.issues ?? [], revised: !!ev.revised, cost: ev.cost } }));
     case "waiting":
       return run && { ...run, waitingUntil: ev.until, waitingReason: ev.reason };
     case "checks":

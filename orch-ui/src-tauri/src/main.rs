@@ -531,6 +531,7 @@ struct Extra {
     /// "wait" or "stop"
     on_limit: Option<String>,
     fast: Option<bool>,
+    critic: Option<bool>,
     plugins: Option<PluginOpts>,
 }
 
@@ -578,6 +579,9 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if extra.fast.unwrap_or(false) {
         v.push("--fast".into());
+    }
+    if extra.critic.unwrap_or(false) {
+        v.push("--critic".into());
     }
     if let Some(p) = &extra.plugins {
         if p.off.unwrap_or(false) {
@@ -701,12 +705,13 @@ fn run_goal(
     models: Option<String>,
     on_limit: Option<String>,
     fast: Option<bool>,
+    critic: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
         return Err("goal required".into());
     }
-    let extra = Extra { max_cost, models, on_limit, fast, plugins };
+    let extra = Extra { max_cost, models, on_limit, fast, critic, plugins };
     let mut args = vec!["run".to_string()];
     args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     let label = format!("run: {}", goal.chars().take(60).collect::<String>());
@@ -727,9 +732,10 @@ fn run_loop(
     models: Option<String>,
     on_limit: Option<String>,
     fast: Option<bool>,
+    critic: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
-    let extra = Extra { max_cost, models, on_limit, fast, plugins };
+    let extra = Extra { max_cost, models, on_limit, fast, critic, plugins };
     let mut args = vec!["loop".to_string()];
     args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     if until_empty.unwrap_or(false) {
@@ -931,7 +937,7 @@ mod tests {
 
     #[test]
     fn plugin_flags() {
-        let extra = |p: PluginOpts| Extra { max_cost: None, models: None, on_limit: None, fast: None, plugins: Some(p) };
+        let extra = |p: PluginOpts| Extra { max_cost: None, models: None, on_limit: None, fast: None, critic: None, plugins: Some(p) };
         let tail = |e: Extra| flags("heavy", 1, false, &e)[4..].to_vec();
         assert!(tail(extra(PluginOpts::default())).is_empty());
         let p = PluginOpts { off: Some(true), disable: Some(vec!["caveman@caveman".into(), "a b;rm".into(), "@x".into(), "x@".into()]), hooks: Some(false) };
