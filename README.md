@@ -114,7 +114,8 @@ UI (or `ORCH_REPOS`, separated by `;` on Windows and `:` elsewhere); they are re
 Both the browser UI and the desktop app work on several repos in parallel: one **tab per repo**, each
 with its own goal, queue, settings and log, and a status dot (running, waiting, failed, done). The
 **Parallel** field in the header limits how many repos run at the same time (default 2); further starts
-wait for a free slot. One run per repo at a time. All repos draw on the same Claude usage limit, so
+wait for a free slot. With two or more repos open, an **Overview** tab lists them all: what each is doing
+(planning, building, verifying), its goal, round, tasks, cost and queue, with Open and Stop. One run per repo at a time. All repos draw on the same Claude usage limit, so
 more parallel runs reach it sooner.
 
 - **Usage limit, shared.** When one repo hits the Claude usage limit, a banner shows the reset time and

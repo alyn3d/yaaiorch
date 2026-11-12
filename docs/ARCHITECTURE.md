@@ -160,6 +160,8 @@ A start that waits is `queued` with a `waitReason`: the usage limit, the budget,
 | `transport.ts` | The only place that knows how to reach the backend. Browser: `fetch` + `EventSource`. Desktop: Tauri `invoke` + `listen`. Chosen at startup via `__TAURI_INTERNALS__`. Every message carries its `repo`. |
 | `useOrch.ts` | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`, `global` (usage-limit hold, daily budget). `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends. |
 | `App.tsx` | Header (running count, Parallel limit, Daily $ budget and today's spend), usage-limit and budget banners, tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating. |
+| `Overview.tsx` | The **Overview** tab (shown from two repos on): one row per repo with its phase (planning, building, verifying, checks, waiting), goal, round, tasks done and running agents, cost against its cap, pending queue, and Open / Stop. |
+| `repoStatus.ts` | `repoStatus()`: a repo's status dot and label, shared by the tabs and the overview. |
 | `RepoView.tsx` | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log. |
 | `Settings.tsx` | Usage-limit choice, fast path, models per role and agent; remembered per repo in local storage. |
 | `reduce.ts` | Pure fold of `OrchEvent`s into a `RunView` (rounds -> tasks). A reload replays the stored events through it. |

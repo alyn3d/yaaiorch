@@ -22,6 +22,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - **Daily budget** across repos (**Daily $**): counts every agent call's cost, caps each run's
   `--max-cost` to what is left, holds new runs and stops a queue before its next goal when used up;
   the day's total survives restarts. A waiting repo shows why it waits.
+- **Overview** tab (two or more repos): one row per repo with phase, goal, round, tasks, cost and
+  queue, and Open / Stop buttons.
 
 ### Changed
 - `orch run` waits for the usage-limit reset by default instead of exiting with code 3; use

@@ -1,25 +1,13 @@
 import { useEffect, useState } from "react";
-import { useOrch, type Session } from "./useOrch";
+import { useOrch } from "./useOrch";
 import { RepoView } from "./RepoView";
 import { transport } from "./transport";
+import { Overview } from "./Overview";
+import { baseName, repoStatus, usd } from "./repoStatus";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
-const baseName = (repo: string) => repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
-
-/** The tab's status dot: what this repo is doing right now, or how its last goal ended. */
-function tabStatus(s: Session): { tone: string; label: string } {
-  const now = Date.now();
-  if (s.state.running && s.run?.waitingUntil && s.run.waitingUntil > now) return { tone: "warn", label: "waiting for the usage limit" };
-  if (s.state.running && s.state.queue.some((i) => i.note?.startsWith("usage limit"))) return { tone: "warn", label: "waiting for the usage limit" };
-  if (s.state.running) return { tone: "running", label: s.state.running.label };
-  if (s.state.queued) return { tone: "warn", label: `waiting: ${s.state.waitReason ?? "free slot"}` };
-  const last = s.run?.status ?? s.state.lastRun?.status;
-  if (last === "failed") return { tone: "failed", label: "last goal failed" };
-  if (last === "passed") return { tone: "done", label: "last goal passed" };
-  return { tone: "", label: "idle" };
-}
-
-const usd = (n: number) => `$${n.toFixed(2)}`;
+/** The overview tab's key; never a repo path. */
+const OVERVIEW = "*overview";
 const clock = (ms: number) => new Date(ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 
 /** The daily budget field: edited as text, saved on Enter or when it loses focus. Empty = no budget. */
@@ -65,8 +53,9 @@ export function App() {
   const [newPath, setNewPath] = useState("");
   const [error, setError] = useState("");
 
-  // Keep a valid tab selected as repos open and close.
-  const current = order.includes(active) ? active : order[0] ?? "";
+  // Keep a valid tab selected as repos open and close. The overview is there from two repos on.
+  const showOverview = order.length >= 2;
+  const current = order.includes(active) || (active === OVERVIEW && showOverview) ? active : order[0] ?? "";
   useEffect(() => {
     try {
       if (current) localStorage.setItem(ACTIVE_KEY, current);
@@ -121,10 +110,15 @@ export function App() {
       </header>
 
       <nav className="tabs" role="tablist">
+        {showOverview && (
+          <div className={`tab ${current === OVERVIEW ? "active" : ""}`} role="tab" aria-selected={current === OVERVIEW} title="All repos at a glance">
+            <button className="tab-name" onClick={() => setActive(OVERVIEW)}>Overview</button>
+          </div>
+        )}
         {order.map((repo) => {
           const s = sessions[repo];
           if (!s) return null;
-          const st = tabStatus(s);
+          const st = repoStatus(s, now);
           const busy = !!s.state.running || !!s.state.queued;
           return (
             <div key={repo} className={`tab ${repo === current ? "active" : ""}`} role="tab" aria-selected={repo === current} title={`${repo}\n${st.label}`}>
@@ -184,6 +178,14 @@ export function App() {
             Open a git repo with <strong>+ Repo</strong>. Each repo gets its own tab, queue and log; up to {maxParallel} run at the same time.
           </p>
         </section>
+      )}
+
+      {showOverview && current === OVERVIEW && (
+        <Overview
+          sessions={sessions} order={order} now={now}
+          onOpen={setActive}
+          onStop={(repo) => guard(() => transport.call("stop", { repo }))}
+        />
       )}
 
       {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
