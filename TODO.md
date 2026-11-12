@@ -40,7 +40,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   `--fast` mode, and measure it.
 
 ### Test the orchestrator itself
-- [x] Fake `claude` (`test/fake-claude/`) and 38 scenario tests (`npm test`), run in CI on Linux and
+- [x] Fake `claude` (`test/fake-claude/`) and 42 scenario tests (`npm test`), run in CI on Linux and
   Windows; the Rust spawn test is `#[ignore]`d and run explicitly in CI.
 - [ ] **More scenarios**: phantom completion and its re-dispatch, foundation failure skipping the
   round, a commit hook that fails, a pre-existing `.orchestrator/config.json` allow-list reaching the
@@ -53,11 +53,11 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
 ### Correctness and safety
 - [x] **Local CSRF in browser mode.** `server.ts` now refuses a foreign `Host` or `Origin` and requires a
   per-process session token on every `/api` call (`test/server.test.mjs`).
-- [ ] **Queue write races.** The UI's `add` and the loop both read-modify-write `queue.json`. Use a
+- [x] **Queue write races.** (queue edits under a lock, atomic writes, a run lock per repo) The UI's `add` and the loop both read-modify-write `queue.json`. Use a
   lock file, or route every write through one process, and write through a temp file + rename.
 - [ ] **Retry transient failures** once (network errors, API overload), separately from the usage limit.
 - [ ] **Budget per loop session**, not only per goal (`--max-cost-total`).
-- [ ] **Graceful "stop after current goal"** for `loop` from the UI (a stop file checked between
+- [x] **Graceful "stop after current goal"** (`orch stop-after`, UI button) for `loop` from the UI (a stop file checked between
   goals). Today Stop kills the process tree.
 - [ ] **Ownership enforcement**: after the build phase, report files changed outside every task's
   owned list to QA as a failure.

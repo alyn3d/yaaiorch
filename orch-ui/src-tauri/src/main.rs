@@ -826,6 +826,24 @@ fn doctor(app: AppHandle, repo: String) -> Value {
     serde_json::from_slice(&out.stdout).unwrap_or_else(|_| fail(String::from_utf8_lossy(&out.stderr).trim().to_string()))
 }
 
+/// Ask a running queue loop to stop before its next goal (the file `orch stop-after` writes).
+#[tauri::command]
+fn stop_after(app: AppHandle, state: State<AppState>, repo: String) -> Result<(), String> {
+    let key = key_of(Path::new(&repo));
+    let dir = {
+        let g = state.0.lock().unwrap();
+        let i = g.find(&key).ok_or("unknown repo")?;
+        if g.sessions[i].running.is_none() {
+            return Err("nothing is running in this repo".into());
+        }
+        g.sessions[i].repo.join(".orchestrator")
+    };
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("stop-after-goal"), now_ms().to_string()).map_err(|e| e.to_string())?;
+    push_line(&app, &key, "-- the queue will stop after the current goal --".into());
+    Ok(())
+}
+
 /// Cancel a start waiting for a slot, or kill the repo's run (whole process tree).
 #[tauri::command]
 fn stop(app: AppHandle, state: State<AppState>, repo: String) {
@@ -924,7 +942,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, set_usage_cap, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, learn_repo, doctor, plugins
+            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, set_usage_cap, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, learn_repo, stop_after, doctor, plugins
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

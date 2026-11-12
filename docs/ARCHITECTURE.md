@@ -49,7 +49,7 @@ Map each role to a model. The architect and QA get the strongest models; impleme
 1. **Checkpoint** (skipped for `--dry-run`). If the target is a git repo: refuse a dirty tree or a repo with no commits, then create branch `orchestrator/checkpoint-<ts>` and emit `checkpoint`. Without git there is no rollback, no commits and no phantom-completion check.
 2. **Architect.** Gets the goal, the agent roster (minus itself), the skill list, the project brief, and from round 2 on what the previous round did (its plan, how each task ended, and the diff stat since the checkpoint) plus its failures, and the plan reply format. Must answer with one JSON `Plan`. **Project brief:** `.orchestrator/brief.md` holds the architect's notes on the repo (stack, layout, conventions, commands). With none, the architect is asked for a `brief` field and orch writes it; later rounds and goals get it in the prompt, and so do every implementer and QA call (with the last 1500 characters of the notes, as `ctx.repoContext`) and the fast path's `dev` agent, so they need not re-read the repo. The architect returns `brief` again only to correct it. The file's first line stamps the commit it describes; when 20 or more files (outside `.orchestrator/`) changed since, or the commit is gone, the first round of the next goal asks the architect to check it, and re-stamps it if nothing needed correcting. `orch learn` (the UI's **Learn repo**) writes or corrects the brief up front in one read-only architect call, with the goal's power, models, budget, usage caps and plugin choice; it emits `learn_start` and `learn_end` (ok, cost), and the backends count that cost toward the daily budget. `--no-brief` (config `"brief": false`) turns this off; delete the file to start over. **Notes:** `.orchestrator/notes.md` collects lessons from earlier goals (QA's optional `notes`, the round-1 failures of a goal that needed several rounds, and what a failed goal left unresolved), newest last, oldest dropped past 8000 characters; the architect (and the fast path's agent) get its last 4000 characters. `--no-notes` / `"notes": false`.
 2b. **Plan critic** (`--critic`, config `"critic": true`, off by default). The built-in read-only `critic` agent (never given tasks) reviews the plan with only the goal, the brief and the plan, never the architect's reasoning, and answers `{approved, issues[]}` on QA's model. A rejection goes back to the architect once with the issues; the revised plan is not reviewed again. A critic error that is not a budget or usage limit just approves. Emits `critic`; its cost is part of the plan's. A reply that is not valid JSON or fails validation is sent back once with the reason.
-3. **Validate.** Rejects a malformed plan, unknown agents, invalid phases, foundation/build tasks without files, a file owned by two tasks (paths normalized: `./`, `\`, case on Windows), and plans with no `verify` task.
+3. **Validate.** Rejects a malformed plan, unknown agents, invalid phases, foundation/build tasks without files, a file owned by two tasks (paths normalized: `./`, `\`, case on Windows), and plans with no `verify` task. Plans are untrusted input: every file path must be relative to the repo root (no absolute, drive or UNC path, no `..`), must not be in `.git/` or `.orchestrator/`, and must not resolve outside the repo through a symlink or junction (checked on the deepest existing part); at most 25 tasks and 60 files per task. The error names the task and the file.
 4. **Foundation** tasks run one at a time (shared types, tokens, API client). If one errors, the rest of the round is skipped (`SKIPPED`).
 5. **Build** tasks run in parallel. File ownership is what makes this safe. A task that errors does not stop its siblings; its error becomes a round failure.
 6. **Commit.** All changes except `.orchestrator/` are committed on the current branch (`orch: <goal> (round N)`). If the commit fails (for example a hook), the round continues uncommitted.
@@ -125,6 +125,7 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `round_end` | round, passed, failures[], cost |
 | `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power?, agents? ({agent: power} when only the failing tasks' agents move up) |
 | `critic` | round, approved, issues[], revised, cost |
+| `loop_stop` | reason (`requested`): the loop exits before its next goal |
 | `learn_start`, `learn_end` | `orch learn`: power; then ok, cost |
 | `usage_limit` | message, resetAt? (epoch ms) |
 | `goal_end` | passed, cost, error?, usageLimit?, resetAt? |
@@ -214,6 +215,7 @@ reconnects the event stream. Vite's dev proxy (`localhost:5173`) passes the chec
 | `POST /api/add-repo` `{ path }`, `/api/remove-repo` `{ repo }` | Open or close a repo (closing is refused while it runs) |
 | `POST /api/settings` `{ maxParallel?, dailyBudget?, usageCap?: { fiveHour?, week? } }` | Change the parallel limit, the daily budget and/or the usage caps in percent (`null` or `""` = none) |
 | `POST /api/clear-limit` | Lift the usage-limit hold ("Try now") |
+| `POST /api/stop-after` `{ repo }` | Ask the running queue loop to stop before its next goal |
 | `POST /api/run`, `/add`, `/loop`, `/stop`, `/clear-log`, `/rollback` | Actions on `{ repo, … }`; `stop` also cancels a start waiting for a slot |
 | static | serves `dist/` |
 
@@ -241,6 +243,24 @@ reporting exit, so the last output is never lost, then starts the next queued re
 repo on exit. `orch.mjs` is built from `../orch.ts` by esbuild into `src-tauri/resources/` and bundled as
 a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 
+## Concurrency and state files
+
+- **Run lock** (`.orchestrator/run.lock`): `run`, `loop`, `learn` and `rollback` take it, so only one orch drives a
+  repo. It records pid, host, command and start time; the holder touches it every 30 s and removes it on exit
+  (only if it is still its own). A new process takes it over only if the holder's process is gone (same host)
+  or the lock has not been touched for 2 minutes (a reused pid, or another machine); otherwise it stops with
+  who holds it. `add`, `status` and the UI's reads do not take it.
+- **Queue edits** (`updateQueue`): every read-modify-write of `queue.json` (`add`, the loop claiming and
+  finishing goals) runs under a short `.orchestrator/queue.lock`, so goals added while a loop runs are never
+  lost; a queue lock older than 10 s is from a process that died mid-edit. The browser server adds goals
+  through `orch add` for the same reason.
+- **Atomic writes**: `queue.json`, `last-run.json`, `brief.md` and `notes.md` are written to a temp file and
+  renamed (retried briefly on Windows while a reader has the file open). A `queue.json` that is not valid is
+  reported and left untouched, never overwritten.
+- **Stop after this goal**: `orch stop-after` (or the UI's **Stop after this goal** while a queue runs)
+  creates `.orchestrator/stop-after-goal`; the loop checks it before each goal and while waiting for a usage
+  limit, removes it and exits with `loop_stop`. A request left from an earlier loop is cleared at start.
+
 ## Data on disk
 
 | Path | Owner | Content |
@@ -249,6 +269,7 @@ a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 | `<target>/.orchestrator/last-run.json` | orch.ts | Latest goal: status, total cost, `checkpoint` (only while that branch exists; drives the UI's rollback offer), and per round power, plan, touched files, checks, failures, cost |
 | `<target>/.orchestrator/readonly-settings.json` | orch.ts | Allow-list plus edit-tool deny for the architect and verifiers |
 | `<target>` git branches `orchestrator/discarded-*` | orch.ts | Work thrown away by `orch rollback` |
+| `<target>/.orchestrator/run.lock`, `queue.lock`, `stop-after-goal` | orch.ts | Run lock, queue edit lock, stop request (see Concurrency) |
 | `<target>/.orchestrator/notes.md` | orch.ts | Lessons from earlier goals, read by the architect; never committed |
 | `<target>/.orchestrator/brief.md` | orch.ts (written by the architect) | Project brief reused by later rounds, goals and all agents; first line `<!-- orch: written at commit … -->`; never committed |
 | `<target>/.orchestrator/builtin-agents.json` | orch.ts | Built-in agent definitions passed to `claude --agents` |

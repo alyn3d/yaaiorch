@@ -1,9 +1,9 @@
 #!/usr/bin/env tsx
 // YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root. Usage: see USAGE below.
 import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, basename } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, unlinkSync, openSync, closeSync, statSync, utimesSync, realpathSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join, basename, dirname, resolve, relative, isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { BUILTIN_AGENTS } from "./orch-agents";
 
@@ -14,6 +14,7 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch status           show queue
   orch agents           list agents + skills the architect will see
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
+  orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
   orch plugins [--json] [--details]  Claude Code plugins installed for this repo (--details: token cost)
   orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work is kept
@@ -153,6 +154,154 @@ const AGENT_SETTINGS = `${DIR}/agent-settings.json`;
 /** Architect and verifiers: same allow-list plus a deny on edit tools, run with permission mode "default". */
 const READONLY_SETTINGS = `${DIR}/readonly-settings.json`;
 const CONFIG_FILE = join(DIR, "config.json");
+/** Held by the process that runs goals in this repo (run, loop, learn, rollback); see acquireRunLock(). */
+const RUN_LOCK = join(DIR, "run.lock");
+/** Present while the queue file is being edited; see updateQueue(). */
+const QUEUE_LOCK = join(DIR, "queue.lock");
+/** Created by `orch stop-after` or the UI: the loop exits before starting its next goal. */
+const STOP_FILE = join(DIR, "stop-after-goal");
+const MAX_TASKS = 25;
+const MAX_FILES_PER_TASK = 60;
+
+// ---------- state files: atomic writes and locks ----------
+const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * Write through a temporary file and a rename, so a crash or a full disk never leaves half a file. On
+ * Windows the rename can fail for a moment while another process reads the target: retry briefly.
+ */
+function writeFileAtomic(path: string, data: string) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, data);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(tmp, path);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (attempt >= 40 || !["EPERM", "EACCES", "EBUSY"].includes(code)) {
+        try {
+          unlinkSync(tmp);
+        } catch {
+          /* already gone */
+        }
+        throw e;
+      }
+      sleepSync(50);
+    }
+  }
+}
+
+/** True if a process with this id exists (EPERM: it exists but belongs to someone else). */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+type LockInfo = { pid: number; host: string; cmd: string; since: number; id: string };
+const LOCK_STALE_MS = 2 * 60_000;
+
+/**
+ * One goal-running orch per repo. The lock records who holds it; the holder touches it every 30 s. A
+ * lock is taken over only when its process is gone (same machine) or it has not been touched for two
+ * minutes (a reused process id, or another machine), so a live process never loses its lock. It is
+ * released on exit, and only if it is still ours.
+ */
+function acquireRunLock(cmd: string) {
+  mkdirSync(DIR, { recursive: true });
+  const me: LockInfo = { pid: process.pid, host: hostname(), cmd, since: Date.now(), id: `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const fd = openSync(RUN_LOCK, "wx");
+      writeFileSync(fd, JSON.stringify(me));
+      closeSync(fd);
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 3) throw e;
+      let holder: Partial<LockInfo> = {};
+      let age = 0;
+      try {
+        holder = JSON.parse(readFileSync(RUN_LOCK, "utf8"));
+        age = Date.now() - statSync(RUN_LOCK).mtimeMs;
+      } catch {
+        age = Infinity; // unreadable or vanished: a crashed half-write
+      }
+      const sameHost = holder.host === hostname();
+      const alive = age < LOCK_STALE_MS && (!sameHost || (typeof holder.pid === "number" && pidAlive(holder.pid)));
+      if (alive)
+        throw new Error(
+          `another orch is already running in this repo (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}${sameHost ? "" : ` on ${holder.host}`}, ` +
+            `since ${holder.since ? new Date(holder.since).toLocaleString() : "?"}). Wait for it, stop it, or delete ${RUN_LOCK} if you are sure it is gone.`,
+        );
+      console.warn(`taking over a stale lock (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}): ${sameHost ? "its process is gone" : "not touched for 2 minutes"}`);
+      try {
+        unlinkSync(RUN_LOCK);
+      } catch {
+        /* someone else removed it first; try again */
+      }
+    }
+  }
+  const beat = setInterval(() => {
+    try {
+      utimesSync(RUN_LOCK, new Date(), new Date());
+    } catch {
+      /* lock removed by hand: nothing to touch */
+    }
+  }, 30_000);
+  beat.unref();
+  process.on("exit", () => {
+    clearInterval(beat);
+    try {
+      if ((JSON.parse(readFileSync(RUN_LOCK, "utf8")) as LockInfo).id === me.id) unlinkSync(RUN_LOCK);
+    } catch {
+      /* not there, or not ours any more */
+    }
+  });
+  // Ctrl+C and kill: exit normally so the lock is released (loop has its own SIGINT handler).
+  for (const sig of ["SIGTERM", "SIGHUP"] as const) process.once(sig, () => process.exit(130));
+  if (cmd !== "loop") process.once("SIGINT", () => process.exit(130));
+}
+
+/**
+ * Edit the queue file under a short lock, so `orch add` (or the UI) and a running loop never overwrite
+ * each other's changes. A queue lock older than 10 s belongs to a process that died mid-edit.
+ */
+function updateQueue<T>(edit: (q: Item[]) => T): T {
+  mkdirSync(DIR, { recursive: true });
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      closeSync(openSync(QUEUE_LOCK, "wx"));
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      try {
+        if (Date.now() - statSync(QUEUE_LOCK).mtimeMs > 10_000) unlinkSync(QUEUE_LOCK);
+      } catch {
+        /* released meanwhile */
+      }
+      if (Date.now() > deadline) throw new Error(`the queue is locked (${QUEUE_LOCK}); try again`);
+      sleepSync(50);
+    }
+  }
+  try {
+    const q = readQueue();
+    const result = edit(q);
+    writeFileAtomic(QUEUE, JSON.stringify(q, null, 2));
+    return result;
+  } finally {
+    try {
+      unlinkSync(QUEUE_LOCK);
+    } catch {
+      /* already removed */
+    }
+  }
+}
 const CHECK_SCRIPTS = ["typecheck", "lint", "test", "build"];
 const CHECK_TIMEOUT_MS = 10 * 60_000;
 /** Pathspec that keeps the orchestrator's own state out of status, diffs and commits. */
@@ -660,9 +809,36 @@ const normPath = (f: string) => {
   return process.platform === "win32" ? p.toLowerCase() : p;
 };
 
+/**
+ * Why a planned file path is not acceptable, or null. Plans come from a model: a path must stay inside the
+ * repo (no absolute, drive or UNC paths, no `..`, no symlink out of it) and away from .git and .orchestrator.
+ */
+function badPath(f: string): string | null {
+  const p = f.trim();
+  if (!p) return "is empty";
+  if (/[\u0000-\u001f]/.test(p)) return "contains control characters";
+  if (isAbsolute(p) || /^[A-Za-z]:/.test(p) || /^[\\/]/.test(p) || p.startsWith("~")) return "must be a path relative to the repo root";
+  const parts = p.replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
+  if (parts.includes("..")) return "must not leave the repo (..)";
+  const first = parts[0]?.toLowerCase();
+  if (first === ".git" || first === DIR) return `is inside ${first}/, which agents must not touch`;
+  // A symlinked folder could still point outside: resolve the deepest part that exists.
+  try {
+    const root = realpathSync(process.cwd());
+    let probe = resolve(root, ...parts);
+    while (!existsSync(probe) && dirname(probe) !== probe) probe = dirname(probe);
+    const rel = relative(root, realpathSync(probe));
+    if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) return "resolves outside the repo (through a link)";
+  } catch {
+    /* unreadable path: the agent will fail on it anyway */
+  }
+  return null;
+}
+
 function validate(plan: Plan, roster: Entry[]) {
   if (!plan || typeof plan.summary !== "string" || !Array.isArray(plan.tasks) || !plan.tasks.length)
     throw new Error('plan must be {"summary": string, "tasks": [...]} with at least one task');
+  if (plan.tasks.length > MAX_TASKS) throw new Error(`plan has ${plan.tasks.length} tasks; at most ${MAX_TASKS}`);
   const names = new Set(roster.map((a) => a.name));
   const owner = new Map<string, string>();
   plan.tasks.forEach((t, i) => {
@@ -672,7 +848,10 @@ function validate(plan: Plan, roster: Entry[]) {
     if (t.files !== undefined && !(Array.isArray(t.files) && t.files.every((f) => typeof f === "string")))
       throw new Error(`task ${i}: files must be a list of paths`);
     if (t.phase !== "verify" && !t.files?.length) throw new Error(`${t.phase} task ${i} (${t.agent}) lists no files`);
+    if ((t.files?.length ?? 0) > MAX_FILES_PER_TASK) throw new Error(`task ${i} (${t.agent}) lists ${t.files!.length} files; at most ${MAX_FILES_PER_TASK}`);
     for (const f of t.files ?? []) {
+      const why = badPath(f);
+      if (why) throw new Error(`task ${i} (${t.agent}): file "${f}" ${why}`);
       const k = normPath(f);
       if (owner.has(k)) throw new Error(`file ${f} owned by both ${owner.get(k)} and ${t.agent}`);
       owner.set(k, t.agent);
@@ -1060,7 +1239,7 @@ function writeBrief(text: unknown, quiet = false) {
   const existed = existsSync(BRIEF_FILE);
   const commit = headCommit();
   mkdirSync(DIR, { recursive: true });
-  writeFileSync(BRIEF_FILE, (commit ? `<!-- orch: written at commit ${commit} -->\n` : "") + text.trim().slice(0, MAX_BRIEF) + "\n");
+  writeFileAtomic(BRIEF_FILE, (commit ? `<!-- orch: written at commit ${commit} -->\n` : "") + text.trim().slice(0, MAX_BRIEF) + "\n");
   if (!quiet) console.log(`project brief ${existed ? "updated" : "written"}: ${BRIEF_FILE}`);
 }
 
@@ -1158,8 +1337,7 @@ function appendNotes(goal: string, passed: boolean, rounds: number, qaNotes: str
     if (i < 0) break;
     all = all.slice(0, all.indexOf("## ")) + all.slice(i + 1);
   }
-  mkdirSync(DIR, { recursive: true });
-  writeFileSync(NOTES_FILE, all);
+  writeFileAtomic(NOTES_FILE, all);
 }
 
 /** The plan critic: a read-only review of the plan before anything is built. Non-fatal errors approve the plan. */
@@ -1191,7 +1369,7 @@ function previousRound(round: number, plan: Plan, statuses: Map<Task, string>, c
     (diff ? `\nChanges since the start of the goal (committed):\n${diff.slice(0, 3000)}` : "")
   );
 }
-const writeLastRun = (lr: LastRun) => (mkdirSync(DIR, { recursive: true }), writeFileSync(LAST_RUN, JSON.stringify(lr, null, 2)));
+const writeLastRun = (lr: LastRun) => writeFileAtomic(LAST_RUN, JSON.stringify(lr, null, 2));
 
 // ---------- one goal: architect -> foundation -> build (parallel) -> verify, repeat ----------
 /** QA's notes for the goal being run, written to notes.md when it ends. */
@@ -1452,8 +1630,29 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 }
 
 // ---------- queue + loop ----------
-const readQueue = (): Item[] => (existsSync(QUEUE) ? JSON.parse(readFileSync(QUEUE, "utf8")) : []);
-const writeQueue = (q: Item[]) => (mkdirSync(DIR, { recursive: true }), writeFileSync(QUEUE, JSON.stringify(q, null, 2)));
+/** The queue, checked: a damaged file stops orch with a clear message instead of being overwritten. */
+function readQueue(): Item[] {
+  if (!existsSync(QUEUE)) return [];
+  let q: unknown;
+  try {
+    q = JSON.parse(readFileSync(QUEUE, "utf8"));
+  } catch (e) {
+    throw new Error(`${QUEUE} is not valid JSON (${msg(e)}). Nothing was changed; fix or move the file.`);
+  }
+  if (!Array.isArray(q) || !q.every((i) => i && typeof i.id === "number" && typeof i.goal === "string" && typeof i.status === "string"))
+    throw new Error(`${QUEUE} is not a list of {id, goal, status} goals. Nothing was changed; fix or move the file.`);
+  return q as Item[];
+}
+/** The loop exits before its next goal when this file exists (it is removed when acted on). */
+function stopRequested(): boolean {
+  if (!existsSync(STOP_FILE)) return false;
+  try {
+    unlinkSync(STOP_FILE);
+  } catch {
+    /* removed meanwhile */
+  }
+  return true;
+}
 
 /** One minute past the reset (the CLI rounds the time); 30 min if the reply had no time. ORCH_LIMIT_WAIT_MS overrides it for tests. */
 function waitUntil(resetAt?: number) {
@@ -1471,14 +1670,20 @@ async function waitForReset(e: UsageLimit) {
 
 async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
   if (o.dryRun) throw new Error("--dry-run cannot be used with loop: the goal would stay pending and be planned again forever");
-  // Only one orchestrator runs at a time, so anything still "running" was interrupted (crash or Stop).
-  const q0 = readQueue();
-  const stale = q0.filter((i) => i.status === "running");
-  if (stale.length) {
-    stale.forEach((i) => (i.status = "pending"));
-    writeQueue(q0);
-    console.log(`reset interrupted goal(s) to pending: ${stale.map((i) => `#${i.id}`).join(", ")}`);
-  }
+  // The run lock guarantees one orchestrator per repo, so anything still "running" was interrupted (crash or Stop).
+  const stale = updateQueue((q) => {
+    const s = q.filter((i) => i.status === "running");
+    s.forEach((i) => (i.status = "pending"));
+    return s;
+  });
+  if (stale.length) console.log(`reset interrupted goal(s) to pending: ${stale.map((i) => `#${i.id}`).join(", ")}`);
+  if (existsSync(STOP_FILE)) unlinkSync(STOP_FILE); // a request left over from an earlier loop
+  const stopNow = () => {
+    if (!stopRequested()) return false;
+    console.log("stop requested: not starting another goal");
+    emit("loop_stop", { reason: "requested" });
+    return true;
+  };
 
   let stop = false;
   process.on("SIGINT", () => {
@@ -1486,16 +1691,20 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     console.log("\nstopping after current goal...");
   });
   while (!stop) {
-    const q = readQueue();
-    const item = q.find((i) => i.status === "pending");
+    if (stopNow()) break;
+    const item = updateQueue((q) => {
+      const next = q.find((i) => i.status === "pending");
+      if (next) {
+        next.status = "running";
+        delete next.note;
+      }
+      return next && { ...next };
+    });
     if (!item) {
       if (untilEmpty) break;
       await sleep(pollSec * 1000);
       continue;
     }
-    item.status = "running";
-    delete item.note;
-    writeQueue(q);
     console.log(`\n##### goal #${item.id}: ${item.goal}`);
     emit("queue_item", { id: item.id, goal: item.goal });
     let outcome: "done" | "failed" | "limit" = "failed";
@@ -1509,17 +1718,17 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       } else console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
     }
     const until = outcome === "limit" ? waitUntil(resetAt) : 0;
-    const q2 = readQueue(); // re-read: user may have added goals meanwhile
-    const cur = q2.find((i) => i.id === item.id);
-    if (cur) {
+    updateQueue((q) => {
+      // Edited under the queue lock: goals added meanwhile stay.
+      const cur = q.find((i) => i.id === item.id);
+      if (!cur) return;
       // A usage limit is not the goal's fault: put it back and try again after the reset.
       cur.status = outcome === "limit" ? "pending" : outcome;
       if (outcome === "limit")
         cur.note = o.onLimit === "stop"
           ? `usage limit: stopped; resets ${resetAt ? new Date(resetAt).toLocaleString() : "later"}`
           : `usage limit: retrying after ${new Date(until).toLocaleString()}`;
-    }
-    writeQueue(q2);
+    });
     if (outcome === "limit" && o.onLimit === "stop") {
       console.log(`usage limit reached; goal #${item.id} is pending again. Stopping (--on-limit stop).`);
       process.exit(3);
@@ -1527,13 +1736,11 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     if (outcome === "limit") {
       console.log(`usage limit reached; goal #${item.id} is pending again. Waiting until ${new Date(until).toLocaleString()} (Ctrl+C to stop).`);
       emit("waiting", { reason: "usage_limit", until });
-      while (!stop && Date.now() < until) await sleep(Math.min(5000, until - Date.now()));
-      const q3 = readQueue();
-      const again = q3.find((i) => i.id === item.id);
-      if (again?.note) {
-        delete again.note;
-        writeQueue(q3);
-      }
+      while (!stop && !existsSync(STOP_FILE) && Date.now() < until) await sleep(Math.min(5000, until - Date.now()));
+      updateQueue((q) => {
+        const again = q.find((i) => i.id === item.id);
+        if (again) delete again.note;
+      });
     }
   }
 }
@@ -1599,6 +1806,7 @@ async function main() {
       if (!goal) throw new Error('usage: orch run "<goal>"');
       {
         const o = parseOpts(values);
+        acquireRunLock("run");
         for (;;) {
           try {
             process.exit((await runGoal(goal, o)) ? 0 : 1);
@@ -1611,23 +1819,34 @@ async function main() {
       }
     case "add": {
       if (!goal) throw new Error('usage: orch add "<goal>"');
-      const q = readQueue();
-      q.push({ id: Math.max(0, ...q.map((i) => i.id)) + 1, goal, status: "pending" });
-      writeQueue(q);
-      return console.log(`queued #${q.at(-1)!.id}`);
+      const id = updateQueue((q) => {
+        const next = Math.max(0, ...q.map((i) => i.id)) + 1;
+        q.push({ id: next, goal, status: "pending" });
+        return next;
+      });
+      return console.log(`queued #${id}`);
     }
     case "loop": {
       const poll = Number(values.poll);
       if (!(poll > 0)) throw new Error(`--poll must be a positive number of seconds, got "${values.poll}"`);
-      return loop({ ...parseOpts(values), park: true }, poll, values["until-empty"]!);
+      const o = { ...parseOpts(values), park: true };
+      acquireRunLock("loop");
+      return loop(o, poll, values["until-empty"]!);
     }
     case "status":
       return console.log(readQueue().map((i) => `#${i.id} [${i.status}] ${i.goal}`).join("\n") || "queue empty");
     case "agents":
       console.log("agents:\n" + discoverAgents().map((a) => `  ${a.name}${a.builtin ? " (built-in)" : ""}: ${a.description}`).join("\n"));
       return console.log("skills:\n" + discoverSkills().map((s) => `  ${s.name}: ${s.description}`).join("\n"));
-    case "learn":
-      return learn(parseOpts(values));
+    case "learn": {
+      const o = parseOpts(values);
+      acquireRunLock("learn");
+      return learn(o);
+    }
+    case "stop-after":
+      mkdirSync(DIR, { recursive: true });
+      writeFileSync(STOP_FILE, new Date().toISOString());
+      return console.log("the running loop will stop before its next goal");
     case "plugins": {
       const list = listPlugins();
       if (values.details) await pluginTokens(list);
@@ -1643,6 +1862,7 @@ async function main() {
       process.exit(findings.some((x) => x.level === "fail") ? 1 : 0);
     }
     case "rollback":
+      acquireRunLock("rollback");
       return rollback(rest[0]);
     case "prune": {
       const days = Number(values["older-than"]);

@@ -11,10 +11,24 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   `Host` or `Origin` is not local (this also stops DNS rebinding) and requires a per-process session
   token on every `/api` call; the UI fetches it automatically. The desktop app was not affected.
 
+### Fixed
+- Two orch processes could run in the same repo (for example a CLI `loop` next to the UI) and overwrite
+  each other's work. A run lock (`.orchestrator/run.lock`) now allows one at a time; a lock left by a
+  crashed or killed process is taken over automatically.
+- Goals added while a loop was running could be lost (both read and rewrote `queue.json`). Queue edits now
+  happen under a short lock, and the browser server adds goals through `orch add`.
+- State files (`queue.json`, `last-run.json`, `brief.md`, `notes.md`) are written atomically, and a damaged
+  `queue.json` is reported instead of being replaced with an empty queue.
+- Plans are checked as untrusted input: file paths outside the repo (absolute, `..`, drive or UNC paths, or
+  through a symlink or junction), inside `.git/` or `.orchestrator/`, and oversized plans are rejected with
+  the task and file named.
+
 ### Changed
 - **License: GPL-3.0-only** (was MIT). Versions up to and including 0.2.0 remain available under MIT.
 
 ### Added
+- **Stop after this goal** for queue loops: `orch stop-after` or a button in the UI while a queue runs;
+  the current goal finishes and the rest stay pending.
 - **Project brief**: the architect writes `.orchestrator/brief.md` (stack, layout, conventions,
   commands) on the first run; later rounds, later goals and the fast path's agent reuse it instead of
   re-reading the repo. `--no-brief` or `"brief": false` turns it off.

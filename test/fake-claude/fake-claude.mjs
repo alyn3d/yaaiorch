@@ -11,6 +11,7 @@
 // Switches (environment):
 //   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap
 //   FAKE_QA=pass|fail|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts
+//   FAKE_BE_FILE=<path>     the file the plan gives the be task (default src/api.ts), to test path checks
 //   FAKE_QA_NOTE=<text>      a passing QA verdict carries this in "notes"
 //   FAKE_CRITIC=approve|reject|reject-once   the plan critic's answer (default approve)
 //   FAKE_COST=<usd>          total_cost_usd per call (default 0.05)
@@ -124,7 +125,7 @@ if (prompt.includes("Study this repository")) {
       summary: "fake plan",
       tasks: [
         { agent: "fe", phase: "foundation", task: "types", files: ["src/types.ts"] },
-        { agent: "be", phase: "build", task: "api", files: ["src/api.ts"] },
+        { agent: "be", phase: "build", task: "api", files: [env.FAKE_BE_FILE ?? "src/api.ts"] },
         { agent: "fe", phase: "build", task: "ui", files: [".\\src\\ui.ts"] },
         { agent: "qa", phase: "verify", task: "check it" },
       ],

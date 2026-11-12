@@ -382,13 +382,13 @@ const doctor = (s: Session) =>
     }),
   );
 
-function addGoal(s: Session, goal: string) {
-  const queuePath = join(s.repo, ".orchestrator", "queue.json");
-  const q = readJson<Item[]>(queuePath, []);
-  q.push({ id: Math.max(0, ...q.map((i) => i.id)) + 1, goal, status: "pending" });
-  mkdirSync(dirname(queuePath), { recursive: true });
-  writeFileSync(queuePath, JSON.stringify(q, null, 2));
-}
+/** Through `orch add`, which edits the queue under its lock, so a running loop never loses the new goal. */
+const addGoal = (s: Session, goal: string) =>
+  new Promise<void>((ok, fail) =>
+    execFile(process.execPath, [TSX_CLI, ORCH, "add", goal], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    ),
+  );
 
 const body = (req: http.IncomingMessage) =>
   new Promise<any>((ok, bad) => {
@@ -545,7 +545,7 @@ http
         }
         if (url.pathname === "/api/add") {
           if (!b.goal?.trim()) return json(400, { error: "goal required" });
-          addGoal(s, b.goal);
+          await addGoal(s, b.goal);
           sendSession(s);
           return json(200, { ok: true });
         }
@@ -561,6 +561,14 @@ http
         if (url.pathname === "/api/rollback") {
           // Runs as a normal orch process: one per repo, output streams to that repo's log.
           requestStart(s, ["rollback"], "rollback");
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/stop-after") {
+          // The loop checks this file before each goal (see `orch stop-after`).
+          if (!s.child) return json(400, { error: "nothing is running in this repo" });
+          mkdirSync(join(s.repo, ".orchestrator"), { recursive: true });
+          writeFileSync(join(s.repo, ".orchestrator", "stop-after-goal"), new Date().toISOString());
+          pushLine(s, "-- the queue will stop after the current goal --");
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/stop") {

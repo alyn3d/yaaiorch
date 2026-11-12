@@ -52,7 +52,7 @@ Make it boring to run unattended, and prove it with tests.
 - Harder eval cases, since the first ones are too easy to tell the tiers apart.
 - A committed fake `claude` and cross-platform scenario tests in CI, so contributors can change the
   loop without spending tokens.
-- Hardening: browser-mode CSRF protection (done), queue locking, retrying transient failures, budget per loop
+- Hardening: browser-mode CSRF protection (done), queue locking (done), retrying transient failures, budget per loop
   session, graceful stop, enforced file ownership.
 
 ## 0.4: better results per dollar

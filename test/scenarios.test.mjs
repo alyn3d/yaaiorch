@@ -6,8 +6,8 @@
 // Needs `npm install` in orch-ui (for tsx) and git on PATH.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync } from "node:fs";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,6 +65,26 @@ function orch(dir, args, env = {}) {
     last: (type) => events.filter((e) => e.type === type).at(-1),
   };
 }
+
+/** Start `orch <args>` without waiting; `done` resolves with exit code and output. */
+function orchAsync(dir, args, env = {}) {
+  const child = spawn(process.execPath, [TSX, ORCH, ...args], {
+    cwd: dir,
+    env: { ...process.env, CLAUDE_BIN: FAKE, ORCH_EVENTS: "1", FORCE_COLOR: "0", FAKE_LOG: `${dir}.fake.log`, ...env },
+  });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (out += d));
+  const done = new Promise((ok) => child.on("close", (code) => ok({ code, out })));
+  return { child, done };
+}
+const until = async (cond, ms = 30_000) => {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error("timed out waiting");
+    await new Promise((r) => setTimeout(r, 100));
+  }
+};
 
 const branches = (dir, pattern = "orchestrator/*") => git(dir, "branch", "--list", pattern, "--format=%(refname:short)").split("\n").filter(Boolean);
 const dirty = (dir) => git(dir, "status", "--porcelain", "--", ".", ":(exclude).orchestrator");
@@ -303,6 +323,84 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(plain.code, 0);
     assert.equal(plain.ev("critic").length, 0);
     assert.ok(!plain.calls.some((c) => c.startsWith("critic:")));
+  });
+
+  test("run lock: a second orch in the same repo is refused; a dead holder's lock is taken over", async () => {
+    const dir = repo();
+    const first = orchAsync(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_SLOW: "2" });
+    await until(() => existsSync(join(dir, ".orchestrator", "run.lock")));
+    const second = orch(dir, ["run", "y", "--max-rounds", "1"]);
+    assert.notEqual(second.code, 0);
+    assert.match(second.out, /another orch is already running in this repo \(run, pid \d+/);
+    const add = orch(dir, ["add", "queued while running"]);
+    assert.equal(add.code, 0, "adding goals is still allowed");
+    assert.equal((await first.done).code, 0);
+    assert.ok(!existsSync(join(dir, ".orchestrator", "run.lock")), "released on exit");
+
+    // A lock left by a process that no longer exists (killed with taskkill /F, kill -9, a crash).
+    const lock = join(dir, ".orchestrator", "run.lock");
+    writeFileSync(lock, JSON.stringify({ pid: 999999, host: (await import("node:os")).hostname(), cmd: "loop", since: Date.now(), id: "dead" }));
+    const r = orch(dir, ["run", "z", "--max-rounds", "1", "--dry-run"]);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /taking over a stale lock \(loop, pid 999999\): its process is gone/);
+  });
+
+  test("queue: parallel adds all land; a damaged queue file is reported and left alone", async () => {
+    const dir = repo();
+    const adds = Array.from({ length: 6 }, (_, i) => orchAsync(dir, ["add", `goal ${i}`]));
+    for (const a of adds) assert.equal((await a.done).code, 0);
+    const q = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    assert.equal(q.length, 6);
+    assert.deepEqual(q.map((i) => i.id).sort((a, b) => a - b), [1, 2, 3, 4, 5, 6]);
+    assert.ok(!existsSync(join(dir, ".orchestrator", "queue.lock")));
+
+    writeFileSync(join(dir, ".orchestrator", "queue.json"), '[{"id": 1, "goal": "half wri');
+    const bad = orch(dir, ["add", "another"]);
+    assert.notEqual(bad.code, 0);
+    assert.match(bad.out, /queue\.json is not valid JSON .*Nothing was changed/);
+    assert.equal(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"), '[{"id": 1, "goal": "half wri');
+    assert.notEqual(orch(dir, ["loop", "--until-empty"]).code, 0, "the loop refuses it too");
+  });
+
+  test("plan paths outside the repo, in .git or .orchestrator, or through a link are rejected", () => {
+    const dir = repo();
+    const outside = mkdtempSync(join(tmpdir(), "yaaiorch-outside-"));
+    dirs.push(outside);
+    symlinkSync(outside, join(dir, "linked"), "junction");
+    const cases = [
+      ["../escape.ts", /must not leave the repo/],
+      ["src/../../escape.ts", /must not leave the repo/],
+      [process.platform === "win32" ? "C:\\Windows\\x.ts" : "/etc/x.ts", /relative to the repo root/],
+      [".git/hooks/pre-commit", /inside \.git\//],
+      [".orchestrator/queue.json", /inside \.orchestrator\//],
+      ["linked/x.ts", /outside the repo \(through a link\)/],
+    ];
+    for (const [file, why] of cases) {
+      const r = orch(dir, ["run", "x", "--max-rounds", "1", "--dry-run"], { FAKE_BE_FILE: file });
+      assert.notEqual(r.code, 0, file);
+      assert.match(r.out, new RegExp(`task 1 \\(be\\): file "${file.replace(/[\\.?*()[\]]/g, "\\$&")}" .*${why.source}`), r.out);
+    }
+    assert.ok(!existsSync(join(outside, "x.ts")));
+    const ok = orch(dir, ["run", "x", "--max-rounds", "1", "--dry-run"], { FAKE_BE_FILE: "./src/api2.ts" });
+    assert.equal(ok.code, 0, ok.out);
+  });
+
+  test("stop after this goal: the loop finishes the current goal and leaves the rest pending", async () => {
+    const dir = repo();
+    orch(dir, ["add", "first"]);
+    orch(dir, ["add", "second"]);
+    // A stop request left over from an earlier loop is ignored.
+    writeFileSync(join(dir, ".orchestrator", "stop-after-goal"), "old");
+    const loop = orchAsync(dir, ["loop", "--until-empty", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_SLOW: "1" });
+    const queue = () => JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    await until(() => queue()[0].status === "running");
+    assert.equal(orch(dir, ["stop-after"]).code, 0);
+    const r = await loop.done;
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /stop requested: not starting another goal/);
+    assert.deepEqual(queue().map((i) => i.status), ["done", "pending"]);
+    assert.ok(!existsSync(join(dir, ".orchestrator", "stop-after-goal")), "the request is used up");
+    assert.ok(r.out.includes('"type":"loop_stop"'));
   });
 
   test("budget cap stops the goal", () => {

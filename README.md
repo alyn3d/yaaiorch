@@ -89,6 +89,7 @@ Other commands:
 |---|---|
 | `orch run "<goal>"` | one goal, loops until QA passes or max rounds |
 | `orch add "<goal>"` / `orch loop` | queue goals and process them (`--until-empty` to stop when drained) |
+| `orch stop-after` | a running `loop` stops before its next goal (the current one finishes) |
 | `orch status` | show the queue |
 | `orch doctor` | check node, claude login, git, a clean tree, leftover checkpoints |
 | `orch rollback` | undo the last unfinished goal (work kept on `orchestrator/discarded-*`) |

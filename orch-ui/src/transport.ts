@@ -140,6 +140,7 @@ const COMMANDS: Record<string, string> = {
   "clear-log": "clear_log",
   rollback: "rollback",
   learn: "learn_repo",
+  "stop-after": "stop_after",
 };
 
 async function tauriInvoke<T = void>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
