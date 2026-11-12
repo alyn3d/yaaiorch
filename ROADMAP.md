@@ -35,7 +35,15 @@ git checkpoints with commits per round, rollback and prune, budget and timeouts,
 read-only planner and QA, usage-limit handling, `orch doctor`, browser UI and Windows desktop app, and
 an eval suite graded by hidden tests. See [CHANGELOG.md](CHANGELOG.md).
 
-## 0.2: reliability and trust
+## 0.2: several repos and cost control (done)
+
+Run several repos at once from one UI and keep spending under control: a tab per repo with a parallel
+limit and an Overview tab, one shared usage-limit hold, a daily budget and percentage caps on the
+5-hour and weekly usage windows, model choice per role and agent, a switch per Claude Code plugin for
+the agents, and safer git and budget handling (no lost checkpoint after a failed commit, parallel
+agents share the budget). See [CHANGELOG.md](CHANGELOG.md).
+
+## 0.3: reliability and trust
 
 Make it boring to run unattended, and prove it with tests.
 
@@ -47,7 +55,7 @@ Make it boring to run unattended, and prove it with tests.
 - Hardening: browser-mode CSRF protection, queue locking, retrying transient failures, budget per loop
   session, graceful stop, enforced file ownership.
 
-## 0.3: better results per dollar
+## 0.4: better results per dollar
 
 Fewer rounds and cheaper rounds for the same pass rate, each change backed by eval numbers.
 
@@ -57,7 +65,7 @@ Fewer rounds and cheaper rounds for the same pass rate, each change backed by ev
 - Richer context for fix rounds (previous plan, diff, check output) and resumed implementer sessions.
 - Memory between goals, an optional review lens, and per-task escalation.
 
-## 0.4: autonomy
+## 0.5: autonomy
 
 From "run this goal" to "work through this backlog".
 
@@ -67,7 +75,7 @@ From "run this goal" to "work through this backlog".
 - Worktrees per build task (or per goal) for real isolation between parallel agents, and optional
   sandboxed runs (container or VM) for repos you do not fully trust the agents with.
 
-## 0.5: product and packaging
+## 0.6: product and packaging
 
 - Run history and replay, per-task output, diff viewer, token counts, agent roster editor.
 - One backend instead of two in sync.

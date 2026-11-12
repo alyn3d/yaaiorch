@@ -63,4 +63,4 @@ process exits without `goal_end`.
 - MIT licensed. Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
-Next milestone is 0.2 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then hardening (browser CSRF, queue lock, retries, loop budget, graceful stop).
+0.2.0 shipped several repos at once and cost control. Next milestone is 0.3 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then hardening (browser CSRF, queue lock, retries, loop budget, graceful stop).

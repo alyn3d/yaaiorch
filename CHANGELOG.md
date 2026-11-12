@@ -5,6 +5,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-12
+
+Several repos at once, shared limits across them, control over cost (daily budget, usage caps, plugins
+for agents) and safer git and budget handling.
+
 ### Added
 - Model selection per role (architect, implementers, heavy tasks, QA, fast-path agent) and per agent:
   `--model architect=opus,impl=haiku,be=<model id>`, `"models"` in `.orchestrator/config.json`, and a
@@ -13,6 +18,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   choice. `wait` (default) now applies to `orch run` too: the interrupted work is set aside and the
   goal is retried after the reset.
 - UI: Fast path checkbox; the run panel shows the models used per round.
+- App icon for the desktop app and the browser UI.
 - Eval runner: `--orch-model` passes a model spec to every orch run.
 - **Several repos at once**: one tab per repo in the browser UI and the desktop app, each with its own
   goal, queue, settings and log and a status dot; a global **Parallel** limit (default 2) with a start
@@ -111,5 +117,6 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/alyn3d/yaaiorch/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/alyn3d/yaaiorch/releases/tag/v0.1.0

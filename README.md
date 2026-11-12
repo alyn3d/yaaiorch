@@ -11,7 +11,7 @@ It drives the [Claude Code](https://docs.claude.com/en/docs/claude-code/overview
 so it uses your existing Claude Code login, agents and skills. It ships as a CLI, a browser UI and a
 Windows/macOS/Linux desktop app (Tauri).
 
-> **Status: early (0.1).** It works end to end and is measured by an eval suite, but expect rough
+> **Status: early (0.2).** It works end to end and is measured by an eval suite, but expect rough
 > edges. Windows is the primary target; Linux and macOS should work but are less tested.
 > Contributions are very welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
 

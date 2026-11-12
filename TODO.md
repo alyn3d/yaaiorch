@@ -4,7 +4,7 @@ Open work, grouped by milestone (see [ROADMAP.md](ROADMAP.md) for the why). Item
 **good first issue** are small and self-contained. Want one? Open an issue or comment on the existing
 one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGELOG.md).
 
-## 0.2: reliability and trust
+## 0.3: reliability and trust
 
 ### Measure
 - [ ] **Finish the baseline.** Run the whole eval suite on all four tiers with `--repeat 3`
@@ -40,7 +40,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   `--fast` mode, and measure it.
 
 ### Test the orchestrator itself
-- [x] Fake `claude` (`test/fake-claude/`) and 16 scenario tests (`npm test`), run in CI on Linux and
+- [x] Fake `claude` (`test/fake-claude/`) and 33 scenario tests (`npm test`), run in CI on Linux and
   Windows; the Rust spawn test is `#[ignore]`d and run explicitly in CI.
 - [ ] **More scenarios**: phantom completion and its re-dispatch, foundation failure skipping the
   round, a commit hook that fails, a pre-existing `.orchestrator/config.json` allow-list reaching the
@@ -65,7 +65,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
 - [ ] **Spawn `claude` without a shell on Windows** (resolve the executable once) to drop the
   `DEP0190` warning and the quoting risk.
 
-## 0.3: better results per dollar
+## 0.4: better results per dollar
 
 Each item should show its effect in the evals before it becomes the default.
 
@@ -87,7 +87,7 @@ Each item should show its effect in the evals before it becomes the default.
   reviewer agents when present.
 - [ ] **Escalate per task**: on a stuck round, move only the failing tasks up a tier.
 
-## 0.4: autonomy
+## 0.5: autonomy
 
 - [ ] **Branch and pull request per goal**: run each goal on `orch/<id>-<slug>`, finish with
   `gh pr create`, never touch the main branch.
@@ -103,7 +103,7 @@ Each item should show its effect in the evals before it becomes the default.
   trust them with.
 - [ ] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri).
 
-## 0.5: product and packaging
+## 0.6: product and packaging
 
 - [ ] **Run history**: append events to `.orchestrator/runs/<id>.jsonl`, list and replay past runs.
 - [ ] **Per-task output** on the task cards (truncated report in `task_end`), and a diff viewer per round.
