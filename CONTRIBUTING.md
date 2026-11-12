@@ -107,6 +107,17 @@ node evals/run.ts --cases node-chunk-bug,api-post,py-roman --power economy --rep
   docs in the same PR.
 - Commit messages: imperative summary line, then a short body saying why.
 
+## Releasing (maintainers)
+
+1. Set the version in `orch-ui/package.json`, `orch-ui/src-tauri/Cargo.toml` and
+   `orch-ui/src-tauri/tauri.conf.json`, and run `npm install --package-lock-only` and `cargo check` so the
+   lock files follow.
+2. Move the `[Unreleased]` notes in `CHANGELOG.md` under the new version with today's date, and update
+   the compare links at the bottom.
+3. Commit, then tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
+4. The **Release** workflow builds Windows, macOS and Linux installers, attaches them with the CLI
+   bundle and `SHA256SUMS.txt` to a **draft** release. Check the draft, then publish it.
+
 ## License
 
 By contributing you agree that your contributions are licensed under the [MIT License](LICENSE).

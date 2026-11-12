@@ -5,21 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
-### Added
-- Fake `claude` (`test/fake-claude/`) and 16 end-to-end scenario tests (`npm test` in `orch-ui`),
-  run in CI on Linux and Windows, plus the desktop backend's spawn test.
-- 7 harder eval cases and two fixtures (`node-shop`, `go-lib`); the suite now has 17 cases.
-- Single-agent control group in the eval runner (`--single <models>`): the same goals as one
-  `claude -p` call with the same permissions, checks and budget, in the same tables.
-- CI: job and step timeouts, Go for the eval self-check.
+## [0.1.0] - 2026-11-12
 
-### Fixed
-- Windows: a `CLAUDE_BIN` path containing spaces (for example under `C:\Program Files`) broke every
-  agent call and `orch doctor`, because cmd.exe received it unquoted.
-
-## [0.1.0] - 2026-11-11
-
-First public version.
+First public release.
 
 ### Orchestrator (`orch.ts`)
 - Loop: architect plan → foundation tasks in order → build tasks in parallel → the repo's checks →
@@ -53,6 +41,28 @@ First public version.
   hidden tests the agents never see, each with a reference solution.
 - Runner with per-tier and per-case tables, false-pass count, `--reference` self-check,
   `--resume` and `--wait-on-limit`.
+
+### Testing
+- Fake `claude` (`test/fake-claude/`) and 19 end-to-end scenario tests (`npm test` in `orch-ui`),
+  run in CI on Linux and Windows, plus the desktop backend's spawn test against the fake.
+- Eval suite grown to 21 cases on five fixtures (Node library, Node API, Node shop, layered Node
+  ticket service, Python, Go), including 4 long-horizon cases.
+- Single-agent control group in the eval runner (`--single <models>`), and `+fast` tier labels.
+
+### Experimental
+- `--fast`: round 1 is one generalist `dev` agent judged by the repo's checks; the full loop runs
+  only if that fails. Not yet measured with real models.
+
+### Fixed
+- Windows: a `CLAUDE_BIN` path containing spaces (for example under `C:\Program Files`) broke every
+  agent call and `orch doctor`, because cmd.exe received it unquoted.
+
+### Known limitations
+- Installers are not code-signed: Windows SmartScreen and macOS Gatekeeper will warn.
+- The desktop app needs Node.js 20+ on PATH and Claude Code installed and logged in.
+- On the eval cases so far, a single `claude -p` call matches the loop's pass rate at similar or lower
+  cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
+  waiting). See TODO.md for the measurements.
 
 [Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/alyn3d/yaaiorch/releases/tag/v0.1.0

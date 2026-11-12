@@ -58,6 +58,10 @@ Map each role to a model. The architect and QA get the strongest models; impleme
 10. **Stuck detection.** A failed round that changed no files, or ended with the same failures as the round before (compared ignoring case, spacing and numbers), counts as stuck. The first time, the next round runs one power tier up (economy → balanced → heavy → max) and the architect is told not to repeat its plan (emits `stuck` with action `escalate`, or `retry` at max). Two stuck rounds in a row stop the goal (`stuck`, action `stop`).
 11. **Finish** (git only). On pass, delete the checkpoint. On failure in `loop`, move the goal's commits to `orchestrator/failed-<ts>` and reset the branch to the checkpoint, so the next goal starts clean. On failure in `run`, leave the commits; `orch rollback` (or the UI button) undoes them.
 
+### Fast path (`--fast`, experimental)
+
+Round 1 skips the architect: one generalist `dev` agent does the whole goal on the tier's heavy model, with no file list (so no phantom check). The repo's checks judge it; when no checks are configured a QA task is added. `round_start` carries `mode: "direct"`. If the round fails, later rounds run the normal loop with its failures. The evals compare it with `--power economy+fast` against the full loop and `--single`.
+
 ### Limits
 
 - **Agent timeout** (`--agent-timeout`, 30 min): a call that runs longer is killed with its whole process tree (`taskkill /T` on Windows) and becomes a task error.

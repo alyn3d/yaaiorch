@@ -1,0 +1,94 @@
+name: Release
+
+# Push a tag like v0.1.0 to build installers for Windows, macOS and Linux and attach them, plus the
+# standalone CLI bundle and checksums, to a DRAFT GitHub release. Review the draft, then publish it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    name: Desktop app (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            platform: windows-latest
+            args: ""
+          - name: macOS (universal)
+            platform: macos-latest
+            args: "--target universal-apple-darwin"
+          - name: Linux
+            platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: orch-ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: orch-ui/src-tauri -> target
+      - name: Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Install
+        working-directory: orch-ui
+        run: npm ci
+      # tauri.conf.json's beforeBuildCommand bundles ../orch.ts and builds the UI.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: orch-ui
+          tagName: ${{ github.ref_name }}
+          releaseName: YAAIORCH ${{ github.ref_name }}
+          releaseBody: |
+            See [CHANGELOG.md](https://github.com/alyn3d/yaaiorch/blob/${{ github.ref_name }}/CHANGELOG.md) for what changed.
+
+            **Requirements:** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and logged in, Node.js 20+ on PATH, and git.
+            The installers are not code-signed yet, so Windows SmartScreen and macOS Gatekeeper will warn on first launch.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  cli:
+    name: CLI bundle and checksums
+    needs: desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: orch-ui/package-lock.json
+      - name: Build orch.mjs
+        working-directory: orch-ui
+        run: |
+          npm ci
+          npm run build:orch
+      - name: Attach CLI bundle and SHA-256 checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p out
+          cp orch-ui/src-tauri/resources/orch.mjs "out/yaaiorch-cli-${TAG}.mjs"
+          gh release download "$TAG" --dir out --pattern '*' --clobber
+          (cd out && sha256sum * | grep -v SHA256SUMS > SHA256SUMS.txt)
+          gh release upload "$TAG" "out/yaaiorch-cli-${TAG}.mjs" out/SHA256SUMS.txt --clobber

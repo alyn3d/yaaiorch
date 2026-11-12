@@ -31,7 +31,7 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- `npm test`: 16 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 19 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
@@ -42,6 +42,7 @@ process exits without `goal_end`.
 - Headless agents get no shell unless allowed: `claude -p` with `acceptEdits` refuses every Bash/PowerShell call. So orch.ts runs the repo's checks itself (`.orchestrator/config.json` `checks`, else package.json `typecheck`/`lint`/`test`/`build`) and a non-zero exit fails the round. Agents get an allow-list for those commands via `--settings`.
 - Read-only roles (architect, verifiers) run with `--permission-mode default` and `readonly-settings.json` (edit tools denied). Deny rules alone are not enough: under `acceptEdits` an agent writes files with a shell redirect instead.
 - Limits: `--agent-timeout` (30 min, kills the process tree), `--max-cost` per goal (passed on as `--max-budget-usd`; CLI reports `error_max_budget_usd`). Stuck rounds (no file changed, or same failures again) move up one power tier; two in a row stop the goal.
+- `--fast`: round 1 is a single built-in `dev` agent (strong model, no file list) judged by the checks (QA only without checks); failure falls back to the full loop. Eval it as `--power economy+fast`.
 - `orch doctor --json` is the first-run check both UIs show as a banner.
 - Usage limit ("You've hit your … limit · resets …"): ends the goal as `UsageLimit` (never a task failure or stuck round), `orch run` exits 3, `loop` requeues the goal and waits for the reset. The eval runner never records such runs: it stops (or waits with `--wait-on-limit`), and `--resume <stamp>` finishes later.
 - Testing without spending tokens: `CLAUDE_BIN=test/fake-claude/claude` (`claude.cmd` on Windows); switches are documented at the top of `fake-claude.mjs`. On Windows `claude` is spawned through cmd.exe, so `shellCmd()` quotes a `CLAUDE_BIN` with spaces; keep that for any new spawn of it.

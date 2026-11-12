@@ -43,7 +43,18 @@ goal ──► architect ──► foundation ──► build (parallel) ──�
 **Cost:** every run calls Claude models. A small goal costs roughly $0.30 on the `economy` tier and
 $0.60–0.90 on `balanced`/`heavy` (measured on the eval suite). Use `--max-cost` to cap a goal.
 
-## Quick start
+## Download
+
+Installers for Windows (`.exe` setup or `.msi`), macOS and Linux, and a standalone CLI bundle
+(`yaaiorch-cli-<version>.mjs`, run with `node`), are on the
+[releases page](https://github.com/alyn3d/yaaiorch/releases), with SHA-256 checksums.
+
+- The apps are **not code-signed** yet: Windows SmartScreen shows "Windows protected your PC"
+  (choose *More info* → *Run anyway*), and macOS needs right-click → *Open* the first time.
+- The desktop app runs the orchestrator with your **Node.js** (20+, on PATH) and your logged-in
+  **Claude Code**; it does not bundle either.
+
+## Quick start (from source)
 
 ```bash
 git clone https://github.com/alyn3d/yaaiorch.git
@@ -82,7 +93,7 @@ Other commands:
 | `orch prune` | delete old `orchestrator/*` branches |
 | `orch agents` | list the agents and skills the architect can use |
 
-Options: `--power economy|balanced|heavy|max` (heavy), `--max-rounds N` (5), `--max-cost USD`,
+Options: `--power economy|balanced|heavy|max` (heavy), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
 `--agent-timeout MIN` (30), `--dry-run` (plan only). Run `orch` without arguments for the full usage.
 
 ### Browser UI
