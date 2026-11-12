@@ -1,13 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Tauri shell for the orchestrator. Spawns the bundled `orch.mjs` (built from ../orch.ts)
-//! with `node` inside the chosen repo, forwards its output + structured events to the UI.
+//! Tauri shell for YAAIORCH, for several repos at once (one session per repo). Spawns the bundled
+//! `orch.mjs` (built from ../orch.ts) with `node` inside each repo and forwards its output and
+//! structured events to the UI, tagged with the repo. At most `max_parallel` sessions run at once;
+//! further starts wait for a free slot. One run per repo at a time.
 
 use serde_json::{json, Value};
 use std::{
+    collections::VecDeque,
     fs,
     io::{BufRead, BufReader},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -25,12 +28,36 @@ struct Running {
     started_at: u64,
 }
 
-#[derive(Default)]
-struct Inner {
-    repo: Option<PathBuf>,
+struct Session {
+    repo: PathBuf,
     running: Option<Running>,
+    /// A start waiting for a free slot: (args, label).
+    pending: Option<(Vec<String>, String)>,
     log: Vec<String>,
-    events: Vec<Value>, // structured events since the last goal_start
+    /// Structured events since the last goal_start.
+    events: Vec<Value>,
+}
+
+struct Inner {
+    sessions: Vec<Session>,
+    /// Keys of sessions waiting for a slot, oldest first.
+    start_queue: VecDeque<String>,
+    max_parallel: usize,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Inner { sessions: Vec::new(), start_queue: VecDeque::new(), max_parallel: 2 }
+    }
+}
+
+impl Inner {
+    fn find(&self, key: &str) -> Option<usize> {
+        self.sessions.iter().position(|s| key_of(&s.repo) == key)
+    }
+    fn running_count(&self) -> usize {
+        self.sessions.iter().filter(|s| s.running.is_some()).count()
+    }
 }
 
 struct AppState(Mutex<Inner>);
@@ -39,60 +66,93 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// One session per folder; Windows paths are case-insensitive.
+fn key_of(p: &Path) -> String {
+    let s = p.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s
+    }
+}
+
 fn read_json(path: PathBuf, fallback: Value) -> Value {
     fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(fallback)
 }
 
-fn state_value(g: &Inner) -> Value {
-    let (queue, last_run) = match &g.repo {
-        Some(r) => (
-            read_json(r.join(".orchestrator").join("queue.json"), json!([])),
-            read_json(r.join(".orchestrator").join("last-run.json"), Value::Null),
-        ),
-        None => (json!([]), Value::Null),
-    };
+fn session_value(s: &Session) -> Value {
+    let dir = s.repo.join(".orchestrator");
     json!({
-        "repo": g.repo.as_ref().map(|r| r.to_string_lossy().to_string()),
-        "running": g.running.as_ref().map(|r| json!({ "pid": r.pid, "label": r.label, "startedAt": r.started_at })),
-        "queue": queue,
-        "lastRun": last_run,
+        "repo": s.repo.to_string_lossy(),
+        "running": s.running.as_ref().map(|r| json!({ "pid": r.pid, "label": r.label, "startedAt": r.started_at })),
+        "queued": s.pending.is_some(),
+        "queue": read_json(dir.join("queue.json"), json!([])),
+        "lastRun": read_json(dir.join("last-run.json"), Value::Null),
     })
 }
 
 fn init_value(g: &Inner) -> Value {
-    json!({ "state": state_value(g), "log": g.log, "events": g.events })
+    json!({
+        "sessions": g.sessions.iter().map(|s| json!({ "state": session_value(s), "log": s.log, "events": s.events })).collect::<Vec<_>>(),
+        "maxParallel": g.max_parallel,
+    })
 }
 
-fn emit_state<R: Runtime>(app: &AppHandle<R>) {
-    let v = state_value(&app.state::<AppState>().0.lock().unwrap());
-    let _ = app.emit("orch-state", v);
+fn emit_init<R: Runtime>(app: &AppHandle<R>) {
+    let v = init_value(&app.state::<AppState>().0.lock().unwrap());
+    let _ = app.emit("orch-init", v);
 }
 
-fn push_line<R: Runtime>(app: &AppHandle<R>, line: String) {
-    if let Some(rest) = line.strip_prefix(MARK) {
-        if let Ok(ev) = serde_json::from_str::<Value>(rest) {
-            {
-                let st = app.state::<AppState>();
-                let mut g = st.0.lock().unwrap();
-                if ev["type"] == "goal_start" {
-                    g.events.clear();
-                }
-                g.events.push(ev.clone());
-            }
-            let _ = app.emit("orch-ev", ev);
-            return;
-        }
+fn emit_session<R: Runtime>(app: &AppHandle<R>, key: &str) {
+    let v = {
+        let st = app.state::<AppState>();
+        let g = st.0.lock().unwrap();
+        g.find(key).map(|i| session_value(&g.sessions[i]))
+    };
+    if let Some(v) = v {
+        let _ = app.emit("orch-session", v);
     }
-    {
+}
+
+fn push_line<R: Runtime>(app: &AppHandle<R>, key: &str, line: String) {
+    let repo = {
         let st = app.state::<AppState>();
         let mut g = st.0.lock().unwrap();
-        g.log.push(line.clone());
-        let len = g.log.len();
-        if len > MAX_LOG {
-            g.log.drain(0..len - MAX_LOG);
+        let Some(i) = g.find(key) else { return };
+        let s = &mut g.sessions[i];
+        if let Some(rest) = line.strip_prefix(MARK) {
+            if let Ok(ev) = serde_json::from_str::<Value>(rest) {
+                if ev["type"] == "goal_start" {
+                    s.events.clear();
+                }
+                s.events.push(ev.clone());
+                let repo = s.repo.to_string_lossy().to_string();
+                drop(g);
+                let _ = app.emit("orch-ev", json!({ "repo": repo, "ev": ev }));
+                return;
+            }
         }
+        s.log.push(line.clone());
+        let len = s.log.len();
+        if len > MAX_LOG {
+            s.log.drain(0..len - MAX_LOG);
+        }
+        s.repo.to_string_lossy().to_string()
+    };
+    let _ = app.emit("orch-log", json!({ "repo": repo, "line": line }));
+}
+
+/// Remember the open repos and the parallel limit in the app's config folder.
+fn persist<R: Runtime>(app: &AppHandle<R>) {
+    let v = {
+        let st = app.state::<AppState>();
+        let g = st.0.lock().unwrap();
+        json!({ "repos": g.sessions.iter().map(|s| s.repo.to_string_lossy()).collect::<Vec<_>>(), "maxParallel": g.max_parallel })
+    };
+    if let Ok(dir) = app.path().app_config_dir() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join("repos.json"), v.to_string());
     }
-    let _ = app.emit("orch-log", line);
 }
 
 fn strip_verbatim(p: PathBuf) -> PathBuf {
@@ -119,15 +179,13 @@ fn orch_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Err("orch.mjs not found (run `npm run build:orch`)".into())
 }
 
-fn node_cmd<R: Runtime>(app: &AppHandle<R>, args: &[String]) -> Result<Command, String> {
-    let repo = app
-        .state::<AppState>()
-        .0
-        .lock()
-        .unwrap()
-        .repo
-        .clone()
-        .ok_or("choose a repo first")?;
+fn repo_of<R: Runtime>(app: &AppHandle<R>, key: &str) -> Result<PathBuf, String> {
+    let st = app.state::<AppState>();
+    let g = st.0.lock().unwrap();
+    g.find(key).map(|i| g.sessions[i].repo.clone()).ok_or_else(|| format!("unknown repo: {key}"))
+}
+
+fn node_cmd<R: Runtime>(app: &AppHandle<R>, repo: &Path, args: &[String]) -> Result<Command, String> {
     let mut cmd = Command::new("node");
     cmd.arg(orch_path(app)?)
         .args(args)
@@ -150,11 +208,60 @@ fn node_cmd<R: Runtime>(app: &AppHandle<R>, args: &[String]) -> Result<Command, 
 
 const NODE_HINT: &str = "failed to start node (is Node.js installed and on PATH?)";
 
-fn spawn_orch<R: Runtime>(app: &AppHandle<R>, args: Vec<String>, label: String) -> Result<(), String> {
-    if app.state::<AppState>().0.lock().unwrap().running.is_some() {
-        return Err("something is already running".into());
+/// Start now if a slot is free, else queue the start. One run per repo.
+fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, label: String) -> Result<(), String> {
+    let key = key_of(Path::new(repo));
+    let start_now = {
+        let st = app.state::<AppState>();
+        let mut g = st.0.lock().unwrap();
+        let i = g.find(&key).ok_or_else(|| format!("unknown repo: {repo}"))?;
+        if g.sessions[i].running.is_some() || g.sessions[i].pending.is_some() {
+            return Err("this repo already has a run (or one waiting to start)".into());
+        }
+        if g.running_count() < g.max_parallel {
+            true
+        } else {
+            g.sessions[i].pending = Some((args.clone(), label.clone()));
+            g.start_queue.push_back(key.clone());
+            false
+        }
+    };
+    if start_now {
+        spawn_orch(app, &key, args, label)
+    } else {
+        let n = app.state::<AppState>().0.lock().unwrap().max_parallel;
+        push_line(app, &key, format!("-- waiting for a free slot ({n} repo(s) may run at once) --"));
+        emit_session(app, &key);
+        Ok(())
     }
-    let mut cmd = node_cmd(app, &args)?;
+}
+
+fn start_next<R: Runtime>(app: &AppHandle<R>) {
+    loop {
+        let next = {
+            let st = app.state::<AppState>();
+            let mut g = st.0.lock().unwrap();
+            if g.running_count() >= g.max_parallel {
+                return;
+            }
+            let Some(key) = g.start_queue.pop_front() else { return };
+            match g.find(&key) {
+                Some(i) => g.sessions[i].pending.take().map(|(args, label)| (key, args, label)),
+                None => None,
+            }
+        };
+        if let Some((key, args, label)) = next {
+            if let Err(e) = spawn_orch(app, &key, args, label) {
+                push_line(app, &key, format!("-- could not start: {e} --"));
+                emit_session(app, &key);
+            }
+        }
+    }
+}
+
+fn spawn_orch<R: Runtime>(app: &AppHandle<R>, key: &str, args: Vec<String>, label: String) -> Result<(), String> {
+    let repo = repo_of(app, key)?;
+    let mut cmd = node_cmd(app, &repo, &args)?;
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -165,15 +272,18 @@ fn spawn_orch<R: Runtime>(app: &AppHandle<R>, args: Vec<String>, label: String) 
     {
         let st = app.state::<AppState>();
         let mut g = st.0.lock().unwrap();
-        g.running = Some(Running { pid: child.id(), label, started_at: now_ms() });
+        if let Some(i) = g.find(key) {
+            g.sessions[i].running = Some(Running { pid: child.id(), label, started_at: now_ms() });
+        }
     }
-    push_line(app, format!("$ orch {}", args.join(" ")));
-    emit_state(app);
+    push_line(app, key, format!("$ orch {}", args.join(" ")));
+    emit_session(app, key);
 
     let readers: Vec<_> = [Box::new(out) as Box<dyn std::io::Read + Send>, Box::new(err)]
         .into_iter()
         .map(|r| {
             let app = app.clone();
+            let key = key.to_string();
             std::thread::spawn(move || {
                 // Read raw bytes per line: `lines()` stops at the first invalid UTF-8 line,
                 // which would close the pipe and lose the rest of the output.
@@ -187,7 +297,7 @@ fn spawn_orch<R: Runtime>(app: &AppHandle<R>, args: Vec<String>, label: String) 
                             let text = String::from_utf8_lossy(&buf);
                             let line = text.trim_end_matches(['\r', '\n']);
                             if !line.is_empty() {
-                                push_line(&app, line.to_string());
+                                push_line(&app, &key, line.to_string());
                             }
                         }
                     }
@@ -197,14 +307,22 @@ fn spawn_orch<R: Runtime>(app: &AppHandle<R>, args: Vec<String>, label: String) 
         .collect();
 
     let app = app.clone();
+    let key = key.to_string();
     std::thread::spawn(move || {
         let code = child.wait().ok().and_then(|s| s.code());
         for r in readers {
             let _ = r.join();
         }
-        push_line(&app, format!("-- exited ({}) --", code.map(|c| c.to_string()).unwrap_or("killed".into())));
-        app.state::<AppState>().0.lock().unwrap().running = None;
-        emit_state(&app);
+        push_line(&app, &key, format!("-- exited ({}) --", code.map(|c| c.to_string()).unwrap_or("killed".into())));
+        {
+            let st = app.state::<AppState>();
+            let mut g = st.0.lock().unwrap();
+            if let Some(i) = g.find(&key) {
+                g.sessions[i].running = None;
+            }
+        }
+        emit_session(&app, &key);
+        start_next(&app);
     });
     Ok(())
 }
@@ -268,33 +386,63 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     v
 }
 
+/// Add a repo (or return the existing session). Returns its key.
+fn add_session(g: &mut Inner, path: &Path) -> Result<String, String> {
+    if !path.is_dir() {
+        return Err(format!("not a folder: {}", path.display()));
+    }
+    let key = key_of(path);
+    if g.find(&key).is_none() {
+        g.sessions.push(Session { repo: path.to_path_buf(), running: None, pending: None, log: Vec::new(), events: Vec::new() });
+    }
+    Ok(key)
+}
+
 #[tauri::command]
 fn snapshot(state: State<AppState>) -> Value {
     init_value(&state.0.lock().unwrap())
 }
 
 #[tauri::command]
-fn set_repo(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
-    let p = PathBuf::from(&path);
-    if !p.is_dir() {
-        return Err(format!("not a folder: {path}"));
-    }
-    if state.0.lock().unwrap().running.is_some() {
-        return Err("stop the current run before switching repo".into());
-    }
-    if let Ok(dir) = app.path().app_config_dir() {
-        let _ = fs::create_dir_all(&dir);
-        let _ = fs::write(dir.join("repo.txt"), &path);
-    }
-    state.0.lock().unwrap().repo = Some(p);
-    let v = init_value(&state.0.lock().unwrap());
-    let _ = app.emit("orch-init", v);
+fn add_repo(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
+    add_session(&mut state.0.lock().unwrap(), Path::new(&path))?;
+    persist(&app);
+    emit_init(&app);
     Ok(())
 }
 
 #[tauri::command]
+fn remove_repo(app: AppHandle, state: State<AppState>, repo: String) -> Result<(), String> {
+    {
+        let mut g = state.0.lock().unwrap();
+        let i = g.find(&key_of(Path::new(&repo))).ok_or_else(|| format!("unknown repo: {repo}"))?;
+        if g.sessions[i].running.is_some() || g.sessions[i].pending.is_some() {
+            return Err("stop this repo's run before closing it".into());
+        }
+        g.sessions.remove(i);
+    }
+    persist(&app);
+    emit_init(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_max_parallel(app: AppHandle, state: State<AppState>, max_parallel: usize) -> Result<(), String> {
+    if !(1..=16).contains(&max_parallel) {
+        return Err("maxParallel must be 1 to 16".into());
+    }
+    state.0.lock().unwrap().max_parallel = max_parallel;
+    persist(&app);
+    emit_init(&app);
+    start_next(&app);
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn run_goal(
     app: AppHandle,
+    repo: String,
     goal: String,
     power: String,
     max_rounds: u32,
@@ -312,12 +460,14 @@ fn run_goal(
     args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     let label = format!("run: {}", goal.chars().take(60).collect::<String>());
     args.push(goal);
-    spawn_orch(&app, args, label)
+    request_start(&app, &repo, args, label)
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn run_loop(
     app: AppHandle,
+    repo: String,
     power: String,
     max_rounds: u32,
     dry_run: Option<bool>,
@@ -333,43 +483,48 @@ fn run_loop(
     if until_empty.unwrap_or(false) {
         args.push("--until-empty".into());
     }
-    spawn_orch(&app, args, "queue loop".into())
+    request_start(&app, &repo, args, "queue loop".into())
 }
 
 #[tauri::command]
-fn add_goal(app: AppHandle, goal: String) -> Result<(), String> {
+fn add_goal(app: AppHandle, repo: String, goal: String) -> Result<(), String> {
     if goal.trim().is_empty() {
         return Err("goal required".into());
     }
-    let out = node_cmd(&app, &["add".into(), goal])?
+    let key = key_of(Path::new(&repo));
+    let out = node_cmd(&app, &repo_of(&app, &key)?, &["add".into(), goal])?
         .output()
         .map_err(|e| format!("{NODE_HINT}: {e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
-    emit_state(&app);
+    emit_session(&app, &key);
     Ok(())
 }
 
-#[tauri::command]
-fn agents(app: AppHandle) -> Result<String, String> {
-    let out = node_cmd(&app, &["agents".into()])?
+#[tauri::command(async)]
+fn agents(app: AppHandle, repo: String) -> Result<String, String> {
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let out = node_cmd(&app, &dir, &["agents".into()])?
         .output()
         .map_err(|e| format!("{NODE_HINT}: {e}"))?;
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// Runs as a normal orch process: refused while a goal runs, output streams to the log.
+/// Runs as a normal orch process: one per repo, output streams to that repo's log.
 #[tauri::command]
-fn rollback(app: AppHandle) -> Result<(), String> {
-    spawn_orch(&app, vec!["rollback".into()], "rollback".into())
+fn rollback(app: AppHandle, repo: String) -> Result<(), String> {
+    request_start(&app, &repo, vec!["rollback".into()], "rollback".into())
 }
 
-/// `orch doctor --json`. Async so starting node does not freeze the window.
+/// `orch doctor --json` in a repo. Async so starting node does not freeze the window.
 #[tauri::command(async)]
-fn doctor(app: AppHandle) -> Value {
+fn doctor(app: AppHandle, repo: String) -> Value {
     let fail = |detail: String| json!([{ "name": "orchestrator", "level": "fail", "detail": detail }]);
-    let out = match node_cmd(&app, &["doctor".into(), "--json".into()]).and_then(|mut c| c.output().map_err(|e| format!("{NODE_HINT}: {e}"))) {
+    let out = match repo_of(&app, &key_of(Path::new(&repo)))
+        .and_then(|dir| node_cmd(&app, &dir, &["doctor".into(), "--json".into()]))
+        .and_then(|mut c| c.output().map_err(|e| format!("{NODE_HINT}: {e}")))
+    {
         Ok(o) => o,
         Err(e) => return fail(e),
     };
@@ -377,18 +532,38 @@ fn doctor(app: AppHandle) -> Value {
     serde_json::from_slice(&out.stdout).unwrap_or_else(|_| fail(String::from_utf8_lossy(&out.stderr).trim().to_string()))
 }
 
+/// Cancel a start waiting for a slot, or kill the repo's run (whole process tree).
 #[tauri::command]
-fn stop(state: State<AppState>) {
-    if let Some(r) = &state.0.lock().unwrap().running {
-        kill_tree(r.pid);
+fn stop(app: AppHandle, state: State<AppState>, repo: String) {
+    let key = key_of(Path::new(&repo));
+    let (pid, cancelled) = {
+        let mut g = state.0.lock().unwrap();
+        match g.find(&key) {
+            Some(i) => {
+                let cancelled = g.sessions[i].pending.take().is_some();
+                (g.sessions[i].running.as_ref().map(|r| r.pid), cancelled)
+            }
+            None => (None, false),
+        }
+    };
+    if cancelled {
+        push_line(&app, &key, "-- start cancelled --".into());
+        emit_session(&app, &key);
+    }
+    if let Some(pid) = pid {
+        kill_tree(pid);
     }
 }
 
 #[tauri::command]
-fn clear_log(app: AppHandle, state: State<AppState>) {
-    state.0.lock().unwrap().log.clear();
-    let v = init_value(&state.0.lock().unwrap());
-    let _ = app.emit("orch-init", v);
+fn clear_log(app: AppHandle, state: State<AppState>, repo: String) {
+    {
+        let mut g = state.0.lock().unwrap();
+        if let Some(i) = g.find(&key_of(Path::new(&repo))) {
+            g.sessions[i].log.clear();
+        }
+    }
+    emit_init(&app);
 }
 
 fn main() {
@@ -397,25 +572,36 @@ fn main() {
         .manage(AppState(Mutex::new(Inner::default())))
         .setup(|app| {
             if let Ok(dir) = app.path().app_config_dir() {
-                if let Ok(s) = fs::read_to_string(dir.join("repo.txt")) {
-                    let p = PathBuf::from(s.trim());
-                    if p.is_dir() {
-                        app.state::<AppState>().0.lock().unwrap().repo = Some(p);
+                let saved = read_json(dir.join("repos.json"), json!({}));
+                // Before multi-repo support the app remembered one repo in repo.txt.
+                let mut repos: Vec<String> = saved["repos"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+                if repos.is_empty() {
+                    if let Ok(s) = fs::read_to_string(dir.join("repo.txt")) {
+                        repos.push(s.trim().to_string());
                     }
+                }
+                let st = app.state::<AppState>();
+                let mut g = st.0.lock().unwrap();
+                if let Some(n) = saved["maxParallel"].as_u64().filter(|n| (1..=16).contains(n)) {
+                    g.max_parallel = n as usize;
+                }
+                for r in repos {
+                    let _ = add_session(&mut g, Path::new(&r));
                 }
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, set_repo, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor
+            snapshot, add_repo, remove_repo, set_max_parallel, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            if let Some(r) = &handle.state::<AppState>().0.lock().unwrap().running {
-                kill_tree(r.pid);
+            let pids: Vec<u32> = handle.state::<AppState>().0.lock().unwrap().sessions.iter().filter_map(|s| s.running.as_ref().map(|r| r.pid)).collect();
+            for pid in pids {
+                kill_tree(pid);
             }
         }
     });
@@ -425,43 +611,73 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// Spawns the real orch.mjs with the fake claude. Ignored by default because it needs:
+    fn wait_idle<R: Runtime>(h: &AppHandle<R>) {
+        for _ in 0..300 {
+            {
+                let st = h.state::<AppState>();
+                let g = st.0.lock().unwrap();
+                if g.running_count() == 0 && g.sessions.iter().all(|s| s.pending.is_none()) {
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("runs did not finish in time");
+    }
+
+    /// Spawns the real orch.mjs with the fake claude in two repos. Ignored by default because it needs:
     /// TEST_REPO (an empty dir), ORCH_PATH (built orch.mjs) and CLAUDE_BIN (test/fake-claude/claude[.cmd]).
     /// Run with `cargo test -- --ignored` (CI does).
     #[test]
     #[ignore]
-    fn spawns_orch_and_captures_events() {
-        let repo = std::env::var("TEST_REPO").expect("set TEST_REPO, ORCH_PATH and CLAUDE_BIN to run this test");
+    fn runs_orch_in_two_repos_within_the_parallel_limit() {
+        let repo = PathBuf::from(std::env::var("TEST_REPO").expect("set TEST_REPO, ORCH_PATH and CLAUDE_BIN to run this test"));
         assert!(std::env::var("ORCH_PATH").is_ok(), "set ORCH_PATH to the built orch.mjs");
         assert!(std::env::var("CLAUDE_BIN").is_ok(), "set CLAUDE_BIN to test/fake-claude/claude.cmd (or claude on POSIX)");
+        let second = repo.join("second-repo");
+        fs::create_dir_all(&second).unwrap();
+
         let app = tauri::test::mock_builder()
             .manage(AppState(Mutex::new(Inner::default())))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let h = app.handle().clone();
-        h.state::<AppState>().0.lock().unwrap().repo = Some(PathBuf::from(repo));
-
-        let mut args = vec!["run".to_string()];
-        args.extend(flags("heavy", 5, false, &Extra::default()));
-        args.push("hello".into());
-        spawn_orch(&h, args, "test".into()).unwrap();
-        assert!(spawn_orch(&h, vec!["agents".into()], "x".into()).is_err(), "second run must be refused");
-
-        for _ in 0..200 {
-            if h.state::<AppState>().0.lock().unwrap().running.is_none() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+        let (a, b) = {
+            let st = h.state::<AppState>();
+            let mut g = st.0.lock().unwrap();
+            g.max_parallel = 1;
+            (add_session(&mut g, &repo).unwrap(), add_session(&mut g, &second).unwrap())
+        };
+        let run_args = || {
+            let mut args = vec!["run".to_string()];
+            args.extend(flags("heavy", 5, false, &Extra::default()));
+            args.push("hello".into());
+            args
+        };
+        request_start(&h, &a, run_args(), "a".into()).unwrap();
+        assert!(request_start(&h, &a, vec!["agents".into()], "x".into()).is_err(), "a second run in the same repo is refused");
+        request_start(&h, &b, run_args(), "b".into()).unwrap();
+        {
+            let st = h.state::<AppState>();
+            let g = st.0.lock().unwrap();
+            let sb = &g.sessions[g.find(&b).unwrap()];
+            assert!(sb.pending.is_some() && sb.running.is_none(), "with max_parallel 1 the second repo waits");
         }
+        wait_idle(&h);
+
         let st = h.state::<AppState>();
         let g = st.0.lock().unwrap();
-        assert!(g.running.is_none());
-        let types: Vec<String> = g.events.iter().map(|e| e["type"].as_str().unwrap().to_string()).collect();
-        assert_eq!(types.first().map(String::as_str), Some("goal_start"));
-        let end = g.events.last().unwrap();
-        assert_eq!(end["type"], "goal_end");
-        assert_eq!(end["passed"], true);
-        assert!(g.log.iter().any(|l| l.starts_with("-- exited (0)")), "log: {:?}", g.log);
-        assert!(state_value(&g)["queue"].is_array());
+        for key in [&a, &b] {
+            let s = &g.sessions[g.find(key).unwrap()];
+            let types: Vec<&str> = s.events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+            assert_eq!(types.first().copied(), Some("goal_start"), "{key}");
+            let end = s.events.last().unwrap();
+            assert_eq!(end["type"], "goal_end");
+            assert_eq!(end["passed"], true);
+            assert!(s.log.iter().any(|l| l.starts_with("-- exited (0)")), "log: {:?}", s.log);
+            assert!(session_value(s)["queue"].is_array());
+        }
+        let sb = &g.sessions[g.find(&b).unwrap()];
+        assert!(sb.log.iter().any(|l| l.contains("waiting for a free slot")), "log: {:?}", sb.log);
     }
 }

@@ -133,45 +133,66 @@ Task `status` is `COMPLETE`, `PARTIAL`, `FAILED`, `PHANTOM`, `UNKNOWN`, `ERROR`,
 
 ## UI (`orch-ui/`)
 
+The UI works on several repos at once: one **tab per repo**, each with its own goal form, settings,
+queue, run panel and log. Each repo has a **session** in the backend: its own `orch` process, log and
+events. One run per repo at a time (agents share that repo's working tree); at most `maxParallel`
+repos run at once (default 2, 1-16) and further starts wait for a free slot, oldest first. All repos
+share one Claude usage limit, so the limit is the main brake on parallel runs.
+
 ### Frontend (`src/`)
 
 | File | Role |
 |---|---|
-| `transport.ts` | The only place that knows how to reach the backend. Browser: `fetch` + `EventSource`. Desktop: Tauri `invoke` + `listen`. Chosen at startup via `__TAURI_INTERNALS__`. |
-| `useOrch.ts` | Hook: `state`, `log`, `run`, `error`, `call()`, `pickRepo()`, `findings` (doctor, refreshed on connect, repo change and after every process exit). |
-| `reduce.ts` | Pure fold of `OrchEvent`s into a `RunView` (rounds → tasks). A reload replays the stored events through it. |
+| `transport.ts` | The only place that knows how to reach the backend. Browser: `fetch` + `EventSource`. Desktop: Tauri `invoke` + `listen`. Chosen at startup via `__TAURI_INTERNALS__`. Every message carries its `repo`. |
+| `useOrch.ts` | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`. `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends. |
+| `App.tsx` | Header (running count, Parallel limit), tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating. |
+| `RepoView.tsx` | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log. |
+| `Settings.tsx` | Usage-limit choice, fast path, models per role and agent; remembered per repo in local storage. |
+| `reduce.ts` | Pure fold of `OrchEvent`s into a `RunView` (rounds -> tasks). A reload replays the stored events through it. |
 | `RunView.tsx` | Task cards grouped Foundation / Build / Verify, with status, elapsed time, owned and changed files, failures. |
-| `App.tsx`, `App.scss` | Goal form (power, max rounds, max $, plan only), doctor banner, rollback offer (from `lastRun.checkpoint`, two-step confirm), queue, run panel, live log. |
 | `types.ts` | Shared types. |
 
-State flow: backend pushes `init` (full snapshot: state + log + events), then `state`, `log`, `ev` deltas.
+State flow: the backend pushes `init` (`{ sessions: [{ state, log, events }], maxParallel }`, also after a
+repo is added or removed or the limit changes), then per-repo deltas: `session` (one repo's state),
+`log` (`{ repo, line }`) and `ev` (`{ repo, ev }`). A repo's state includes `queued` while its start waits
+for a slot.
 
 ### Backend A: browser mode (`server.ts`)
 
-Node `http` server on `127.0.0.1:4317`. Spawns `orch.ts` through tsx in `ORCH_REPO`.
+Node `http` server on `127.0.0.1:4317`. Spawns `orch.ts` through tsx in each repo. Opens the repos
+remembered in `~/.yaaiorch/ui.json` plus `ORCH_REPO` / `ORCH_REPOS` (separated by the OS path delimiter);
+`MAX_PARALLEL` sets the limit.
 
 | Route | Purpose |
 |---|---|
-| `GET /api/events` | SSE: `init`, `state`, `log`, `ev` |
-| `GET /api/state`, `/api/agents` | Snapshot, roster |
-| `GET /api/doctor` | `orch doctor --json` |
-| `POST /api/run`, `/add`, `/loop`, `/stop`, `/clear-log`, `/rollback` | Actions (`run`/`loop` take `maxCost`; `rollback` runs `orch rollback` as a normal process) |
+| `GET /api/events` | SSE: `init`, `session`, `log`, `ev` |
+| `GET /api/state` | The init payload |
+| `GET /api/doctor?repo=`, `/api/agents?repo=` | `orch doctor --json`, roster |
+| `POST /api/add-repo` `{ path }`, `/api/remove-repo` `{ repo }` | Open or close a repo (closing is refused while it runs) |
+| `POST /api/settings` `{ maxParallel }` | Change the parallel limit |
+| `POST /api/run`, `/add`, `/loop`, `/stop`, `/clear-log`, `/rollback` | Actions on `{ repo, … }`; `stop` also cancels a start waiting for a slot |
 | static | serves `dist/` |
 
 ### Backend B: desktop mode (`src-tauri/src/main.rs`)
 
-Tauri v2. Replaces the Node server. Runs the compiled `orch.mjs` with `node` in the chosen repo.
+Tauri v2. Replaces the Node server. Runs the compiled `orch.mjs` with `node` in each repo.
 
 | Command | Purpose |
 |---|---|
-| `snapshot` | Full init payload |
-| `set_repo(path)` | Validate folder, persist to `<app config>/repo.txt`, emit `orch-init` |
-| `run_goal`, `run_loop`, `add_goal`, `stop`, `clear_log`, `agents`, `rollback` | Same actions as the HTTP API (`max_cost: Option<f64>` on run/loop) |
-| `doctor` | `orch doctor --json` (async command, so starting node does not freeze the window) |
+| `snapshot` | The init payload |
+| `add_repo(path)`, `remove_repo(repo)`, `set_max_parallel(maxParallel)` | Open or close a repo, change the limit; persisted to `<app config>/repos.json` (the old single `repo.txt` is migrated) |
+| `run_goal`, `run_loop`, `add_goal`, `stop`, `clear_log`, `agents`, `rollback` | Same actions as the HTTP API, each with `repo` |
+| `doctor(repo)` | `orch doctor --json` (async command, so starting node does not freeze the window) |
 
-Events to the UI: `orch-init`, `orch-state`, `orch-log`, `orch-ev`.
+Events to the UI: `orch-init`, `orch-session`, `orch-log`, `orch-ev` (the last two as `{ repo, … }`).
 
-Internals: one `Mutex<Inner>` holds repo, running process, log ring (5000 lines) and the events of the current goal (cleared on `goal_start`). Two reader threads per child feed `push_line`, which splits structured lines from plain ones. A wait thread joins the readers before reporting exit, so the last output is never lost. Stop uses `taskkill /T /F` on Windows and a process-group `kill` elsewhere; the app also does this on exit. `orch.mjs` is built from `../orch.ts` by esbuild into `src-tauri/resources/` and bundled as a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
+Internals: one `Mutex<Inner>` holds the sessions (repo, running process, pending start, log ring of 5000
+lines, events of the current goal), the start queue and `max_parallel`. Two reader threads per child
+feed `push_line`, which splits structured lines from plain ones. A wait thread joins the readers before
+reporting exit, so the last output is never lost, then starts the next queued repo. Stop uses
+`taskkill /T /F` on Windows and a process-group `kill` elsewhere; the app does this for every running
+repo on exit. `orch.mjs` is built from `../orch.ts` by esbuild into `src-tauri/resources/` and bundled as
+a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 
 ## Data on disk
 
@@ -186,7 +207,8 @@ Internals: one `Mutex<Inner>` holds repo, running process, log ring (5000 lines)
 | `<target>/.orchestrator/config.json` | user | Optional: `{"checks": {"name": "command"}, "allow": ["Bash(...)"]}` |
 | `<target>` git branches `orchestrator/checkpoint-*` | orch.ts | Rollback point of the running or last unfinished goal |
 | `<target>` git branches `orchestrator/failed-*` | orch.ts | Work of goals that failed in `loop` |
-| `<app config>/repo.txt` | Tauri | Last chosen repo |
+| `<app config>/repos.json` | Tauri | Open repos and the parallel limit |
+| `~/.yaaiorch/ui.json` | server.ts | Open repos and the parallel limit (browser mode) |
 
 Run events and the log live in memory only and are lost on restart.
 

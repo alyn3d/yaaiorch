@@ -104,7 +104,16 @@ npm run build
 ORCH_REPO=/path/to/your/repo npm start      # http://localhost:4317
 ```
 
-On Windows `cmd`: `set "ORCH_REPO=C:\path\to\repo" && npm start`.
+On Windows `cmd`: `set "ORCH_REPO=C:\path\to\repo" && npm start`. Open more repos with **+ Repo** in the
+UI (or `ORCH_REPOS`, separated by `;` on Windows and `:` elsewhere); they are remembered.
+
+### Several repos at once
+
+Both the browser UI and the desktop app work on several repos in parallel: one **tab per repo**, each
+with its own goal, queue, settings and log, and a status dot (running, waiting, failed, done). The
+**Parallel** field in the header limits how many repos run at the same time (default 2); further starts
+wait for a free slot. One run per repo at a time. All repos draw on the same Claude usage limit, so
+more parallel runs reach it sooner.
 
 ### Desktop app
 

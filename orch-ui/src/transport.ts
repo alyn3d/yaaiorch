@@ -3,24 +3,36 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Finding, OrchEvent, State } from "./types";
 
-export type Init = { state: State; log: string[]; events: OrchEvent[] };
+/** One repo's state, log and structured events since its last goal_start. */
+export type SessionInit = { state: State; log: string[]; events: OrchEvent[] };
+export type Init = { sessions: SessionInit[]; maxParallel: number };
 export type Handlers = {
   onInit(d: Init): void;
-  onState(s: State): void;
-  onLog(line: string): void;
-  onEvent(e: OrchEvent): void;
+  onSession(s: State): void;
+  onLog(repo: string, line: string): void;
+  onEvent(repo: string, e: OrchEvent): void;
   onConnection(ok: boolean): void;
 };
 export interface Transport {
+  /** Desktop: a native folder picker. Browser: the user types a path. */
   canPickRepo: boolean;
   subscribe(h: Handlers): () => void;
+  /** A repo command (run, add, loop, stop, clear-log, rollback); body carries `repo`. */
   call(path: string, body?: Record<string, unknown>): Promise<void>;
-  pickRepo(): Promise<void>;
-  /** First-run checks (`orch doctor`) for the current repo. */
-  doctor(): Promise<Finding[]>;
+  /** Open a repo in a new tab: a picked folder (desktop) or the given path (browser). */
+  addRepo(path?: string): Promise<void>;
+  removeRepo(repo: string): Promise<void>;
+  setMaxParallel(n: number): Promise<void>;
+  /** First-run checks (`orch doctor`) for one repo. */
+  doctor(repo: string): Promise<Finding[]>;
 }
 
 // ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
+async function post(path: string, body: Record<string, unknown>) {
+  const r = await fetch(`/api/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+}
+
 const web: Transport = {
   canPickRepo: false,
   subscribe(h) {
@@ -29,18 +41,26 @@ const web: Transport = {
     es.onopen = () => h.onConnection(true);
     es.onerror = () => h.onConnection(false);
     es.addEventListener("init", (e) => h.onInit(data(e)));
-    es.addEventListener("state", (e) => h.onState(data(e)));
-    es.addEventListener("log", (e) => h.onLog(data(e)));
-    es.addEventListener("ev", (e) => h.onEvent(data(e)));
+    es.addEventListener("session", (e) => h.onSession(data(e)));
+    es.addEventListener("log", (e) => {
+      const d = data(e);
+      h.onLog(d.repo, d.line);
+    });
+    es.addEventListener("ev", (e) => {
+      const d = data(e);
+      h.onEvent(d.repo, d.ev);
+    });
     return () => es.close();
   },
-  async call(path, body = {}) {
-    const r = await fetch(`/api/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error((await r.json()).error ?? r.statusText);
+  call: (path, body = {}) => post(path, body),
+  async addRepo(path) {
+    if (!path?.trim()) throw new Error("type the repo's folder path");
+    await post("add-repo", { path: path.trim() });
   },
-  async pickRepo() {},
-  async doctor() {
-    const r = await fetch("/api/doctor");
+  removeRepo: (repo) => post("remove-repo", { repo }),
+  setMaxParallel: (n) => post("settings", { maxParallel: n }),
+  async doctor(repo) {
+    const r = await fetch(`/api/doctor?repo=${encodeURIComponent(repo)}`);
     return r.ok ? r.json() : [{ name: "server", level: "fail", detail: r.statusText }];
   },
 };
@@ -55,6 +75,14 @@ const COMMANDS: Record<string, string> = {
   rollback: "rollback",
 };
 
+async function tauriInvoke<T = void>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+  try {
+    return await invoke<T>(cmd, args); // JS camelCase keys map to Rust snake_case args
+  } catch (e) {
+    throw new Error(String(e));
+  }
+}
+
 const tauri: Transport = {
   canPickRepo: true,
   subscribe(h) {
@@ -63,9 +91,9 @@ const tauri: Transport = {
     (async () => {
       const subs = await Promise.all([
         listen<Init>("orch-init", (e) => h.onInit(e.payload)),
-        listen<State>("orch-state", (e) => h.onState(e.payload)),
-        listen<string>("orch-log", (e) => h.onLog(e.payload)),
-        listen<OrchEvent>("orch-ev", (e) => h.onEvent(e.payload)),
+        listen<State>("orch-session", (e) => h.onSession(e.payload)),
+        listen<{ repo: string; line: string }>("orch-log", (e) => h.onLog(e.payload.repo, e.payload.line)),
+        listen<{ repo: string; ev: OrchEvent }>("orch-ev", (e) => h.onEvent(e.payload.repo, e.payload.ev)),
       ]);
       if (cancelled) return subs.forEach((u) => u());
       unlisten.push(...subs);
@@ -80,19 +108,15 @@ const tauri: Transport = {
   async call(path, body = {}) {
     const cmd = COMMANDS[path];
     if (!cmd) throw new Error(`unknown command ${path}`);
-    try {
-      await invoke(cmd, body); // JS camelCase keys map to Rust snake_case args
-    } catch (e) {
-      throw new Error(String(e));
-    }
+    await tauriInvoke(cmd, body);
   },
-  async pickRepo() {
-    const p = await open({ directory: true, multiple: false, title: "Choose target repo" });
-    if (typeof p === "string") await invoke("set_repo", { path: p });
+  async addRepo() {
+    const p = await open({ directory: true, multiple: false, title: "Open a repo" });
+    if (typeof p === "string") await tauriInvoke("add_repo", { path: p });
   },
-  async doctor() {
-    return invoke<Finding[]>("doctor");
-  },
+  removeRepo: (repo) => tauriInvoke("remove_repo", { repo }),
+  setMaxParallel: (n) => tauriInvoke("set_max_parallel", { maxParallel: n }),
+  doctor: (repo) => tauriInvoke<Finding[]>("doctor", { repo }),
 };
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

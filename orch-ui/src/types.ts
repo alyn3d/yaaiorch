@@ -4,7 +4,8 @@ export type Round = { round: number; plan: string; touched: string[]; passed: bo
 /** .orchestrator/last-run.json, written by orch.ts. `checkpoint` is set only while that branch still exists. */
 export type LastRun = { goal: string; status?: "running" | "passed" | "failed"; checkpoint?: string; cost?: number; state: Round[] } | null;
 export type Running = { pid: number; label: string; startedAt: number } | null;
-export type State = { repo: string | null; running: Running; queue: Item[]; lastRun: LastRun };
+/** One repo's state. `queued`: a start is waiting for a free slot under the parallel limit. */
+export type State = { repo: string; running: Running; queued?: boolean; queue: Item[]; lastRun: LastRun };
 export type Power = "max" | "heavy" | "balanced" | "economy";
 /** One line of `orch doctor --json`. */
 export type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };
@@ -50,6 +51,8 @@ export type RunView = {
   error?: string;
   checkpoint?: string;
   maxCost?: number;
+  /** From a `waiting` event: the usage limit resets around this time (ms). */
+  waitingUntil?: number;
   /** Sum of the costs reported so far; `goal_end` replaces it with the exact total. */
   cost: number;
   startedAt: number;

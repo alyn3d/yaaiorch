@@ -65,3 +65,19 @@ button { cursor: pointer; &:hover:not(:disabled) { border-color: $accent; } &:di
   label { flex-direction: column; align-items: stretch; gap: 2px; font-size: 12px; }
   input { width: 100%; }
   .wide { grid-column: 1 / -1; } }
+
+// Tabs: one per repo.
+header input[type="number"] { width: 56px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; border-bottom: 1px solid $border; padding-bottom: 6px; }
+.tab { display: flex; align-items: center; border: 1px solid $border; border-radius: 6px 6px 0 0; background: $card;
+  &.active { border-color: $accent; }
+  button { border: none; background: none; padding: 4px 8px; }
+  .tab-name { display: flex; align-items: center; gap: 6px; font-weight: 500; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab-close { color: $muted; padding: 4px 6px; &:hover:not(:disabled) { color: $bad; } } }
+.status { width: 8px; height: 8px; border-radius: 50%; background: $border; flex: none;
+  &.running { background: $warn; animation: pulse 1.2s ease-in-out infinite; } &.done { background: $ok; } &.failed { background: $bad; } &.warn { background: $warn; } }
+@keyframes pulse { 50% { opacity: 0.35; } }
+.tab-add { border-style: dashed; }
+.tab-add-form { display: flex; gap: 6px; input { min-width: 320px; } }
+.repo-view { display: flex; flex-direction: column; gap: 16px; &[hidden] { display: none; } }
+@media (prefers-reduced-motion: reduce) { .status.running { animation: none; } }

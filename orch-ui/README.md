@@ -9,8 +9,9 @@ Needs Node on PATH (runs the orchestrator), Rust (MSVC toolchain on Windows), an
     npm run tauri dev        # dev window (bundles ../orch.ts -> src-tauri/resources/orch.mjs)
     npm run tauri build      # installer in src-tauri/target/release/bundle
 
-Pick the target repo in the app ("Choose repo…"); it is remembered between launches.
+Open repos with "+ Repo": one tab per repo, several can run at once (the Parallel field sets how many).
+The open repos are remembered between launches.
 
 ## Browser only (no Rust)
     npm run build
-    set ORCH_REPO=C:\path\to\repo && npm start     # http://localhost:4317
+    set "ORCH_REPO=C:\path\to\repo" && npm start     # http://localhost:4317 (add more repos in the UI)

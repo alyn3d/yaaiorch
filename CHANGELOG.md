@@ -14,6 +14,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   goal is retried after the reset.
 - UI: Fast path checkbox; the run panel shows the models used per round.
 - Eval runner: `--orch-model` passes a model spec to every orch run.
+- **Several repos at once**: one tab per repo in the browser UI and the desktop app, each with its own
+  goal, queue, settings and log and a status dot; a global **Parallel** limit (default 2) with a start
+  queue; open repos are remembered (`~/.yaaiorch/ui.json`, `<app config>/repos.json`).
 
 ### Changed
 - `orch run` waits for the usage-limit reset by default instead of exiting with code 3; use
