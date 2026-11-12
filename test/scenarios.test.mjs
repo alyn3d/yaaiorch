@@ -96,6 +96,22 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(lastRun(dir).checkpoint, undefined);
   });
 
+  test("commits rounds when .gitignore lists .orchestrator; a committed config stays tracked", () => {
+    const dir = repo();
+    writeFileSync(join(dir, ".gitignore"), ".orchestrator/\n");
+    writeConfig(dir, { checks: { ok: 'node -e "process.exit(0)"' } });
+    git(dir, "add", "-A");
+    git(dir, "add", "-f", ".orchestrator/config.json");
+    git(dir, "commit", "-q", "-m", "ignore state, keep config");
+    const r = orch(dir, ["run", "build it", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    assert.doesNotMatch(r.out, /commit failed/);
+    assert.match(git(dir, "log", "--format=%s"), /orch: build it \(round 1\)/);
+    assert.equal(git(dir, "status", "--porcelain"), "", "nothing left staged or modified");
+    assert.match(git(dir, "ls-files", ".orchestrator"), /config\.json/);
+    assert.doesNotMatch(git(dir, "ls-files", ".orchestrator"), /last-run|queue/);
+  });
+
   test("works outside git (no checkpoint, no commits)", () => {
     const dir = repo({ git: false });
     const r = orch(dir, ["run", "x", "--max-rounds", "1"]);

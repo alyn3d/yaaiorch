@@ -505,7 +505,14 @@ function prepareGit(): string {
 
 /** Stage everything except .orchestrator and commit it. Returns the short hash, or null if nothing changed. */
 function commitAll(message: string): string | null {
-  git("add", "-A", "--", ".", NOT_STATE);
+  // Not `add -- . NOT_STATE`: when .gitignore lists .orchestrator, git refuses that pathspec
+  // ("paths are ignored") and the round's work would stay staged but uncommitted.
+  git("add", "-A", "--", ".");
+  try {
+    git("reset", "-q", "--", ".orchestrator"); // back to HEAD, so a committed config.json stays as it was
+  } catch {
+    git("rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ".orchestrator"); // no commit yet
+  }
   try {
     git("diff", "--cached", "--quiet");
     return null;

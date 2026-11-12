@@ -31,7 +31,7 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- `npm test`: 26 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 27 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes

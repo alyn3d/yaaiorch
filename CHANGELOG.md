@@ -29,6 +29,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - `orch run` waits for the usage-limit reset by default instead of exiting with code 3; use
   `--on-limit stop` for the old behaviour (the eval runner does).
 
+### Fixed
+- Round commits failed when the target repo's `.gitignore` lists `.orchestrator/`: the work stayed
+  staged, the goal still passed, and the next run refused the dirty tree.
+
 ## [0.1.0] - 2026-11-12
 
 First public release.
