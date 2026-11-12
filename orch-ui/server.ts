@@ -143,7 +143,7 @@ function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number
     usage = { ...usage, ...next };
     sendGlobal();
   }
-  if ((ev.type === "plan" || ev.type === "task_end") && typeof ev.cost === "number" && ev.cost > 0) {
+  if ((ev.type === "plan" || ev.type === "task_end" || ev.type === "learn_end") && typeof ev.cost === "number" && ev.cost > 0) {
     if (spent.day !== today()) spent = { day: today(), usd: 0 };
     spent.usd += ev.cost;
     saveSettings();
@@ -229,7 +229,7 @@ function startNext() {
  * at most what is left today (their own --max-cost, if lower).
  */
 function withBudget(args: string[]): string[] {
-  if (args[0] !== "run" && args[0] !== "loop") return args;
+  if (args[0] !== "run" && args[0] !== "loop" && args[0] !== "learn") return args;
   const caps = (["fiveHour", "week"] as Window[]).filter((w) => usageCap[w] !== null).map((w) => `${WINDOW_CLI[w]}=${usageCap[w]}`);
   if (caps.length && !args.includes("--usage-cap")) args = [...args, "--usage-cap", caps.join(",")];
   const left = budgetLeft();
@@ -510,6 +510,11 @@ http
         }
         if (url.pathname === "/api/loop") {
           requestStart(s, ["loop", ...flags(b), ...(b.untilEmpty ? ["--until-empty"] : [])], "queue loop");
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/learn") {
+          // `orch learn`: a read-only pass that writes the project brief; a run like any other (slot, budget, log).
+          requestStart(s, ["learn", ...flags({ ...b, dryRun: false })], "learn repo");
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/rollback") {

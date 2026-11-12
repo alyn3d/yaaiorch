@@ -253,6 +253,40 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.ok(off.calls.includes("architect: notes=none"), "--no-notes leaves them out");
   });
 
+  test("orch learn writes a stamped brief; implementers and QA get it; a stale brief goes back to the architect", () => {
+    const dir = repo();
+    const l = orch(dir, ["learn", "--power", "economy"]);
+    assert.equal(l.code, 0, l.out);
+    assert.ok(l.calls.includes("learn: called old=false"));
+    assert.ok(l.calls.some((c) => /^call agent=architect mode=default .* model=sonnet/.test(c)), "read-only, economy architect");
+    assert.equal(l.last("learn_end").ok, true);
+    assert.equal(l.last("learn_end").cost, 0.05);
+    const raw = readFileSync(join(dir, ".orchestrator", "brief.md"), "utf8");
+    assert.match(raw, new RegExp(`^<!-- orch: written at commit ${git(dir, "rev-parse", "HEAD")} -->\\n.*FAKE BRIEF learned`, "s"));
+
+    // A goal right after: no refresh, and every agent gets the brief.
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.calls.includes("architect: previousRound=false brief=seen"));
+    assert.ok(!r.calls.includes("architect: brief stale"));
+    for (const who of ["fe", "be", "qa"]) assert.ok(r.calls.includes(`${who}: got brief`), `${who}\n${r.calls.join("\n")}`);
+
+    // 20+ files changed since the brief's commit: the architect is asked to check it; it is re-stamped after.
+    for (let i = 0; i < 21; i++) writeFileSync(join(dir, `f${i}.txt`), String(i));
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "many files");
+    const s = orch(dir, ["run", "y", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(s.code, 0, s.out);
+    assert.ok(s.calls.includes("architect: brief stale"), s.calls.join("\n"));
+    assert.match(readFileSync(join(dir, ".orchestrator", "brief.md"), "utf8"), new RegExp(`commit ${git(dir, "rev-parse", "HEAD~1")}|commit ${git(dir, "rev-parse", "HEAD")}`));
+    const again = orch(dir, ["run", "z", "--dry-run"]);
+    const staleLines = (x) => x.calls.filter((c) => c === "architect: brief stale").length; // the fake's log spans all runs in dir
+    assert.equal(staleLines(again), staleLines(s), "checked once, not every goal");
+
+    // Learning again passes the current brief to correct.
+    assert.ok(orch(dir, ["learn"]).calls.includes("learn: called old=true"));
+  });
+
   test("plan critic: a rejected plan goes back to the architect once; off by default", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "1", "--critic"], { FAKE_QA: "pass", FAKE_CRITIC: "reject-once" });

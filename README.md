@@ -94,6 +94,7 @@ Other commands:
 | `orch rollback` | undo the last unfinished goal (work kept on `orchestrator/discarded-*`) |
 | `orch prune` | delete old `orchestrator/*` branches |
 | `orch agents` | list the agents and skills the architect can use |
+| `orch learn` | study the repo once (read-only) and write the project brief that later goals reuse |
 | `orch plugins [--details]` | list your Claude Code plugins (with `--details`: context tokens each adds per call) |
 
 Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--no-brief` (do not keep a project brief), `--no-notes` (do not keep lessons between goals), `--critic` (review each plan before building), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
@@ -157,8 +158,10 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   { "models": { "architect": "opus", "impl": "haiku", "agents": { "be": "sonnet" } }, "onLimit": "wait", "usageCap": { "5h": 80, "week": 90 } }
   ```
 
-- **Learning the repo once.** The architect writes a short project brief (`.orchestrator/brief.md`: stack,
-  layout, conventions, commands) on the first run and later rounds and goals reuse it. Fix rounds also see
+- **Learning the repo once.** A short project brief (`.orchestrator/brief.md`: stack, layout, conventions,
+  commands) is written on the first run, or up front with **Learn repo** / `orch learn`, and every later
+  round and goal, and every agent in it, reuses it instead of exploring the repo again. When many files
+  have changed since it was written, the next goal's architect checks and corrects it. Fix rounds also see
   what the previous round planned, how each task ended and what changed, and a stuck round with one
   failing task moves only that task's agent up a tier. Lessons from earlier goals (QA's notes, what failed)
   go into `.orchestrator/notes.md`, which the architect reads before planning.

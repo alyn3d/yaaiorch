@@ -180,7 +180,7 @@ fn emit_global<R: Runtime>(app: &AppHandle<R>) {
 fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
     let kind = ev["type"].as_str().unwrap_or("");
     let cost = ev["cost"].as_f64().filter(|c| *c > 0.0);
-    if let Some(cost) = cost.filter(|_| matches!(kind, "plan" | "task_end")) {
+    if let Some(cost) = cost.filter(|_| matches!(kind, "plan" | "task_end" | "learn_end")) {
         {
             let st = app.state::<AppState>();
             let mut g = st.0.lock().unwrap();
@@ -387,7 +387,7 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
 /// Run and loop get the global limits: --usage-cap from the caps (`caps`, "" for none), and with a daily
 /// budget a --max-cost of at most what is left today (their own --max-cost, if lower).
 fn with_budget(mut args: Vec<String>, left: Option<f64>, caps: &str) -> Vec<String> {
-    if !matches!(args.first().map(String::as_str), Some("run" | "loop")) {
+    if !matches!(args.first().map(String::as_str), Some("run" | "loop" | "learn")) {
         return args;
     }
     if !caps.is_empty() && !args.iter().any(|a| a == "--usage-cap") {
@@ -769,6 +769,26 @@ fn agents(app: AppHandle, repo: String) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// `orch learn`: a read-only pass that writes the project brief. A run like any other (slot, budget, log).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn learn_repo(
+    app: AppHandle,
+    repo: String,
+    power: String,
+    max_rounds: Option<u32>,
+    max_cost: Option<f64>,
+    models: Option<String>,
+    on_limit: Option<String>,
+    critic: Option<bool>,
+    plugins: Option<PluginOpts>,
+) -> Result<(), String> {
+    let extra = Extra { max_cost, models, on_limit, fast: None, critic, plugins };
+    let mut args = vec!["learn".to_string()];
+    args.extend(flags(&power, max_rounds.unwrap_or(1), false, &extra));
+    request_start(&app, &repo, args, "learn repo".into())
+}
+
 /// Runs as a normal orch process: one per repo, output streams to that repo's log.
 #[tauri::command]
 fn rollback(app: AppHandle, repo: String) -> Result<(), String> {
@@ -904,7 +924,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, set_usage_cap, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor, plugins
+            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, set_usage_cap, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, learn_repo, doctor, plugins
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

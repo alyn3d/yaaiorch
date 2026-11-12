@@ -40,7 +40,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   `--fast` mode, and measure it.
 
 ### Test the orchestrator itself
-- [x] Fake `claude` (`test/fake-claude/`) and 37 scenario tests (`npm test`), run in CI on Linux and
+- [x] Fake `claude` (`test/fake-claude/`) and 38 scenario tests (`npm test`), run in CI on Linux and
   Windows; the Rust spawn test is `#[ignore]`d and run explicitly in CI.
 - [ ] **More scenarios**: phantom completion and its re-dispatch, foundation failure skipping the
   round, a commit hook that fails, a pre-existing `.orchestrator/config.json` allow-list reaching the
@@ -86,6 +86,12 @@ Each item should show its effect in the evals before it becomes the default.
 - [ ] **Review lens**: optional reviewer pass on the diff for bugs and security, with the user's own
   reviewer agents when present.
 - [x] **Escalate per task**: on a stuck round, move only the failing tasks up a tier.
+- [x] **Learn the repo**: `orch learn` / **Learn repo** writes the brief up front; implementers and QA get
+  the brief and recent notes too; a brief stamped at an old commit (20+ changed files) is checked again.
+- [ ] **Tidy the notes**: when `notes.md` gets long, one cheap call merges duplicates and drops lessons that
+  no longer apply, instead of cutting the oldest.
+- [ ] **Share what was learned**: optionally propose the brief and lasting lessons as a section of the
+  repo's CLAUDE.md, as a commit to review, so teammates and fresh clones get it.
 - [ ] **Measure these** (brief, notes, context between rounds, per-task escalation, plan critic): they were built
   without an eval, because the current cases all pass in round 1. Needs cases that take several
   rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.

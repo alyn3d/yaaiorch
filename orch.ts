@@ -14,6 +14,7 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch status           show queue
   orch agents           list agents + skills the architect will see
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
+  orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
   orch plugins [--json] [--details]  Claude Code plugins installed for this repo (--details: token cost)
   orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work is kept
                         on an orchestrator/discarded-* branch
@@ -170,6 +171,11 @@ const TASK_FORMAT = `
 
 ## Reply format
 End your reply with exactly one of these lines: "Status: COMPLETE", "Status: PARTIAL" or "Status: FAILED".`;
+const LEARN_FORMAT = `
+
+## Reply format
+Reply with exactly one JSON object and nothing else:
+{"brief": "<markdown, at most 400 words: what the project is; stack and versions; layout (main folders and what lives where); conventions (naming, patterns, error handling, how tests are written); how to build, test and lint; pitfalls>"}`;
 const REVIEW_FORMAT = `
 
 ## Reply format
@@ -393,7 +399,8 @@ async function reserve(budget: Budget): Promise<number | undefined> {
 }
 /** Percent caps on the subscription's usage windows (1-100); unset = no cap. */
 type UsageCap = { fiveHour?: number; week?: number };
-type RunCtx = { budget: Budget; timeoutMs: number; usageCap: UsageCap; onLimit: "wait" | "stop" };
+/** `repoContext`: the brief and recent lessons, put in front of every implementer and QA prompt. */
+type RunCtx = { budget: Budget; timeoutMs: number; usageCap: UsageCap; onLimit: "wait" | "stop"; repoContext?: string };
 
 // ---------- subscription usage: read from the CLI's rate_limit_event (stream-json) ----------
 type Window = "fiveHour" | "week";
@@ -939,6 +946,7 @@ type Opts = {
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
 async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx): Promise<Result> {
   const prompt =
+    (ctx.repoContext ? `${ctx.repoContext}## Your task\n` : "") +
     (t.files?.length ? `${t.task}\n\nYour files (touch only these):\n${t.files.map((f) => `- ${f}`).join("\n")}` : t.task) +
     (t.figma ? `\n\nFigma: ${t.figma}` : "") +
     (t.skills?.length ? `\n\nBefore starting, load these skills with the Skill tool: ${t.skills.join(", ")}` : "") +
@@ -1027,13 +1035,105 @@ const failureKey = (fs: string[]) =>
 
 type LastRun = { goal: string; status: "running" | "passed" | "failed"; checkpoint?: string; cost: number; state: unknown[] };
 
-const readBrief = (): string => (existsSync(BRIEF_FILE) ? readFileSync(BRIEF_FILE, "utf8").trim() : "");
-function writeBrief(text: unknown) {
+/** First line of brief.md: the commit the brief describes, so a brief can tell when it has gone stale. */
+const BRIEF_STAMP = /^<!-- orch: written at commit ([0-9a-f]{7,40}) -->\r?\n?/;
+/** A brief older than this many changed files (since its commit) is sent back to the architect to check. */
+const BRIEF_STALE_FILES = 20;
+
+function readBriefFile(): { text: string; commit?: string } {
+  if (!existsSync(BRIEF_FILE)) return { text: "" };
+  const raw = readFileSync(BRIEF_FILE, "utf8");
+  const m = BRIEF_STAMP.exec(raw);
+  return { text: raw.slice(m ? m[0].length : 0).trim(), commit: m?.[1] };
+}
+const readBrief = (): string => readBriefFile().text;
+const headCommit = (): string | undefined => {
+  try {
+    return isGitRepo() ? git("rev-parse", "HEAD") : undefined;
+  } catch {
+    return undefined; // no commits yet
+  }
+};
+
+function writeBrief(text: unknown, quiet = false) {
   if (typeof text !== "string" || text.trim().length < 20) return;
   const existed = existsSync(BRIEF_FILE);
+  const commit = headCommit();
   mkdirSync(DIR, { recursive: true });
-  writeFileSync(BRIEF_FILE, text.trim().slice(0, MAX_BRIEF) + "\n");
-  console.log(`project brief ${existed ? "updated" : "written"}: ${BRIEF_FILE}`);
+  writeFileSync(BRIEF_FILE, (commit ? `<!-- orch: written at commit ${commit} -->\n` : "") + text.trim().slice(0, MAX_BRIEF) + "\n");
+  if (!quiet) console.log(`project brief ${existed ? "updated" : "written"}: ${BRIEF_FILE}`);
+}
+
+/** How many files changed since the brief's commit; Infinity if that commit is gone; 0 outside git or unstamped. */
+function briefAge(commit?: string): number {
+  if (!commit || !isGitRepo()) return 0;
+  try {
+    return git("diff", "--name-only", commit, "HEAD", "--", ".", NOT_STATE).split("\n").filter(Boolean).length;
+  } catch {
+    return Infinity; // rebased or pruned away
+  }
+}
+
+/**
+ * The brief for this goal: with many files changed since it was written, it goes to the architect with a
+ * request to check it. `stale` tells the caller to re-stamp it if the architect finds nothing to correct.
+ */
+function briefForGoal(): { text: string; stale: boolean } {
+  const { text, commit } = readBriefFile();
+  if (!text) return { text: "", stale: false };
+  const age = briefAge(commit);
+  if (age < BRIEF_STALE_FILES) return { text, stale: false };
+  const since = age === Infinity ? "at a commit that is no longer in this history" : `${age} changed files ago`;
+  console.log(`project brief written ${since}; asking the architect to check it`);
+  return {
+    text: `${text}\n\n(This brief was written ${since} and may be out of date: check it against the repo and add a "brief" field with a corrected version if anything changed.)`,
+    stale: true,
+  };
+}
+
+/**
+ * `orch learn`: one read-only call to the architect that studies the repo and writes (or corrects) the
+ * project brief, so the first goal does not pay for it. Respects --power, --model, --max-cost, --usage-cap
+ * and the plugin choice like a goal does.
+ */
+async function learn(o: Opts) {
+  const roster = discoverAgents();
+  const architect = roster.find((a) => a.name === "architect")!;
+  writeBuiltins(roster);
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const checks = loadChecks(cfg);
+  writeAgentSettings(cfg, checks, o.plugins);
+  const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 }, timeoutMs: o.agentTimeoutMs, usageCap: o.usageCap, onLimit: o.onLimit };
+  const old = readBrief();
+  const commands = Object.entries(checks).map(([n, c]) => `${n}: ${c}`);
+  const prompt =
+    `Study this repository so that later goals need not explore it from scratch. Read the README and docs, the build ` +
+    `and package files, the folder layout, the main entry points, and a few typical source and test files. Do not edit anything.\n` +
+    (commands.length ? `\nThe orchestrator runs these checks after every build:\n- ${commands.join("\n- ")}\n` : "") +
+    (old ? `\nThe current project brief, to check, correct and extend:\n${old}\n` : "") +
+    LEARN_FORMAT;
+  emit("learn_start", { power: o.power });
+  let ok = false;
+  try {
+    const r = await run(architect, modelFor(o.power, o.models, "architect", "architect"), prompt, ctx, true);
+    const { brief } = extractJson<{ brief?: unknown }>(r.text);
+    if (typeof brief !== "string" || brief.trim().length < 20) throw new Error("the architect returned no brief");
+    writeBrief(brief);
+    console.log(`\n${readBrief()}\n`);
+    ok = true;
+  } finally {
+    // The daily budget in the UI counts this cost too.
+    emit("learn_end", { ok, cost: round4(ctx.budget.spent) });
+    console.log(`cost: ${usd(ctx.budget.spent)}${o.maxCost !== undefined ? ` of ${usd(o.maxCost)}` : ""}`);
+  }
+}
+
+/** Brief and recent lessons for implementers, QA and the critic, so they need not explore the repo from scratch. */
+function repoContext(brief: string, notes: string): string {
+  return (
+    (brief ? `## Project brief (notes on this repo from earlier runs; use it instead of exploring from scratch)\n${brief}\n\n` : "") +
+    (notes ? `## Lessons from earlier goals in this repo\n${notes.slice(-1500)}\n\n` : "")
+  );
 }
 
 const readNotes = (): string => (existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8").trim().slice(-4000) : "");
@@ -1176,7 +1276,9 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     });
     let plan: Plan;
     let planCost = 0;
-    const brief = o.brief ? readBrief() : null;
+    // The brief is checked for staleness once per goal (round 1); later rounds use what is on disk.
+    const fresh = o.brief ? (round === 1 ? briefForGoal() : { text: readBrief(), stale: false }) : null;
+    const brief = fresh ? fresh.text : null;
     const notes = o.notes ? readNotes() : "";
     if (direct) plan = directPlan(goal, checks, brief || null, notes);
     else {
@@ -1184,6 +1286,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       const architectModel = modelFor(power, models, "architect", "architect");
       ({ plan, cost: planCost } = await makePlan(architect, workers, skills, goal, failures, note, architectModel, ctx, previous, brief, notes));
       if (o.brief && plan.brief) writeBrief(plan.brief);
+      else if (fresh?.stale) writeBrief(readBrief(), true); // checked and still right: re-stamp it at this commit
       if (o.critic && critic) {
         // The critic sees only the goal, the brief and the plan, never the architect's reasoning.
         const review = await critique(critic, goal, plan, brief || null, modelFor(power, models, "qa", "critic"), ctx);
@@ -1200,6 +1303,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         emit("critic", { round, approved: review.approved, issues: review.issues, revised, cost: round4(review.cost) });
       }
     }
+    // After planning, so a brief the architect just wrote reaches this round's agents. The fast path's task has them already.
+    ctx.repoContext = direct ? "" : repoContext(o.brief ? readBrief() : "", notes);
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
     emit("plan", { round, summary: plan.summary, cost: round4(planCost), tasks: plan.tasks.map((t, id) => ({ id, ...t })) });
     if (o.dryRun) return true;
@@ -1270,7 +1375,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         const id = idOf.get(t)!;
         emit("task_start", { round, id, agent: t.agent, phase: t.phase });
         try {
-          const r = await run(byName.get(t.agent)!, modelFor(power, models, "qa", t.agent), `Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`, ctx, true);
+          const r = await run(byName.get(t.agent)!, modelFor(power, models, "qa", t.agent), `${ctx.repoContext ?? ""}Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`, ctx, true);
           const v = asVerdict(extractJson<Verdict>(r.text));
           if (v.notes) goalNotes.push(...v.notes);
           statuses.set(t, v.passed ? "PASS" : "FAIL");
@@ -1521,6 +1626,8 @@ async function main() {
     case "agents":
       console.log("agents:\n" + discoverAgents().map((a) => `  ${a.name}${a.builtin ? " (built-in)" : ""}: ${a.description}`).join("\n"));
       return console.log("skills:\n" + discoverSkills().map((s) => `  ${s.name}: ${s.description}`).join("\n"));
+    case "learn":
+      return learn(parseOpts(values));
     case "plugins": {
       const list = listPlugins();
       if (values.details) await pluginTokens(list);

@@ -102,7 +102,11 @@ if (cap !== null && cost > Number(cap)) {
   process.exit(1);
 }
 
-if (prompt.includes("Produce the plan")) {
+if (prompt.includes("Study this repository")) {
+  // orch learn: a read-only pass that returns the project brief.
+  log(`learn: called old=${prompt.includes("The current project brief")}`);
+  reply(JSON.stringify({ brief: "FAKE BRIEF learned: node project, src/ holds the code, tests in test/." }));
+} else if (prompt.includes("Produce the plan")) {
   const flag = ".orchestrator/fake-bad-plan-done";
   if (env.FAKE_BAD_PLAN_ONCE && !existsSync(flag)) {
     writeFileSync(flag, "1");
@@ -114,6 +118,7 @@ if (prompt.includes("Produce the plan")) {
     if (prompt.includes("A reviewer rejected your plan")) log("architect: got critic issues");
     log(`architect: notes=${prompt.includes("Notes from earlier goals") && prompt.includes("FAKE LESSON") ? "seen" : "none"}`);
     // Context between rounds and the project brief, as the architect sees them.
+    if (prompt.includes("may be out of date")) log("architect: brief stale");
     log(`architect: previousRound=${/What round \d+ did/.test(prompt) && prompt.includes("Plan: fake plan")} brief=${prompt.includes("FAKE BRIEF") ? "seen" : prompt.includes("No project brief exists yet") ? "asked" : "none"}`);
     const plan = {
       summary: "fake plan",
@@ -138,6 +143,7 @@ if (prompt.includes("Produce the plan")) {
 } else if (prompt.includes('{"passed": true | false')) {
   const mode = env.FAKE_QA ?? "pass";
   const sawNew = /ui\.ts/.test(prompt) && /api\.ts/.test(prompt);
+  if (prompt.includes("## Project brief")) log("qa: got brief");
   log(`qa: sawNewFiles=${sawNew}`);
   if (mode === "fail") reply('{"passed": false, "failures": ["fake failure"]}');
   else if (mode === "needs-new" && !sawNew) reply('{"passed": false, "failures": ["QA did not see new files"]}');
@@ -153,8 +159,11 @@ if (prompt.includes("Produce the plan")) {
     await new Promise(() => {});
   }
   if (env.FAKE_SLOW) await sleep(Number(env.FAKE_SLOW) * 1000);
+  if (prompt.includes("## Project brief")) log(`${agent}: got brief`);
   // The fast path's generalist gets no file list; it writes one file of its own.
-  const files = agent === "dev" ? ["src/direct.txt"] : [...prompt.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
+  // Only the task's own file list counts, not bullet points in the brief or the notes above it.
+  const own = prompt.split("Your files (touch only these):")[1]?.split("\n## ")[0] ?? "";
+  const files = agent === "dev" ? ["src/direct.txt"] : [...own.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
   if (!env.FAKE_NOWRITE)
     for (const f of files) {
       mkdirSync(dirname(f), { recursive: true });

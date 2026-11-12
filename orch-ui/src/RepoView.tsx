@@ -117,6 +117,13 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
             <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} /> Plan only
           </label>
           <span className="spacer" />
+          <button
+            disabled={busy || badSettings}
+            title="Read-only: the architect studies the repo and writes .orchestrator/brief.md (stack, layout, conventions, commands), which every later goal and its agents reuse. Runs at this power tier; one agent call."
+            onClick={() => call("learn", opts)}
+          >
+            Learn repo
+          </button>
           <button disabled={!goal.trim()} onClick={async () => { if (await call("add", { goal })) setGoal(""); }}>Add to queue</button>
           <button className="primary" disabled={busy || !goal.trim() || badSettings} onClick={() => call("run", { goal, ...opts })}>Run now</button>
         </div>

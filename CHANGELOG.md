@@ -20,6 +20,12 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   A built-in read-only `critic` agent reviews each plan before building; a rejection goes back to the
   architect once. The run panel shows its verdict. New `critic` event.
 
+- **Learn repo**: `orch learn` (and a **Learn repo** button) studies the repo in one read-only call and
+  writes the project brief up front. Implementers and QA now get the brief and recent notes too, not only
+  the architect. The brief records the commit it describes; after 20 or more changed files the next goal's
+  architect checks and corrects it. New `learn_start` / `learn_end` events; the cost counts toward the
+  daily budget.
+
 These are not measured by the evals yet (the current cases pass in round 1).
 
 ## [0.2.0] - 2026-11-12
