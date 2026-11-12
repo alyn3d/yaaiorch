@@ -24,8 +24,14 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   the day's total survives restarts. A waiting repo shows why it waits.
 - **Overview** tab (two or more repos): one row per repo with phase, goal, round, tasks, cost and
   queue, and Open / Stop buttons.
+- **Usage caps in percent**: the header shows the Claude subscription's 5-hour and weekly usage, and
+  **Limits** has "Pause at 5h %" and "Pause at week %" (CLI: `--usage-cap 5h=80,week=90`, config
+  `usageCap`). At a cap, new runs wait and running goals pause before their next agent call until the
+  window resets (or stop, with `--on-limit stop`). New `usage` event.
 
 ### Changed
+- Agents run with `--output-format stream-json --verbose` (to read the usage windows); the final result
+  is parsed as before.
 - `orch run` waits for the usage-limit reset by default instead of exiting with code 3; use
   `--on-limit stop` for the old behaviour (the eval runner does).
 

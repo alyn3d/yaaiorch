@@ -20,7 +20,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, usage_limit, goal_end, waiting. Keep `server.ts`, `main.rs` and `reduce.ts`
+architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
 in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
 process exits without `goal_end`.
 
@@ -31,12 +31,13 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- `npm test`: 28 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 31 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`; no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
 - Windows is the primary target. `orch.ts` spawns `claude` through a shell on win32; children use `windowsHide`.
 - Multi-repo UI: both backends keep one session per repo (process, log, events), tag every message with its `repo`, and run at most `maxParallel` repos at once (start queue). One run per repo. Keep `server.ts`, `main.rs` and `transport.ts` in sync. Stop kills that repo's process tree (taskkill on Windows).
+- Usage caps: agents run with `stream-json`; orch reads the CLI's `rate_limit_event` (5-hour and weekly `utilization`, undocumented) into `usage` events and, with `--usage-cap 5h=N,week=M` (config `usageCap`), pauses before an agent call (or stops, with `--on-limit stop`) while a reading is over a cap. The backends pass their global caps to every run and hold new starts too.
 - Global state (both backends, `global` / `orch-global` event): a usage limit in any repo holds new starts everywhere until the reset ("Try now" clears it); the optional daily budget sums `cost` from `plan`/`task_end` events, caps each run's `--max-cost` to what is left, holds starts and kills a loop at `queue_item` when used up. Persisted with the repos.
 - `.orchestrator/` (queue.json, last-run.json, builtin-agents.json) lives in the target repo and is never committed by the orchestrator.
 - Git: a run refuses a dirty tree, creates `orchestrator/checkpoint-*`, and commits each round on the current branch. On pass the checkpoint is deleted, but only if everything got committed (a failed commit keeps it). Parking commits (`moveWorkAside`, side branches only) use `--no-verify` so hooks never block recovery; round commits respect hooks. On failure in `loop`, the work moves to `orchestrator/failed-*` and the branch is reset to the checkpoint. `orch rollback` (and the UI button) resets to the checkpoint and keeps the discarded work on `orchestrator/discarded-*`; `orch prune` deletes old `orchestrator/*` branches.

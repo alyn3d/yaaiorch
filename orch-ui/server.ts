@@ -47,6 +47,13 @@ let usageLimit: { repo: string; until: number } | null = null;
 /** Daily budget in USD across all repos (null: none), and what agent calls cost today. */
 let dailyBudget: number | null = null;
 let spent = { day: today(), usd: 0 };
+/** The subscription's usage windows: latest reading from any repo's agent calls, and the caps (percent, null: none). */
+type Window = "fiveHour" | "week";
+type Reading = { pct: number; resetsAt: number };
+let usage: Partial<Record<Window, Reading>> = {};
+let usageCap: Record<Window, number | null> = { fiveHour: null, week: null };
+const WINDOW_LABEL: Record<Window, string> = { fiveHour: "5-hour", week: "weekly" };
+const WINDOW_CLI: Record<Window, string> = { fiveHour: "5h", week: "week" };
 
 function today() {
   const d = new Date();
@@ -55,11 +62,23 @@ function today() {
 const globalState = () => ({
   usageLimit,
   budget: { limit: dailyBudget, spent: Math.round(spent.usd * 10_000) / 10_000, day: spent.day },
+  usage,
+  usageCap,
 });
+/** The first window whose latest reading is at or over its cap and has not reset yet. */
+function overCap(): (Reading & { window: Window }) | null {
+  for (const window of ["fiveHour", "week"] as Window[]) {
+    const u = usage[window], c = usageCap[window];
+    if (u && c !== null && u.pct >= c && u.resetsAt > Date.now()) return { window, ...u };
+  }
+  return null;
+}
 /** Why new runs may not start right now, or null. */
 function gate(): string | null {
   if (usageLimit && usageLimit.until > Date.now()) return `usage limit (resets ${new Date(usageLimit.until).toLocaleTimeString()})`;
   if (dailyBudget !== null && spent.usd >= dailyBudget) return `daily budget of $${dailyBudget} used up`;
+  const o = overCap();
+  if (o) return `${WINDOW_LABEL[o.window]} usage at ${o.pct}% (cap ${usageCap[o.window]}%, resets ${new Date(o.resetsAt).toLocaleString()})`;
   return null;
 }
 /** Remaining budget to pass on as --max-cost, or undefined when there is no budget. */
@@ -80,7 +99,7 @@ function saveSettings() {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
     writeFileSync(
       SETTINGS_FILE,
-      JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo), maxParallel, dailyBudget, spent }, null, 2),
+      JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap }, null, 2),
     );
   } catch {
     /* not fatal: the list just is not remembered */
@@ -116,7 +135,14 @@ const sendGlobal = () => {
 };
 
 /** Every agent call reports its cost once: the plan (architect, with retries) and each task_end. */
-function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number; until?: number }) {
+function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number; until?: number; reason?: string } & Partial<Record<Window, Reading>>) {
+  if (ev.type === "usage") {
+    // The windows are per account, so the latest reading from any repo holds for all of them.
+    const next: Partial<Record<Window, Reading>> = {};
+    for (const w of ["fiveHour", "week"] as Window[]) if (ev[w] && typeof ev[w]!.pct === "number") next[w] = ev[w];
+    usage = { ...usage, ...next };
+    sendGlobal();
+  }
   if ((ev.type === "plan" || ev.type === "task_end") && typeof ev.cost === "number" && ev.cost > 0) {
     if (spent.day !== today()) spent = { day: today(), usd: 0 };
     spent.usd += ev.cost;
@@ -129,7 +155,8 @@ function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number
     pushLine(s, `-- daily budget of $${dailyBudget} used up: stopping the queue before its next goal --`);
     killTree(s.child.pid);
   }
-  if (ev.type === "usage_limit" || (ev.type === "waiting" && ev.until)) {
+  // A run pausing at its own usage cap needs no extra hold: the reading over the cap already holds new starts.
+  if (ev.type === "usage_limit" || (ev.type === "waiting" && ev.until && ev.reason !== "usage_cap")) {
     // The limit is per account: hold new starts in every repo until it resets.
     const until = (ev.type === "waiting" ? ev.until : ev.resetAt) ?? Date.now() + 30 * 60_000;
     if (!usageLimit || until > usageLimit.until) usageLimit = { repo: s.repo, until };
@@ -197,10 +224,16 @@ function startNext() {
   }
 }
 
-/** With a daily budget, a run may spend at most what is left today (and its own --max-cost, if lower). */
+/**
+ * Run and loop get the global limits: --usage-cap from the caps, and with a daily budget a --max-cost of
+ * at most what is left today (their own --max-cost, if lower).
+ */
 function withBudget(args: string[]): string[] {
+  if (args[0] !== "run" && args[0] !== "loop") return args;
+  const caps = (["fiveHour", "week"] as Window[]).filter((w) => usageCap[w] !== null).map((w) => `${WINDOW_CLI[w]}=${usageCap[w]}`);
+  if (caps.length && !args.includes("--usage-cap")) args = [...args, "--usage-cap", caps.join(",")];
   const left = budgetLeft();
-  if (left === undefined || args[0] === "rollback") return args;
+  if (left === undefined) return args;
   const i = args.indexOf("--max-cost");
   const own = i >= 0 ? Number(args[i + 1]) : Infinity;
   const rest = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
@@ -310,13 +343,20 @@ const MIME: Record<string, string> = {
 };
 
 // Open the remembered repos, then the ones from the environment.
-const stored = readJson<{ repos?: string[]; maxParallel?: number; dailyBudget?: number | null; spent?: { day: string; usd: number } }>(
+const stored = readJson<{
+  repos?: string[]; maxParallel?: number; dailyBudget?: number | null; spent?: { day: string; usd: number };
+  usageCap?: Partial<Record<Window, number | null>>;
+}>(
   SETTINGS_FILE,
   {},
 );
 if (!process.env.MAX_PARALLEL && stored.maxParallel) maxParallel = Math.max(1, stored.maxParallel);
 if (typeof stored.dailyBudget === "number" && stored.dailyBudget > 0) dailyBudget = stored.dailyBudget;
 if (stored.spent?.day === today() && typeof stored.spent.usd === "number") spent = stored.spent;
+for (const w of ["fiveHour", "week"] as Window[]) {
+  const c = stored.usageCap?.[w];
+  if (typeof c === "number" && c > 0 && c <= 100) usageCap[w] = c;
+}
 
 // Lift holds when they expire: the usage-limit reset time, and a new day for the budget.
 setInterval(() => {
@@ -324,6 +364,12 @@ setInterval(() => {
   if (usageLimit && usageLimit.until <= Date.now()) {
     usageLimit = null;
     changed = true;
+  }
+  for (const w of ["fiveHour", "week"] as Window[]) {
+    if (usage[w] && usage[w]!.resetsAt <= Date.now()) {
+      delete usage[w]; // that window has reset; the next agent call brings a fresh reading
+      changed = true;
+    }
   }
   if (spent.day !== today()) {
     spent = { day: today(), usd: 0 };
@@ -386,14 +432,27 @@ http
             if (v !== null && !(v > 0)) return json(400, { error: "dailyBudget must be a positive amount, or empty for none" });
             dailyBudget = v;
           }
+          if ("usageCap" in b) {
+            const next = { ...usageCap };
+            for (const w of ["fiveHour", "week"] as Window[]) {
+              if (!b.usageCap || !(w in b.usageCap)) continue;
+              const raw = b.usageCap[w];
+              const v = raw === null || raw === "" ? null : Number(raw);
+              if (v !== null && !(v > 0 && v <= 100)) return json(400, { error: `usageCap.${w} must be a percentage from 1 to 100, or empty for none` });
+              next[w] = v;
+            }
+            usageCap = next;
+          }
           saveSettings();
           sendInit();
           startNext();
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/clear-limit") {
-          // "Try now": lift the usage-limit hold early; a run that hits the limit again sets it again.
+          // "Try now": lift the usage-limit hold early, and forget readings over a cap; a run that hits
+          // the limit (or reads usage over a cap) again sets it again.
           usageLimit = null;
+          usage = {};
           sendGlobal();
           startNext();
           return json(200, { ok: true });

@@ -26,6 +26,8 @@ export interface Transport {
   setMaxParallel(n: number): Promise<void>;
   /** Daily budget across all repos in USD; null removes it. */
   setDailyBudget(usd: number | null): Promise<void>;
+  /** Percent caps on the subscription's 5-hour and weekly usage; null removes one. */
+  setUsageCap(cap: Global["usageCap"]): Promise<void>;
   /** Lift the usage-limit hold now ("Try now"). */
   clearLimit(): Promise<void>;
   /** First-run checks (`orch doctor`) for one repo. */
@@ -66,6 +68,7 @@ const web: Transport = {
   removeRepo: (repo) => post("remove-repo", { repo }),
   setMaxParallel: (n) => post("settings", { maxParallel: n }),
   setDailyBudget: (usd) => post("settings", { dailyBudget: usd }),
+  setUsageCap: (cap) => post("settings", { usageCap: cap }),
   clearLimit: () => post("clear-limit", {}),
   async doctor(repo) {
     const r = await fetch(`/api/doctor?repo=${encodeURIComponent(repo)}`);
@@ -126,6 +129,7 @@ const tauri: Transport = {
   removeRepo: (repo) => tauriInvoke("remove_repo", { repo }),
   setMaxParallel: (n) => tauriInvoke("set_max_parallel", { maxParallel: n }),
   setDailyBudget: (usd) => tauriInvoke("set_daily_budget", { dailyBudget: usd }),
+  setUsageCap: (cap) => tauriInvoke("set_usage_cap", { fiveHour: cap.fiveHour, week: cap.week }),
   clearLimit: () => tauriInvoke("clear_limit"),
   doctor: (repo) => tauriInvoke<Finding[]>("doctor", { repo }),
 };

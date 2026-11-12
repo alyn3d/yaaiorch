@@ -50,7 +50,14 @@ struct Inner {
     /// Local date (YYYY-MM-DD) and what agent calls cost on it.
     spent_day: String,
     spent_usd: f64,
+    /// Latest subscription usage reading per window (see WINDOWS): (percent used, resets at ms).
+    usage: [Option<(f64, u64)>; 2],
+    /// Percent caps per window (None: no cap); passed to runs as --usage-cap and holding new starts.
+    usage_cap: [Option<f64>; 2],
 }
+
+/// The subscription's usage windows: (key in events and the UI, label, --usage-cap key).
+const WINDOWS: [(&str, &str, &str); 2] = [("fiveHour", "5-hour", "5h"), ("week", "weekly", "week")];
 
 impl Default for Inner {
     fn default() -> Self {
@@ -62,6 +69,8 @@ impl Default for Inner {
             daily_budget: None,
             spent_day: today(),
             spent_usd: 0.0,
+            usage: [None; 2],
+            usage_cap: [None; 2],
         }
     }
 }
@@ -79,15 +88,29 @@ impl Inner {
             let t = chrono::DateTime::from_timestamp_millis(*until as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string());
             return Some(format!("usage limit (resets {})", t.unwrap_or_default()));
         }
-        match self.daily_budget {
-            Some(b) if self.spent_usd >= b => Some(format!("daily budget of ${b} used up")),
-            _ => None,
+        if let Some(b) = self.daily_budget.filter(|b| self.spent_usd >= *b) {
+            return Some(format!("daily budget of ${b} used up"));
         }
+        for (i, (_, label, _)) in WINDOWS.iter().enumerate() {
+            if let (Some((pct, resets)), Some(cap)) = (self.usage[i], self.usage_cap[i]) {
+                if pct >= cap && resets > now_ms() {
+                    let t = chrono::DateTime::from_timestamp_millis(resets as i64).map(|d| d.with_timezone(&chrono::Local).format("%a %H:%M").to_string());
+                    return Some(format!("{label} usage at {pct}% (cap {cap}%, resets {})", t.unwrap_or_default()));
+                }
+            }
+        }
+        None
+    }
+    /// "5h=80,week=90" for --usage-cap, or "" without caps.
+    fn cap_spec(&self) -> String {
+        WINDOWS.iter().zip(self.usage_cap).filter_map(|((_, _, cli), c)| c.map(|c| format!("{cli}={c}"))).collect::<Vec<_>>().join(",")
     }
     fn global_value(&self) -> Value {
         json!({
             "usageLimit": self.usage_limit.as_ref().map(|(repo, until)| json!({ "repo": repo, "until": until })),
             "budget": { "limit": self.daily_budget, "spent": (self.spent_usd * 10_000.0).round() / 10_000.0, "day": self.spent_day },
+            "usage": WINDOWS.iter().zip(self.usage).filter_map(|((k, _, _), u)| u.map(|(pct, resets)| (k.to_string(), json!({ "pct": pct, "resetsAt": resets })))).collect::<serde_json::Map<_, _>>(),
+            "usageCap": { "fiveHour": self.usage_cap[0], "week": self.usage_cap[1] },
         })
     }
 }
@@ -182,7 +205,21 @@ fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
             kill_tree(pid);
         }
     }
-    let waiting_until = if kind == "waiting" { ev["until"].as_u64() } else { None };
+    if kind == "usage" {
+        // The windows are per account, so the latest reading from any repo holds for all of them.
+        {
+            let st = app.state::<AppState>();
+            let mut g = st.0.lock().unwrap();
+            for (i, (k, _, _)) in WINDOWS.iter().enumerate() {
+                if let (Some(pct), Some(resets)) = (ev[*k]["pct"].as_f64(), ev[*k]["resetsAt"].as_u64()) {
+                    g.usage[i] = Some((pct, resets));
+                }
+            }
+        }
+        emit_global(app);
+    }
+    // A run pausing at its own usage cap needs no extra hold: the reading over the cap already holds new starts.
+    let waiting_until = if kind == "waiting" && ev["reason"] != "usage_cap" { ev["until"].as_u64() } else { None };
     if kind == "usage_limit" || waiting_until.is_some() {
         let until = waiting_until.or_else(|| ev["resetAt"].as_u64()).unwrap_or(now_ms() + 30 * 60_000);
         let shown = {
@@ -255,6 +292,7 @@ fn persist<R: Runtime>(app: &AppHandle<R>) {
             "repos": g.sessions.iter().map(|s| s.repo.to_string_lossy()).collect::<Vec<_>>(),
             "maxParallel": g.max_parallel,
             "dailyBudget": g.daily_budget,
+            "usageCap": { "fiveHour": g.usage_cap[0], "week": g.usage_cap[1] },
             "spent": { "day": g.spent_day, "usd": g.spent_usd },
         })
     };
@@ -346,12 +384,17 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
     }
 }
 
-/// With a daily budget, a run may spend at most what is left today (and its own --max-cost, if lower).
-fn with_budget(args: Vec<String>, left: Option<f64>) -> Vec<String> {
-    let Some(left) = left else { return args };
-    if args.first().map(String::as_str) == Some("rollback") {
+/// Run and loop get the global limits: --usage-cap from the caps (`caps`, "" for none), and with a daily
+/// budget a --max-cost of at most what is left today (their own --max-cost, if lower).
+fn with_budget(mut args: Vec<String>, left: Option<f64>, caps: &str) -> Vec<String> {
+    if !matches!(args.first().map(String::as_str), Some("run" | "loop")) {
         return args;
     }
+    if !caps.is_empty() && !args.iter().any(|a| a == "--usage-cap") {
+        args.push("--usage-cap".into());
+        args.push(caps.into());
+    }
+    let Some(left) = left else { return args };
     let mut own = f64::INFINITY;
     let mut out = Vec::with_capacity(args.len() + 2);
     let mut it = args.into_iter();
@@ -392,12 +435,12 @@ fn start_next<R: Runtime>(app: &AppHandle<R>) {
 
 fn spawn_orch<R: Runtime>(app: &AppHandle<R>, key: &str, args: Vec<String>, label: String) -> Result<(), String> {
     let repo = repo_of(app, key)?;
-    let left = {
+    let (left, caps) = {
         let st = app.state::<AppState>();
         let g = st.0.lock().unwrap();
-        g.daily_budget.map(|b| (b - g.spent_usd).max(0.01))
+        (g.daily_budget.map(|b| (b - g.spent_usd).max(0.01)), g.cap_spec())
     };
-    let args = with_budget(args, left);
+    let args = with_budget(args, left, &caps);
     let mut cmd = node_cmd(app, &repo, &args)?;
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -590,10 +633,29 @@ fn set_daily_budget(app: AppHandle, state: State<AppState>, daily_budget: Option
     Ok(())
 }
 
-/// "Try now": lift the usage-limit hold before its reset time.
+/// Percent caps on the subscription's 5-hour and weekly usage (None: no cap).
+#[tauri::command]
+fn set_usage_cap(app: AppHandle, state: State<AppState>, five_hour: Option<f64>, week: Option<f64>) -> Result<(), String> {
+    for (name, v) in [("5-hour", five_hour), ("weekly", week)] {
+        if v.is_some_and(|v| !(v > 0.0 && v <= 100.0)) {
+            return Err(format!("the {name} cap must be a percentage from 1 to 100"));
+        }
+    }
+    state.0.lock().unwrap().usage_cap = [five_hour, week];
+    persist(&app);
+    emit_global(&app);
+    start_next(&app);
+    Ok(())
+}
+
+/// "Try now": lift the usage-limit hold before its reset time, and forget readings over a cap.
 #[tauri::command]
 fn clear_limit(app: AppHandle, state: State<AppState>) {
-    state.0.lock().unwrap().usage_limit = None;
+    {
+        let mut g = state.0.lock().unwrap();
+        g.usage_limit = None;
+        g.usage = [None; 2];
+    }
     emit_global(&app);
     start_next(&app);
 }
@@ -746,6 +808,9 @@ fn main() {
                     g.max_parallel = n as usize;
                 }
                 g.daily_budget = saved["dailyBudget"].as_f64().filter(|b| *b > 0.0);
+                for (i, (k, _, _)) in WINDOWS.iter().enumerate() {
+                    g.usage_cap[i] = saved["usageCap"][*k].as_f64().filter(|c| *c > 0.0 && *c <= 100.0);
+                }
                 if saved["spent"]["day"].as_str() == Some(today().as_str()) {
                     g.spent_usd = saved["spent"]["usd"].as_f64().unwrap_or(0.0);
                 }
@@ -770,6 +835,12 @@ fn main() {
                         g.spent_usd = 0.0;
                         changed = true;
                     }
+                    for u in g.usage.iter_mut() {
+                        if u.is_some_and(|(_, resets)| resets <= now_ms()) {
+                            *u = None; // that window has reset; the next agent call brings a fresh reading
+                            changed = true;
+                        }
+                    }
                     changed
                 };
                 if changed {
@@ -781,7 +852,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor
+            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, set_usage_cap, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, doctor
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -803,11 +874,13 @@ mod tests {
     #[test]
     fn budget_caps_max_cost() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(with_budget(v(&["run", "g", "--max-cost", "5"]), Some(1.0)), v(&["run", "g", "--max-cost", "1.00"]));
-        assert_eq!(with_budget(v(&["run", "g", "--max-cost", "0.5"]), Some(1.0)), v(&["run", "g", "--max-cost", "0.50"]));
-        assert_eq!(with_budget(v(&["loop"]), Some(2.5)), v(&["loop", "--max-cost", "2.50"]));
-        assert_eq!(with_budget(v(&["run", "g"]), None), v(&["run", "g"]));
-        assert_eq!(with_budget(v(&["rollback"]), Some(1.0)), v(&["rollback"]));
+        assert_eq!(with_budget(v(&["run", "g", "--max-cost", "5"]), Some(1.0), ""), v(&["run", "g", "--max-cost", "1.00"]));
+        assert_eq!(with_budget(v(&["run", "g", "--max-cost", "0.5"]), Some(1.0), ""), v(&["run", "g", "--max-cost", "0.50"]));
+        assert_eq!(with_budget(v(&["loop"]), Some(2.5), ""), v(&["loop", "--max-cost", "2.50"]));
+        assert_eq!(with_budget(v(&["run", "g"]), None, ""), v(&["run", "g"]));
+        assert_eq!(with_budget(v(&["rollback"]), Some(1.0), "5h=80"), v(&["rollback"]));
+        assert_eq!(with_budget(v(&["run", "g"]), None, "5h=80,week=90"), v(&["run", "g", "--usage-cap", "5h=80,week=90"]));
+        assert_eq!(with_budget(v(&["run", "g", "--usage-cap", "5h=50"]), None, "5h=80"), v(&["run", "g", "--usage-cap", "5h=50"]));
     }
 
     #[test]
@@ -820,6 +893,14 @@ mod tests {
         assert!(g.gate().unwrap().starts_with("usage limit"));
         g.usage_limit = Some(("r".into(), now_ms() - 1));
         assert!(g.gate().unwrap().contains("daily budget"));
+
+        let mut g = Inner { usage: [Some((85.0, now_ms() + 60_000)), Some((20.0, now_ms() + 60_000))], ..Inner::default() };
+        assert_eq!(g.gate(), None, "no caps set");
+        g.usage_cap = [Some(90.0), Some(20.0)];
+        assert!(g.gate().unwrap().starts_with("weekly usage at 20% (cap 20%"), "{:?}", g.gate());
+        assert_eq!(g.cap_spec(), "5h=90,week=20");
+        g.usage[1] = Some((20.0, now_ms() - 1));
+        assert_eq!(g.gate(), None, "a reset window holds nothing");
     }
 
     fn wait_idle<R: Runtime>(h: &AppHandle<R>) {

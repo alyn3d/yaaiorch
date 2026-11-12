@@ -253,6 +253,39 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(dirty(dir), "");
   });
 
+  test("usage cap with --on-limit stop: the call after a reading over the cap is not made, exit 3", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--usage-cap", "5h=80,week=95", "--on-limit", "stop"], { FAKE_USAGE: "0.9,0.3" });
+    assert.equal(r.code, 3, r.out);
+    assert.deepEqual(
+      { five: r.last("usage").fiveHour.pct, week: r.last("usage").week.pct },
+      { five: 90, week: 30 },
+    );
+    assert.ok(r.last("usage").fiveHour.resetsAt > Date.now());
+    assert.equal(r.calls.filter((c) => c.startsWith("call ")).length, 1, "only the architect ran");
+    assert.match(r.last("goal_end").error, /5-hour usage at 90% \(cap 80%\)/);
+    assert.equal(r.last("goal_end").usageLimit, true);
+  });
+
+  test("usage cap with wait: pauses before each call in place and the goal still passes", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--usage-cap", "week=25"], { FAKE_USAGE: "0.1,0.3", FAKE_QA: "pass", ORCH_LIMIT_WAIT_MS: "300" });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.last("goal_end").passed, true);
+    const waits = r.ev("waiting").filter((e) => e.reason === "usage_cap");
+    assert.ok(waits.length >= 1 && waits.every((e) => e.window === "week"), JSON.stringify(waits));
+    assert.deepEqual(branches(dir, "orchestrator/interrupted-*"), [], "nothing set aside");
+  });
+
+  test("bad --usage-cap is rejected", () => {
+    const dir = repo();
+    for (const spec of ["5h=0", "5h=101", "day=50", "5h"]) {
+      const r = orch(dir, ["run", "x", "--usage-cap", spec]);
+      assert.notEqual(r.code, 0, spec);
+      assert.match(r.out, /usage-cap/, spec);
+    }
+  });
+
   test("usage limit in run with --on-limit stop: exit 3, no stuck round, reset time reported", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "3", "--on-limit", "stop"], { FAKE_LIMIT_AFTER: "2" });

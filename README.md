@@ -95,7 +95,7 @@ Other commands:
 | `orch prune` | delete old `orchestrator/*` branches |
 | `orch agents` | list the agents and skills the architect can use |
 
-Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
+Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
 `--agent-timeout MIN` (30), `--dry-run` (plan only). Run `orch` without arguments for the full usage.
 
 ### Browser UI
@@ -124,6 +124,12 @@ more parallel runs reach it sooner.
   is left; when it is used up, new runs wait for the next day and a queue stops before its next goal.
   Today's spend is shown next to it and kept across restarts. Runs that start at the same time can
   overshoot the cap by up to one run's cost.
+- **Usage %.** The header shows how much of your Claude subscription's **5-hour** and **weekly** limits is
+  used (read from each agent call). Under **Limits** you can set **Pause at 5h %** and **Pause at week %**:
+  at that point new runs wait and running goals pause before their next agent call until the window
+  resets (or stop, with the usage-limit setting on **Stop**). This keeps headroom for your own Claude use.
+  It needs a Claude subscription login (API keys report no usage), and a call already running can go a
+  little past the cap. Daily $ and the % caps can be used together.
 
 ### Desktop app
 
@@ -147,7 +153,7 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   aliases (`haiku`, `sonnet`, `opus`) or full model IDs. In the UI: the **Models** section.
 
   ```json
-  { "models": { "architect": "opus", "impl": "haiku", "agents": { "be": "sonnet" } }, "onLimit": "wait" }
+  { "models": { "architect": "opus", "impl": "haiku", "agents": { "be": "sonnet" } }, "onLimit": "wait", "usageCap": { "5h": 80, "week": 90 } }
   ```
 
 - **Usage limit.** By default a goal that hits the Claude usage limit is set aside, YAAIORCH waits until

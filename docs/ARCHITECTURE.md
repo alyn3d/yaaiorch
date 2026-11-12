@@ -125,9 +125,13 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power? |
 | `usage_limit` | message, resetAt? (epoch ms) |
 | `goal_end` | passed, cost, error?, usageLimit?, resetAt? |
-| `waiting` | reason (`usage_limit`), until (loop only, between goals) |
+| `waiting` | reason (`usage_limit` between goals, or `usage_cap` before an agent call, with `window`), until |
+| `usage` | fiveHour?, week? (each {pct, resetsAt epoch ms}): the subscription's usage after an agent call |
 
-Costs are USD from the CLI's `total_cost_usd`, rounded to 4 decimals.
+Costs are USD from the CLI's `total_cost_usd`, rounded to 4 decimals. Agents run with `--output-format stream-json
+--verbose`: orch takes the final `result` line, and reads the subscription's usage from the CLI's
+`rate_limit_event` lines (`rate_limit_info.unifiedWindows.five_hour` / `seven_day`, `utilization` 0-1). That field is
+not documented by the CLI; if it changes or is missing (API-key logins), there are no `usage` events and the caps do nothing.
 
 Task `status` is `COMPLETE`, `PARTIAL`, `FAILED`, `PHANTOM`, `UNKNOWN`, `ERROR`, `SKIPPED` (implementers), `PASS`/`FAIL`/`ERROR`/`SKIPPED` (QA). The UI adds `STOPPED` for tasks unfinished when the process exits without `goal_end`. Plain log lines are unchanged, so CLI use is unaffected.
 
@@ -150,8 +154,14 @@ Two things are shared by all repos and kept by the backend (the **global** state
   starts wait for the next day (or a higher budget), and a running loop is stopped at its next
   `queue_item`. Runs that start together each get the whole remainder, so the total can overshoot by
   up to what one run spends.
+- **Usage caps** (optional, percent of the 5-hour and weekly windows). The backend keeps the latest
+  `usage` reading from any repo and passes the caps to every run as `--usage-cap 5h=N,week=M`. In orch,
+  before each agent call a reading at or over a cap either pauses the goal in place until that window
+  resets (`--on-limit wait`, event `waiting` with reason `usage_cap`) or ends it like a usage limit
+  (`--on-limit stop`). The backend also holds new starts while a reading is over a cap; **Try now**
+  forgets the readings. A call already running can go past a cap.
 
-A start that waits is `queued` with a `waitReason`: the usage limit, the budget, or a free slot.
+A start that waits is `queued` with a `waitReason`: the usage limit, the budget, a usage cap, or a free slot.
 
 ### Frontend (`src/`)
 
@@ -159,7 +169,8 @@ A start that waits is `queued` with a `waitReason`: the usage limit, the budget,
 |---|---|
 | `transport.ts` | The only place that knows how to reach the backend. Browser: `fetch` + `EventSource`. Desktop: Tauri `invoke` + `listen`. Chosen at startup via `__TAURI_INTERNALS__`. Every message carries its `repo`. |
 | `useOrch.ts` | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`, `global` (usage-limit hold, daily budget). `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends. |
-| `App.tsx` | Header (running count, Parallel limit, Daily $ budget and today's spend), usage-limit and budget banners, tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating. |
+| `Limits.tsx` | Header meters (5-hour and weekly usage, today's spend) and the Limits panel: Daily $, pause at 5h % and week %. |
+| `App.tsx` | Header (running count, Parallel limit, Limits), usage-limit, usage-cap and budget banners, tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating. |
 | `Overview.tsx` | The **Overview** tab (shown from two repos on): one row per repo with its phase (planning, building, verifying, checks, waiting), goal, round, tasks done and running agents, cost against its cap, pending queue, and Open / Stop. |
 | `repoStatus.ts` | `repoStatus()`: a repo's status dot and label, shared by the tabs and the overview. |
 | `RepoView.tsx` | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log. |
@@ -186,7 +197,7 @@ remembered in `~/.yaaiorch/ui.json` plus `ORCH_REPO` / `ORCH_REPOS` (separated b
 | `GET /api/state` | The init payload |
 | `GET /api/doctor?repo=`, `/api/agents?repo=` | `orch doctor --json`, roster |
 | `POST /api/add-repo` `{ path }`, `/api/remove-repo` `{ repo }` | Open or close a repo (closing is refused while it runs) |
-| `POST /api/settings` `{ maxParallel?, dailyBudget? }` | Change the parallel limit and/or the daily budget (`null` or `""` = none) |
+| `POST /api/settings` `{ maxParallel?, dailyBudget?, usageCap?: { fiveHour?, week? } }` | Change the parallel limit, the daily budget and/or the usage caps in percent (`null` or `""` = none) |
 | `POST /api/clear-limit` | Lift the usage-limit hold ("Try now") |
 | `POST /api/run`, `/add`, `/loop`, `/stop`, `/clear-log`, `/rollback` | Actions on `{ repo, … }`; `stop` also cancels a start waiting for a slot |
 | static | serves `dist/` |
@@ -199,7 +210,7 @@ Tauri v2. Replaces the Node server. Runs the compiled `orch.mjs` with `node` in 
 |---|---|
 | `snapshot` | The init payload |
 | `add_repo(path)`, `remove_repo(repo)`, `set_max_parallel(maxParallel)` | Open or close a repo, change the limit; persisted to `<app config>/repos.json` (the old single `repo.txt` is migrated) |
-| `set_daily_budget(dailyBudget)`, `clear_limit` | Daily budget (`null` = none), lift the usage-limit hold |
+| `set_daily_budget(dailyBudget)`, `set_usage_cap(fiveHour, week)`, `clear_limit` | Daily budget and usage caps (`null` = none); lift the usage-limit hold and forget usage readings |
 | `run_goal`, `run_loop`, `add_goal`, `stop`, `clear_log`, `agents`, `rollback` | Same actions as the HTTP API, each with `repo` |
 | `doctor(repo)` | `orch doctor --json` (async command, so starting node does not freeze the window) |
 

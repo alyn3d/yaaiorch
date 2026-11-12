@@ -7,7 +7,15 @@ export type Running = { pid: number; label: string; startedAt: number } | null;
 /** One repo's state. `queued`: a start is waiting (for a free slot, the usage limit or the daily budget); `waitReason` says which. */
 export type State = { repo: string; running: Running; queued?: boolean; waitReason?: string; queue: Item[]; lastRun: LastRun };
 /** Shared by all repos: the usage-limit hold and the daily budget. */
-export type Global = { usageLimit: { repo: string; until: number } | null; budget: { limit: number | null; spent: number; day: string } };
+export type UsageWindow = "fiveHour" | "week";
+export type Global = {
+  usageLimit: { repo: string; until: number } | null;
+  budget: { limit: number | null; spent: number; day: string };
+  /** Latest subscription usage per window (percent, reset time in ms), from any repo's agent calls. */
+  usage: Partial<Record<UsageWindow, { pct: number; resetsAt: number }>>;
+  /** Percent caps per window; null = none. */
+  usageCap: Record<UsageWindow, number | null>;
+};
 export type Power = "max" | "heavy" | "balanced" | "economy";
 /** One line of `orch doctor --json`. */
 export type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };

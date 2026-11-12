@@ -85,7 +85,6 @@ header input[type="number"] { width: 56px; }
 
 // Shared by all repos: the usage-limit banner and the daily budget.
 .banner { flex-direction: row; .row { width: 100%; } }
-header input.budget { width: 64px; }
 .cost.over { color: $bad; }
 
 // Overview: one row per repo.
@@ -97,3 +96,14 @@ header input.budget { width: 64px; }
   .goal { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
   .actions { display: flex; gap: 6px; justify-content: flex-end; button { padding: 2px 8px; } } }
 button.link { border: none; background: none; padding: 0; display: inline-flex; align-items: center; gap: 6px; font-weight: 500; &:hover { text-decoration: underline; } }
+
+// Header: usage meters and the Limits panel.
+.limits { position: relative;
+  summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; border: 1px solid $border; border-radius: 6px; padding: 3px 8px;
+    &::-webkit-details-marker { display: none; } &:hover { border-color: $accent; } }
+  .limits-label { color: $muted; font-size: 12px; }
+  .limits-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 10; background: $card; border: 1px solid $border; border-radius: 8px; padding: 12px;
+    display: flex; flex-direction: column; gap: 8px; width: 300px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    label { justify-content: space-between; } .muted { font-size: 12px; } } }
+.meter { font: 12px ui-monospace, monospace; color: $text; white-space: nowrap; &.near { color: $warn; } &.over { color: $bad; } .muted { margin: 0; } }
+input.limit { width: 72px; }

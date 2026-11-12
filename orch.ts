@@ -25,6 +25,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   also "models" in .orchestrator/config.json. Aliases step up with the tier on escalation.
          --on-limit wait|stop   on a Claude usage limit: wait for the reset and retry (default), or stop
                   (exit code 3); also "onLimit" in .orchestrator/config.json
+         --usage-cap 5h=80,week=90   pause (or, with --on-limit stop, stop) before an agent call once the
+                  Claude subscription's 5-hour or weekly usage is at that percentage; also "usageCap" in config
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
                   are no checks); if that fails, later rounds run the full architect/build/QA loop
 Agents: built-in (architect, fe, be, qa), overridden by ~/.claude/agents and ./.claude/agents.
@@ -221,6 +223,7 @@ type Config = {
   allow?: string[];
   models?: Partial<Record<Role, string>> & { agents?: Record<string, string> };
   onLimit?: "wait" | "stop";
+  usageCap?: { "5h"?: number; week?: number };
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -274,7 +277,85 @@ const checkReport = (cs: Check[]) =>
 type CliResult = { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number };
 /** Money spent on one goal; `cap` is the --max-cost limit. */
 type Budget = { spent: number; cap?: number };
-type RunCtx = { budget: Budget; timeoutMs: number };
+/** Percent caps on the subscription's usage windows (1-100); unset = no cap. */
+type UsageCap = { fiveHour?: number; week?: number };
+type RunCtx = { budget: Budget; timeoutMs: number; usageCap: UsageCap; onLimit: "wait" | "stop" };
+
+// ---------- subscription usage: read from the CLI's rate_limit_event (stream-json) ----------
+type Window = "fiveHour" | "week";
+const WINDOWS: Record<Window, { key: string; label: string; cli: string }> = {
+  fiveHour: { key: "five_hour", label: "5-hour", cli: "5h" },
+  week: { key: "seven_day", label: "weekly", cli: "week" },
+};
+/** Latest reading per window: percent used and when the window resets (epoch ms). */
+const usage: Partial<Record<Window, { pct: number; resetsAt: number }>> = {};
+
+/** Fold one rate_limit_event into `usage`; true if a reading changed. API-key logins send none. */
+function readUsage(ev: { rate_limit_info?: { unifiedWindows?: Record<string, { utilization?: unknown; resetsAt?: unknown }> } }): boolean {
+  const w = ev.rate_limit_info?.unifiedWindows;
+  if (!w) return false;
+  let changed = false;
+  for (const [name, { key }] of Object.entries(WINDOWS) as [Window, (typeof WINDOWS)[Window]][]) {
+    const u = w[key];
+    if (typeof u?.utilization !== "number" || typeof u.resetsAt !== "number") continue;
+    const next = { pct: Math.round(u.utilization * 1000) / 10, resetsAt: u.resetsAt * 1000 };
+    if (usage[name]?.pct !== next.pct || usage[name]?.resetsAt !== next.resetsAt) changed = true;
+    usage[name] = next;
+  }
+  return changed;
+}
+
+/** "5h=80,week=90" -> caps in percent. */
+function parseUsageCap(spec: string, cfg: Config["usageCap"]): UsageCap {
+  const cap: UsageCap = {};
+  const set = (key: string, value: unknown, where: string) => {
+    const w = (Object.keys(WINDOWS) as Window[]).find((k) => WINDOWS[k].cli === key);
+    if (!w) throw new Error(`${where}: unknown window "${key}" (use 5h or week)`);
+    const n = Number(value);
+    if (!(n > 0 && n <= 100)) throw new Error(`${where}: ${key} must be a percentage from 1 to 100, got "${value}"`);
+    cap[w] = n;
+  };
+  for (const [k, v] of Object.entries(cfg ?? {})) set(k, v, "config.json usageCap");
+  for (const part of spec.split(",").map((p) => p.trim()).filter(Boolean)) {
+    const [k, v, ...rest] = part.split("=").map((x) => x.trim());
+    if (!k || !v || rest.length) throw new Error(`--usage-cap: expected 5h=PERCENT or week=PERCENT, got "${part}"`);
+    set(k, v, "--usage-cap");
+  }
+  return cap;
+}
+
+/** The first window whose reading is at or over its cap and has not reset yet. */
+function overCap(cap: UsageCap): { window: Window; pct: number; resetsAt: number } | null {
+  for (const window of Object.keys(WINDOWS) as Window[]) {
+    const u = usage[window], c = cap[window];
+    if (u && c !== undefined && u.pct >= c && u.resetsAt > Date.now()) return { window, ...u };
+  }
+  return null;
+}
+
+let capWait: Promise<void> | null = null;
+/**
+ * Before each agent call: with a reading over a cap, stop (--on-limit stop) or wait in place until that
+ * window resets. Parallel tasks share one wait. Nothing is set aside: the goal simply pauses.
+ */
+async function respectUsageCap(ctx: RunCtx) {
+  for (let o = overCap(ctx.usageCap); o; o = overCap(ctx.usageCap)) {
+    const what = `${WINDOWS[o.window].label} usage at ${o.pct}% (cap ${ctx.usageCap[o.window]}%)`;
+    if (ctx.onLimit === "stop") throw new UsageLimit(`${what}; resets ${when(o.resetsAt)}`, o.resetsAt);
+    if (!capWait) {
+      const { window, resetsAt } = o;
+      const until = waitUntil(resetsAt);
+      console.log(`${what}; pausing until ${when(until)}.`);
+      emit("waiting", { reason: "usage_cap", window, until });
+      capWait = (async () => {
+        while (Date.now() < until) await sleep(Math.min(5000, until - Date.now()));
+        delete usage[window]; // the window has reset: the next call brings a fresh reading
+        capWait = null;
+      })();
+    }
+    await capWait;
+  }
+}
 /** Ends the goal instead of becoming a task failure. */
 class BudgetExceeded extends Error {}
 
@@ -345,7 +426,30 @@ function killTree(p: ChildProcess) {
   }
 }
 
-function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
+async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
+  await respectUsageCap(ctx);
+  return runOnce(agent, model, prompt, ctx, readOnly);
+}
+
+/** The CLI's stream-json output: the final `result` line, plus any rate-limit readings. A single JSON object also works. */
+function parseCliOutput(out: string): CliResult | undefined {
+  let r: CliResult | undefined;
+  let changed = false;
+  for (const line of out.split(/\r?\n/)) {
+    if (!line.startsWith("{")) continue;
+    try {
+      const j = JSON.parse(line);
+      if (j?.type === "rate_limit_event") changed = readUsage(j) || changed;
+      else if (j?.type === "result" || (j && "total_cost_usd" in j)) r = j;
+    } catch {
+      /* not a JSON line */
+    }
+  }
+  if (changed) emit("usage", { ...usage });
+  return r;
+}
+
+function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
   const { budget } = ctx;
   if (budget.cap !== undefined && budget.spent >= budget.cap)
     return Promise.reject(new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`));
@@ -356,7 +460,8 @@ function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly:
       ...(existsSync(AGENT_SETTINGS) ? ["--settings", readOnly ? READONLY_SETTINGS : AGENT_SETTINGS] : []),
       "--agent", agent.name,
       "--model", model,
-      "--output-format", "json",
+      // stream-json (needs --verbose) also carries rate_limit_event lines with the subscription's usage.
+      "--output-format", "stream-json", "--verbose",
       "--permission-mode", readOnly ? "default" : "acceptEdits",
       // Checked by the CLI after each turn, so a call can overshoot a little; parallel calls each get the full remainder.
       ...(budget.cap !== undefined ? ["--max-budget-usd", Math.max(0.01, budget.cap - budget.spent).toFixed(2)] : []),
@@ -373,12 +478,7 @@ function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly:
     p.on("error", (e) => (clearTimeout(timer), reject(e)));
     p.on("close", (code) => {
       clearTimeout(timer);
-      let r: CliResult | undefined;
-      try {
-        r = JSON.parse(out);
-      } catch {
-        /* handled below */
-      }
+      const r = parseCliOutput(out);
       // Count the cost even when the call failed: the money is spent either way.
       const cost = typeof r?.total_cost_usd === "number" ? r.total_cost_usd : 0;
       budget.spent += cost;
@@ -695,7 +795,7 @@ const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 /** `onLimit`: on a Claude usage limit, wait for the reset and retry the goal (default), or stop. */
 type Opts = {
   maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean;
-  models: Models; onLimit: "wait" | "stop";
+  models: Models; onLimit: "wait" | "stop"; usageCap: UsageCap;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -773,8 +873,8 @@ const writeLastRun = (lr: LastRun) => (mkdirSync(DIR, { recursive: true }), writ
 
 // ---------- one goal: architect -> foundation -> build (parallel) -> verify, repeat ----------
 async function runGoal(goal: string, o: Opts): Promise<boolean> {
-  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit });
-  const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost }, timeoutMs: o.agentTimeoutMs };
+  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit, usageCap: o.usageCap });
+  const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost }, timeoutMs: o.agentTimeoutMs, usageCap: o.usageCap, onLimit: o.onLimit };
   const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
   let cp = "";
   let passed = false;
@@ -1060,9 +1160,10 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const models = mergeModels(cfg.models, parseModelSpec(String(values.model ?? "")));
   const onLimit = String(values["on-limit"] ?? cfg.onLimit ?? "wait");
   if (onLimit !== "wait" && onLimit !== "stop") throw new Error(`--on-limit must be wait or stop, got "${onLimit}"`);
+  const usageCap = parseUsageCap(String(values["usage-cap"] ?? ""), cfg.usageCap);
   return {
     maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost,
-    fast: !!values.fast, models, onLimit,
+    fast: !!values.fast, models, onLimit, usageCap,
   };
 }
 
@@ -1080,6 +1181,7 @@ async function main() {
       fast: { type: "boolean", default: false },
       model: { type: "string" },
       "on-limit": { type: "string" },
+      "usage-cap": { type: "string" },
       json: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
     },

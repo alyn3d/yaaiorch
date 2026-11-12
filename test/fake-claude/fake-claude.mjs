@@ -20,6 +20,8 @@
 //   FAKE_LIMIT_ON=3,4        those call numbers return the real usage-limit reply (counted per repo
 //                            in .orchestrator/fake-calls, or in FAKE_LIMIT_FILE)
 //   FAKE_LIMIT_AFTER=<n>     every call after the n-th returns the usage-limit reply
+//   FAKE_USAGE=<5h>,<week>   with --output-format stream-json, print a rate_limit_event first with these
+//                            utilizations (fractions, e.g. 0.83,0.24); windows reset FAKE_USAGE_RESET_S (3600) s from now
 // Also answers `--version` and `auth status --json` for `orch doctor`, and honours --max-budget-usd.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -54,6 +56,15 @@ if (agentsFile) {
   }
 }
 log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap}`);
+
+// Subscription usage, as the real CLI streams it before the result line.
+if (env.FAKE_USAGE && opt("--output-format") === "stream-json") {
+  const [h5, week] = env.FAKE_USAGE.split(",").map(Number);
+  const resetsAt = Math.floor(Date.now() / 1000) + Number(env.FAKE_USAGE_RESET_S ?? 3600);
+  const win = (utilization) => ({ utilization, resetsAt, status: "allowed" });
+  const unifiedWindows = { ...(Number.isFinite(h5) ? { five_hour: win(h5) } : {}), ...(Number.isFinite(week) ? { seven_day: win(week) } : {}) };
+  process.stdout.write(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt, rateLimitType: "five_hour", unifiedWindows } }) + "\n");
+}
 
 // Usage limit, exactly as the real CLI reports it.
 if (env.FAKE_LIMIT_ON || env.FAKE_LIMIT_AFTER) {

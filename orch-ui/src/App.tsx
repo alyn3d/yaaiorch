@@ -4,36 +4,11 @@ import { RepoView } from "./RepoView";
 import { transport } from "./transport";
 import { Overview } from "./Overview";
 import { baseName, repoStatus, usd } from "./repoStatus";
+import { Limits, clock, overCap } from "./Limits";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
 const OVERVIEW = "*overview";
-const clock = (ms: number) => new Date(ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-
-/** The daily budget field: edited as text, saved on Enter or when it loses focus. Empty = no budget. */
-function BudgetField({ limit, spent, onSave }: { limit: number | null; spent: number; onSave: (v: number | null) => void }) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const save = () => {
-    if (draft === null) return;
-    const v = draft.trim() === "" ? null : Number(draft);
-    setDraft(null);
-    if (v === null || (Number.isFinite(v) && v > 0)) onSave(v);
-  };
-  return (
-    <label title="Spending cap for all repos together, per day (local time). Each run's max cost is capped to what is left; when it is used up, new starts wait for tomorrow and a queue stops before its next goal. Empty = no cap.">
-      Daily $
-      <input
-        className="budget" inputMode="decimal" placeholder="none"
-        value={draft ?? (limit === null ? "" : String(limit))}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={save}
-        onKeyDown={(e) => e.key === "Enter" && save()}
-      />
-      <span className={`cost ${limit !== null && spent >= limit ? "over" : ""}`}>{usd(spent)} today</span>
-    </label>
-  );
-}
-
 export function App() {
   const { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
   // Re-render every 30 s so the usage-limit banner disappears when its reset time passes.
@@ -105,7 +80,11 @@ export function App() {
             }}
           />
         </label>
-        <BudgetField limit={global.budget.limit} spent={global.budget.spent} onSave={(v) => guard(() => transport.setDailyBudget(v))} />
+        <Limits
+          g={global} now={now}
+          onBudget={(v) => guard(() => transport.setDailyBudget(v))}
+          onCap={(w, v) => guard(() => transport.setUsageCap({ ...global.usageCap, [w]: v }))}
+        />
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "disconnected"} />
       </header>
 
@@ -160,6 +139,21 @@ export function App() {
           </div>
         </section>
       )}
+      {(() => {
+        const o = overCap(global, now);
+        return o && (
+          <section className="card notice banner" role="status">
+            <div className="row">
+              <strong>Usage cap reached</strong>
+              <span className="muted">
+                Claude {o.label} usage is at {o.pct}% (your cap: {o.cap}%). New runs wait and running goals pause before their next agent call until {clock(o.resetsAt)}.
+              </span>
+              <span className="spacer" />
+              <button onClick={() => guard(() => transport.clearLimit())} title="Forget the reading and start waiting runs now; the next agent call reads the usage again.">Try now</button>
+            </div>
+          </section>
+        );
+      })()}
       {global.budget.limit !== null && global.budget.spent >= global.budget.limit && (
         <section className="card notice banner" role="status">
           <div className="row">
