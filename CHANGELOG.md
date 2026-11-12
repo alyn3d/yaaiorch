@@ -32,6 +32,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ### Fixed
 - Round commits failed when the target repo's `.gitignore` lists `.orchestrator/`: the work stayed
   staged, the goal still passed, and the next run refused the dirty tree.
+- A passed goal no longer deletes its checkpoint when the final commit fails (for example a rejecting
+  pre-commit hook): the checkpoint and the rollback offer stay, and the run says what is uncommitted.
+  `orch rollback` and parking failed work skip commit hooks, since those commits only land on
+  `orchestrator/*` side branches, so recovery cannot be blocked.
 
 ## [0.1.0] - 2026-11-12
 

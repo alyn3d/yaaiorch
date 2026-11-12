@@ -7,7 +7,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +110,29 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(git(dir, "status", "--porcelain"), "", "nothing left staged or modified");
     assert.match(git(dir, "ls-files", ".orchestrator"), /config\.json/);
     assert.doesNotMatch(git(dir, "ls-files", ".orchestrator"), /last-run|queue/);
+  });
+
+  test("a commit hook that rejects every commit: checkpoint kept, rollback still works", () => {
+    const dir = repo();
+    const hook = join(dir, ".git", "hooks", "pre-commit");
+    writeFileSync(hook, "#!/bin/sh\necho 'rejected by hook' >&2\nexit 1\n");
+    chmodSync(hook, 0o755);
+    const r = orch(dir, ["run", "build it", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.last("goal_end").passed, true);
+    assert.match(r.out, /not fully committed, so orchestrator\/checkpoint-\S+ is kept/);
+    const [cp] = branches(dir, "orchestrator/checkpoint-*");
+    assert.ok(cp, "checkpoint survives the failed commit");
+    assert.equal(lastRun(dir).checkpoint, cp, "the UI's rollback offer stays");
+    assert.notEqual(dirty(dir), "", "the work is still there, uncommitted");
+
+    // Rollback parks the work on a side branch without running the hook, then resets.
+    const rb = orch(dir, ["rollback"]);
+    assert.equal(rb.code, 0, rb.out);
+    assert.equal(dirty(dir), "");
+    assert.deepEqual(branches(dir, "orchestrator/checkpoint-*"), []);
+    const [saved] = branches(dir, "orchestrator/discarded-*");
+    assert.match(git(dir, "ls-tree", "-r", "--name-only", saved), /src\/api\.ts/);
   });
 
   test("works outside git (no checkpoint, no commits)", () => {

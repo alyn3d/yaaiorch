@@ -161,7 +161,8 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   ```
 
 - **Git.** A run refuses a dirty tree, creates `orchestrator/checkpoint-<ts>`, and commits each round
-  on your current branch. The checkpoint is deleted when the goal passes. `orch rollback` resets to
+  on your current branch. The checkpoint is deleted when the goal passes and all its work is committed; if a commit fails (a
+  rejecting hook, say), the checkpoint is kept and the run tells you. `orch rollback` resets to
   it. State lives in `.orchestrator/` in your repo and is never committed.
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

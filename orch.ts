@@ -503,8 +503,12 @@ function prepareGit(): string {
   return cp;
 }
 
-/** Stage everything except .orchestrator and commit it. Returns the short hash, or null if nothing changed. */
-function commitAll(message: string): string | null {
+/**
+ * Stage everything except .orchestrator and commit it. Returns the short hash, or null if nothing changed.
+ * `park`: a commit that only ends up on an orchestrator/* side branch (moveWorkAside); it skips the repo's
+ * hooks so that saving work before a reset can never be blocked by them.
+ */
+function commitAll(message: string, park = false): string | null {
   // Not `add -- . NOT_STATE`: when .gitignore lists .orchestrator, git refuses that pathspec
   // ("paths are ignored") and the round's work would stay staged but uncommitted.
   git("add", "-A", "--", ".");
@@ -525,7 +529,7 @@ function commitAll(message: string): string | null {
   } catch {
     identity = ["-c", "user.name=orchestrator", "-c", "user.email=orchestrator@localhost"];
   }
-  git(...identity, "commit", "-q", "-m", message);
+  git(...identity, "commit", "-q", ...(park ? ["--no-verify"] : []), "-m", message);
   return git("rev-parse", "--short", "HEAD");
 }
 
@@ -549,7 +553,7 @@ function diffSummary(cp: string) {
 
 /** Commit what is left, keep HEAD on a side branch, and reset the current branch to `cp`. */
 function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string): string | null {
-  commitAll(message); // throws if it cannot commit: never reset over uncommitted work
+  commitAll(message, true); // throws if it cannot commit: never reset over uncommitted work
   if (dirtyFiles()) throw new Error("could not commit the changes; leaving the tree as is");
   if (git("rev-parse", "HEAD") === git("rev-parse", cp)) return null;
   const saved = cp.replace("checkpoint", kind);
@@ -567,12 +571,22 @@ function finishGit(cp: string, goal: string, passed: boolean, park: boolean, int
   try {
     if (passed) {
       tryCommit(`orch: ${short(goal)} (unfinished)`);
+      // The checkpoint is the only way back: drop it only once all the work is safely committed.
+      const left = dirtyFiles();
+      if (left) {
+        console.warn(
+          `warning: the goal passed but its work is not fully committed, so ${cp} is kept.\n` +
+            `Commit the changes yourself and delete that branch, or undo the goal with: orch rollback\n${left}`,
+        );
+        return;
+      }
       git("branch", "-D", cp);
       return;
     }
     if (!park) {
       tryCommit(`orch: ${short(goal)} (unfinished)`);
-      console.log(`goal not done; its commits sit on top of ${cp}. Roll back with: orch rollback`);
+      const left = dirtyFiles();
+      console.log(`goal not done; its ${left ? "commits and uncommitted changes" : "commits"} sit on top of ${cp}. Roll back with: orch rollback`);
       return;
     }
     const saved = moveWorkAside(cp, interrupted ? "interrupted" : "failed", `orch: ${short(goal)} (unfinished)`);
