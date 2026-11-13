@@ -577,6 +577,78 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(orch(dir, ["approve"]).out, /no plan is waiting/);
   });
 
+  test("greenfield: checks are read again after the build, so a package.json written this round is checked", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_BE_FILE: "package.json" });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /checks: none configured/);
+    assert.deepEqual(
+      r.last("checks").results.map((c) => [c.name, c.ok]),
+      [["test", true]],
+    );
+  });
+
+  test("setup: orch installs when a manifest changes, never twice for the same one; its folders stay out of git", () => {
+    const dir = repo();
+    writeConfig(dir, { setup: "node -e \"require('fs').mkdirSync('deps',{recursive:true});require('fs').writeFileSync('deps/x','1')\"" });
+    const r = orch(dir, ["run", "x", "--max-rounds", "2"], { FAKE_QA: "fail-once", FAKE_BE_FILE: "package.json" });
+    assert.equal(r.code, 0, r.out);
+    const names = (round) =>
+      r
+        .ev("checks")
+        .find((e) => e.round === round)
+        .results.map((c) => c.name);
+    assert.deepEqual(names(1), ["setup", "test"]);
+    assert.deepEqual(names(2), ["test"], "package.json unchanged: no second install");
+    assert.ok(r.calls.includes("be: told about setup"), "implementers are told not to install");
+    assert.equal(git(dir, "ls-files", "deps"), "", "never committed");
+    assert.equal(dirty(dir), "");
+    assert.match(readFileSync(join(dir, ".git", "info", "exclude"), "utf8"), /^\/deps\/$/m);
+
+    // A failed setup fails the round, and the checks are not run on a broken install.
+    const bad = repo();
+    writeConfig(bad, { setup: 'node -e "process.exit(4)"' });
+    const b = orch(bad, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_BE_FILE: "package.json" });
+    assert.equal(b.code, 1);
+    assert.deepEqual(
+      b.last("checks").results.map((c) => [c.name, c.ok, c.code]),
+      [["setup", false, 4]],
+    );
+    assert.match(b.last("round_end").failures[0], /check "setup" failed/);
+  });
+
+  test("orch new: a repo with SPEC.md, the spec as brief, goals queued, checks suggested; then the loop builds it", () => {
+    const parent = repo({ git: false });
+    assert.match(orch(parent, ["new", "app"]).out, /usage: orch new DIR/);
+    const r = orch(parent, ["new", "app", "A todo CLI in Node", "--setup", "node -e 0"]);
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.calls.includes("new: spec=A todo CLI in Node setup=true"), r.calls.join("\n"));
+    const app = join(parent, "app");
+    assert.equal(git(app, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+    assert.deepEqual(git(app, "ls-files").split("\n").sort(), [".gitignore", "SPEC.md"]);
+    assert.match(readFileSync(join(app, ".orchestrator", "brief.md"), "utf8"), /new project.*A todo CLI in Node/s);
+    assert.deepEqual(JSON.parse(readFileSync(join(app, ".orchestrator", "config.json"), "utf8")), {
+      checks: { test: 'node -e "process.exit(0)"' },
+      setup: "node -e 0",
+    });
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(app, ".orchestrator", "queue.json"), "utf8")).map((i) => [i.id, i.goal, i.status]),
+      [
+        [1, "Set up the project", "pending"],
+        [2, "Add the first feature", "pending"],
+      ],
+    );
+    assert.match(orch(parent, ["new", "app", "again"]).out, /is not empty/);
+
+    const loop = orch(app, ["loop", "--until-empty", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(loop.code, 0, loop.out);
+    assert.deepEqual(
+      loop.ev("goal_end").map((e) => e.passed),
+      [true, true],
+    );
+    assert.ok(loop.ev("checks").every((e) => e.results.some((c) => c.name === "test" && c.ok)));
+  });
+
   test("plan critic: a rejected plan goes back to the architect once; off by default", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "1", "--critic"], { FAKE_QA: "pass", FAKE_CRITIC: "reject-once" });

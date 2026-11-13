@@ -174,6 +174,16 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   problems, the built-in one or your own agents (`--reviewers security-reviewer,backend-reviewer`). They run
   next to QA, as independent opinions, and a rejection fails the round; when a check already failed they are
   skipped. One extra call each per round.
+- **New projects** (`orch new DIR "<spec>"`, or `--spec-file SPEC.md`): creates the folder with git, `SPEC.md` and a
+  `.gitignore`, uses the spec as the first project brief, and has the architect split it into queued goals (the
+  scaffold first, then one goal per feature) with suggested checks in `.orchestrator/config.json`. Nothing is
+  built until you run `orch loop --until-empty` there, so you can review the queue and the checks first. Checks
+  are read again every round, so a `package.json` written in round 1 is already checked in round 1.
+- **Installing dependencies** (`"setup": "npm install"` in `.orchestrator/config.json`, or `orch new --setup`):
+  agents never install packages; they add them to the manifest, and orch runs your setup command before the
+  checks whenever a manifest or lock file changed. Folders it creates that git does not ignore (`node_modules/`,
+  `.venv/`) are kept out of git. The command runs packages' install scripts with your rights, so use it only for
+  projects you would install yourself (`npm install --ignore-scripts` is safer).
 - **Notifications** (**Notify** in the header, off until you turn it on): a desktop notification when a goal
   passes or fails, a plan waits for your approval, or a run waits for the usage limit or your usage cap, only
   while the window is not in front. The desktop app uses the system's notifications; the browser asks for

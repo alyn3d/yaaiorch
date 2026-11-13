@@ -116,6 +116,14 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri; the browser's in
   browser mode; **Notify** in the header).
 
+## Greenfield
+
+- [x] **`orch new DIR "<spec>"`**: git, SPEC.md, the spec as brief, goals queued, checks suggested.
+- [x] **Checks read every round**, so files the agents create are checked; **`setup`** installs on manifest change.
+- [x] **Eval case** `greenfield-inventory` (empty repo, scaffold goal, feature goal).
+- [ ] **New project in the UI**: a folder picker and a spec box that run `orch new` and open the repo.
+- [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
+
 ## 0.6: product and packaging
 
 - [ ] **Run history**: append events to `.orchestrator/runs/<id>.jsonl`, list and replay past runs.

@@ -10,6 +10,7 @@ import {
   renameSync,
   unlinkSync,
   rmSync,
+  appendFileSync,
   openSync,
   closeSync,
   statSync,
@@ -19,6 +20,7 @@ import {
 import { homedir, hostname } from "node:os";
 import { join, basename, dirname, resolve, relative, isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
+import { createHash } from "node:crypto";
 import { BUILTIN_AGENTS } from "./orch-agents";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 
@@ -31,6 +33,9 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
+  orch new DIR "<spec>" [--spec-file FILE] [--setup CMD]   start a project in a new or empty folder: git, SPEC.md,
+                        a .gitignore, and the spec split into queued goals (scaffold first) with suggested checks
+                        in .orchestrator/config.json; then run "orch loop --until-empty" there
   orch approve [--reject "WHY"] [--plan-stdin]   answer a run waiting with --approve-plan: build the plan (edited:
                         a plan as JSON on stdin), or send it back to the architect with your reason
   orch share [--dry-run]  propose what orch learned (brief and lasting notes) as a CLAUDE.md section, committed
@@ -491,6 +496,10 @@ type Config = {
   branch?: boolean;
   pr?: boolean;
   approvePlan?: boolean;
+  /** Installs dependencies (for example "npm install"), run by orch before the checks when a manifest changed. */
+  setup?: string;
+  /** Files whose change triggers `setup` (default: the usual manifests and lock files). */
+  setupWhen?: string[];
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -605,6 +614,75 @@ const checkReport = (cs: Check[]) =>
     ? `\n\nChecks run by the orchestrator (trust these over the reports):\n` +
       cs.map((c) => `### ${c.name}: \`${c.command}\` ${c.ok ? "passed" : `FAILED (exit ${c.code})`}\n${c.output.slice(-1500) || "(no output)"}`).join("\n")
     : "\n\nNo checks are configured for this repo; verify by reading the code.";
+
+// ---------- setup: orch installs dependencies (agents never do) when a manifest changed ----------
+const MANIFESTS = [
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "requirements.txt",
+  "requirements-dev.txt",
+  "pyproject.toml",
+  "poetry.lock",
+  "uv.lock",
+  "go.mod",
+  "go.sum",
+  "Cargo.toml",
+  "Cargo.lock",
+  "Gemfile",
+  "Gemfile.lock",
+  "composer.json",
+  "composer.lock",
+];
+const SETUP_STATE = join(DIR, "setup-state.json");
+
+/** A hash of the watched files' contents (missing ones count too), to tell when setup must run again. */
+function manifestKey(files: string[]): string {
+  const h = createHash("sha256");
+  for (const f of files) h.update(`${f}\0${existsSync(f) ? readFileSync(f) : "-"}\0`);
+  return h.digest("hex");
+}
+
+/** Untracked, not ignored directories at any depth ("node_modules/", "pkg/.venv/"), as git status shows them. */
+function untrackedDirs(): string[] {
+  const raw = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--", ".", NOT_STATE], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return raw
+    .split("\0")
+    .filter((e) => e.startsWith("?? ") && e.endsWith("/"))
+    .map((e) => e.slice(3));
+}
+
+/**
+ * Run the config's `setup` command when the watched files changed since it last succeeded (or it never ran and one
+ * of them exists). Directories it creates that git does not ignore yet (node_modules/, .venv/) go into
+ * .git/info/exclude, so they are never committed; new files (a lock file) are left for the round commit.
+ * Returns a Check named "setup", or null when nothing had to run.
+ */
+function runSetup(cfg: Config, git_: boolean): Check | null {
+  if (!cfg.setup) return null;
+  const watch = cfg.setupWhen?.length ? cfg.setupWhen : MANIFESTS;
+  if (!watch.some((f) => existsSync(f))) return null;
+  const before = manifestKey(watch);
+  if (readJsonFile<{ key?: string }>(SETUP_STATE, {}).key === before) return null;
+  const dirsBefore = git_ ? new Set(untrackedDirs()) : new Set<string>();
+  const [c] = runChecks({ setup: cfg.setup });
+  if (c.ok) writeFileAtomic(SETUP_STATE, JSON.stringify({ key: manifestKey(watch), at: new Date().toISOString() }));
+  if (git_) {
+    const added = untrackedDirs().filter((d) => !dirsBefore.has(d));
+    if (added.length) {
+      const exclude = git("rev-parse", "--git-path", "info/exclude");
+      mkdirSync(dirname(exclude), { recursive: true });
+      appendFileSync(exclude, `\n# added by orch setup (${cfg.setup})\n${added.map((d) => `/${d}`).join("\n")}\n`);
+      console.log(`setup created ${added.join(", ")}; kept out of git via ${exclude}`);
+    }
+  }
+  return c;
+}
 
 // ---------- claude runner (prompt via stdin: no quoting problems on Windows) ----------
 type CliResult = { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number; session_id?: unknown };
@@ -1890,6 +1968,96 @@ async function critique(critic: Entry, goal: string, plan: Plan, brief: string |
   }
 }
 
+// ---------- orch new: start a project from a spec ----------
+const GOALS_FORMAT = `
+
+## Reply format
+Do not create or edit any file. Reply with exactly one JSON object and nothing else:
+{"goals": ["<goal 1: the scaffold>", "<goal 2>", ...], "checks": {"<name>": "<shell command>"}}`;
+
+/** Ignored from the first commit: orch's state and the usual dependency and build folders. */
+const NEW_GITIGNORE = [".orchestrator/", "node_modules/", ".venv/", "venv/", "__pycache__/", "dist/", "build/", "target/", ".env", ""].join("\n");
+
+/**
+ * `orch new DIR "<spec>"`: a git repo in a new or empty folder with SPEC.md and a .gitignore, the spec as the first
+ * project brief, and one architect call that splits the spec into queued goals (the scaffold first) and suggests
+ * checks for .orchestrator/config.json. Builds nothing: review the queue and config, then run the loop.
+ */
+async function newProject(dir: string, spec: string, o: Opts, setup?: string) {
+  if (!spec.trim()) throw new Error('usage: orch new DIR "<spec>"  (or --spec-file FILE)');
+  const target = resolve(dir);
+  if (existsSync(target) && readdirSync(target).length) throw new Error(`${target} is not empty; orch new starts a project in a new or empty folder`);
+  mkdirSync(target, { recursive: true });
+  process.chdir(target);
+  git("init", "-q");
+  git("symbolic-ref", "HEAD", "refs/heads/main");
+  writeFileSync("SPEC.md", `# Spec\n\n${spec.trim()}\n`);
+  writeFileSync(".gitignore", NEW_GITIGNORE);
+  commitAll("orch: new project (spec)");
+  acquireRunLock("new");
+  writeBrief(
+    `This is a new project, built by an automated loop from the spec in SPEC.md (the first goal sets it up). ` +
+      `Until the scaffold exists, follow the spec:\n\n${spec.trim()}`,
+    true,
+  );
+  if (setup) writeFileAtomic(CONFIG_FILE, JSON.stringify({ setup }, null, 2));
+
+  const roster = discoverAgents();
+  const architect = roster.find((a) => a.name === "architect")!;
+  writeBuiltins(roster);
+  writeAgentSettings({}, {}, o.plugins);
+  const ctx: RunCtx = {
+    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+    timeoutMs: o.agentTimeoutMs,
+    usageCap: o.usageCap,
+    onLimit: o.onLimit,
+  };
+  const prompt =
+    `A new project is to be built from the spec below by an automated loop: each goal is planned by an architect, built ` +
+    `by agents in parallel, then verified by running the project's checks and by QA. Split the spec into goals, in order:\n` +
+    `- Goal 1 sets up the project: the manifest with its dependencies (${setup ? `the orchestrator installs them with \`${setup}\`` : "prefer none: nothing will install them"}), ` +
+    `the folder layout, a test runner with one passing test, the scripts or commands the checks below use, and a README.\n` +
+    `- Then one goal per feature or slice, each small enough for one plan of at most 10 tasks, each saying what to build, ` +
+    `where, and how it is tested. Each goal must make sense on its own: the agents of a goal see only that goal, the spec ` +
+    `summary and the code.\n- At most 12 goals.\n` +
+    `Also suggest "checks": the shell commands the orchestrator runs after every build to judge it (tests, then typecheck or ` +
+    `lint if the stack has them), at most 4, each using only what goal 1 sets up.\n\nSpec:\n${spec.trim()}` +
+    GOALS_FORMAT;
+  console.log(`project created at ${target}; asking the architect to split the spec into goals...`);
+  const r = await run(architect, modelFor(o.power, o.models, "architect", "architect"), prompt, ctx, true);
+  const reply = extractJson<{ goals?: unknown; checks?: unknown }>(r.text);
+  const goals = Array.isArray(reply.goals) ? reply.goals.filter((g): g is string => typeof g === "string" && !!g.trim()).map((g) => g.trim()) : [];
+  if (!goals.length) throw new Error("the architect returned no goals");
+  const checks = Object.fromEntries(
+    Object.entries(reply.checks && typeof reply.checks === "object" ? (reply.checks as Record<string, unknown>) : {})
+      .filter(([n, c]) => /^[\w-]{1,30}$/.test(n) && typeof c === "string" && c.trim() && c.length < 300)
+      .slice(0, 4) as [string, string][],
+  );
+  writeFileAtomic(CONFIG_FILE, JSON.stringify({ ...(Object.keys(checks).length ? { checks } : {}), ...(setup ? { setup } : {}) }, null, 2));
+  const ids = updateQueue((q) =>
+    goals.slice(0, 12).map((goal) => {
+      const id = Math.max(0, ...q.map((i) => i.id)) + 1;
+      q.push({ id, goal, status: "pending" });
+      return id;
+    }),
+  );
+  console.log(
+    `\nqueued ${ids.length} goal(s):\n${goals
+      .slice(0, 12)
+      .map((g, i) => `  #${ids[i]} ${g}`)
+      .join("\n")}`,
+  );
+  console.log(
+    `\nchecks (${CONFIG_FILE}): ${
+      Object.entries(checks)
+        .map(([n, c]) => `${n}: ${c}`)
+        .join(", ") || "none suggested"
+    }` +
+      (setup ? `\nsetup: ${setup} (runs before the checks whenever a manifest changes)` : "") +
+      `\ncost: ${usd(ctx.budget.spent)}\n\nReview them, then: cd "${target}" && orch loop --until-empty`,
+  );
+}
+
 // ---------- --approve-plan: a human approves, edits or rejects each plan ----------
 type Decision = { round: number; action: "approve" | "reject"; plan?: Plan; note?: string };
 /** Agents that may get tasks, as `orch approve` sees them (it cannot know a run's --reviewers; the run checks again). */
@@ -2055,8 +2223,22 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const skills = discoverSkills();
   writeBuiltins(roster);
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
-  const checks = loadChecks(cfg);
+  let checks = loadChecks(cfg);
   writeAgentSettings(cfg, checks, o.plugins);
+  /** Checks come from package.json too, which the agents may create or change: read them again each round. */
+  const refreshChecks = () => {
+    const next = loadChecks(cfg);
+    if (JSON.stringify(next) === JSON.stringify(checks)) return;
+    checks = next;
+    writeAgentSettings(cfg, checks, o.plugins);
+    console.log(
+      `checks now: ${
+        Object.entries(checks)
+          .map(([n, c]) => `${n} (${c})`)
+          .join(", ") || "none"
+      }`,
+    );
+  };
   if (o.plugins.off || o.plugins.disable.length || !o.plugins.hooks)
     console.log(
       `plugins: ${o.plugins.off ? "all off" : o.plugins.disable.length ? `off: ${o.plugins.disable.join(", ")}` : "on"}${o.plugins.hooks ? "" : "; hooks off"}`,
@@ -2173,7 +2355,13 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       }
     }
     // After planning, so a brief the architect just wrote reaches this round's agents. The fast path's task has them already.
-    ctx.repoContext = direct ? "" : repoContext(o.brief ? readBrief() : "", notes);
+    refreshChecks();
+    ctx.repoContext =
+      (direct ? "" : repoContext(o.brief ? readBrief() : "", notes)) +
+      (cfg.setup
+        ? `## Dependencies\nNever install packages yourself. To add one, add it to the manifest (package.json, requirements.txt, ` +
+          `pyproject.toml, go.mod, ...); the orchestrator runs \`${cfg.setup}\` before the checks.\n\n`
+        : "");
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
     emit("plan", { round, summary: plan.summary, cost: round4(planCost), tasks: plan.tasks.map((t, id) => ({ id, ...t })) });
     if (o.dryRun) return true;
@@ -2254,7 +2442,9 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     if (foundationFailed)
       verify.forEach(skip); // building on a broken foundation is pointless to verify
     else {
-      checkResults = runChecks(checks);
+      const setup = runSetup(cfg, !!cp);
+      refreshChecks();
+      checkResults = setup && !setup.ok ? [setup] : [...(setup ? [setup] : []), ...runChecks(checks)];
       emit("checks", { round, results: checkResults.map(({ name, command, ok, code, ms }) => ({ name, command, ok, code, ms })) });
       // Diff reviews run next to QA, but only on a round the checks and tasks have not already failed.
       const clean = !errors.length && checkResults.every((c) => c.ok);
@@ -2603,6 +2793,8 @@ async function main() {
       "approve-plan": { type: "boolean", default: false },
       reject: { type: "string" },
       "plan-stdin": { type: "boolean", default: false },
+      "spec-file": { type: "string" },
+      setup: { type: "string" },
       pr: { type: "boolean", default: false },
       review: { type: "boolean", default: false },
       reviewers: { type: "string" },
@@ -2672,6 +2864,12 @@ async function main() {
     }
     case "approve":
       return approve(values);
+    case "new": {
+      const [dir, ...words] = rest;
+      if (!dir) throw new Error('usage: orch new DIR "<spec>"  (or --spec-file FILE)');
+      const spec = values["spec-file"] ? readFileSync(String(values["spec-file"]), "utf8") : words.join(" ");
+      return newProject(dir, spec, parseOpts(values), values.setup ? String(values.setup) : undefined);
+    }
     case "share": {
       const o = parseOpts(values);
       acquireRunLock("share");

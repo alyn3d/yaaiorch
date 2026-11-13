@@ -190,5 +190,16 @@
       "Let GET /todos filter: ?done=true or ?done=false keeps only todos with that done value (any other value gives 400), and ?q=text keeps todos whose title contains the trimmed text, ignoring case (an empty q does not filter). The filters can be combined, and the list stays in id order. Add tests."
     ],
     "grade": "node --test test/__hidden__/todos.test.js test/server.test.js"
+  },
+  {
+    "id": "greenfield-inventory",
+    "fixture": "empty",
+    "kind": "series",
+    "difficulty": "greenfield: an empty repo, then a scaffold goal and a feature goal",
+    "goals": [
+      "Set up a Node.js 22 project in this empty repository: a package.json with \"type\": \"module\", no dependencies, and a \"test\" script that runs `node --test`; a src/ folder for the code; a test/ folder with one passing test; a .gitignore for node_modules/; and a README that says how to run the tests.",
+      "Add src/inventory.js exporting a class Inventory and an error class InsufficientStockError (extends Error, name \"InsufficientStockError\", with properties sku, requested and available). A SKU is trimmed and upper-cased, and must then be 3 to 20 characters of A-Z, 0-9 and hyphens, else a TypeError (also for non-strings). Quantities must be positive integers, else a RangeError. add(sku, qty) adds to the stock and returns the new quantity. remove(sku, qty) returns what is left; asking for more than is in stock (also for an unknown SKU, which has 0) throws InsufficientStockError and changes nothing; a SKU whose stock reaches 0 is dropped. quantity(sku) returns the stock, 0 if unknown. list() returns copies, [{ sku, qty }] sorted by SKU. total() returns the sum of all stock. Add tests in test/inventory.test.js."
+    ],
+    "grade": "node --test test/__hidden__/inventory.test.js"
   }
 ]

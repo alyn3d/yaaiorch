@@ -6,6 +6,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **New projects**: `orch new DIR "<spec>"` (or `--spec-file`) creates a git repo with `SPEC.md`, uses the spec as
+  the project brief, and queues the architect's goals (scaffold first) with suggested checks; run `orch loop`
+  there to build it.
+- **Dependency setup**: `"setup": "npm install"` in the config (or `orch new --setup`) is run by orch before the
+  checks whenever a manifest or lock file changed; the folders it creates stay out of git. Agents still never
+  install anything.
+- Eval case `greenfield-inventory`: an empty repo, a scaffold goal and a feature goal.
 - **Notifications** (**Notify** in the header): a desktop notification when a goal passes or fails, a plan
   waits for approval, or a run waits for the usage limit or your cap, while the window is not in front. The
   desktop app uses the Tauri notification plugin, browser mode the browser's notifications.
@@ -36,6 +43,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   `--no-resume` or `"resume": false` turns it off; eval config suffix `+noresume`. Not measured yet.
 
 ### Changed
+- Checks are read again every round (after the build), so checks from a package.json the agents just wrote run
+  in the same round.
 - Development: ESLint, Prettier, rustfmt and clippy run in CI (`npm run lint`, `npm run format:check`);
   the code was formatted once (that commit is in `.git-blame-ignore-revs`).
 - Windows: `claude` is started without cmd.exe. orch finds it on PATH once: the native `claude.exe` runs

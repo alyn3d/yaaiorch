@@ -126,3 +126,6 @@ git-ignored elsewhere, so add it with `git add -f`.
 2. Put the hidden tests in `hidden/<id>/`, laid out as repo paths (they are copied over the repo).
 3. Put a reference solution in `reference/<id>/`, also as repo paths.
 4. `node evals/run.ts --reference --cases <id>` must print `ok`.
+
+`greenfield-inventory` starts from an almost empty repo (`fixtures/empty`): its first goal sets up a Node project, its
+second builds a module in it. It measures building from nothing, including checks the agents create themselves.

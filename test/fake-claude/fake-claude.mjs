@@ -155,6 +155,10 @@ if (prompt.includes("Review this change")) {
   const reject = (env.FAKE_REVIEW_REJECT ?? "").split(",").includes(agent);
   log(`review: agent=${agent} lens=${lens} patch=${prompt.includes("The change") && prompt.includes("diff --git")} ${reject ? "rejected" : "approved"}`);
   reply(reject ? `{"approved": false, "issues": ["${agent} found a bug in src/api.ts"]}` : '{"approved": true, "issues": []}');
+} else if (prompt.includes("Split the spec into goals")) {
+  // orch new: two goals and a check that always passes.
+  log(`new: spec=${/Spec:\n([^\n]*)/.exec(prompt)?.[1] ?? ""} setup=${prompt.includes("the orchestrator installs them with")}`);
+  reply(JSON.stringify({ goals: ["Set up the project", "Add the first feature"], checks: { test: 'node -e "process.exit(0)"', "bad name!": "x" } }));
 } else if (prompt.includes("Tidy these lessons")) {
   // notes.md past its size limit: FAKE_TIDY=bad returns something unusable.
   log(`tidy: called sawLessons=${prompt.includes("FAKE LESSON")}`);
@@ -231,10 +235,17 @@ if (prompt.includes("Review this change")) {
   // Only the task's own file list counts, not bullet points in the brief or the notes above it.
   const own = prompt.split("Your files (touch only these):")[1]?.split("\n## ")[0] ?? "";
   const files = agent === "dev" ? ["src/direct.txt"] : [...own.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
+  if (prompt.includes("## Dependencies")) log(`${agent}: told about setup`);
   if (!env.FAKE_NOWRITE)
     for (const f of files) {
       mkdirSync(dirname(f), { recursive: true });
-      writeFileSync(f, `// ${agent} ${Date.now()} ${Math.random()}\n`);
+      // A package.json gets a real test script (the same every time), so its checks can be found and run.
+      writeFileSync(
+        f,
+        f.endsWith("package.json")
+          ? JSON.stringify({ name: "x", scripts: { test: 'node -e "process.exit(0)"' } })
+          : `// ${agent} ${Date.now()} ${Math.random()}\n`,
+      );
     }
   if (env.FAKE_STRAY_FILE && agent === "be") {
     mkdirSync(dirname(env.FAKE_STRAY_FILE), { recursive: true });
