@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { Finding, Global, OrchEvent, Plugin, State } from "./types";
 
 /** One repo's state, log and structured events since its last goal_start. */
@@ -27,6 +28,8 @@ export interface Transport {
   /** Tauri: a folder picker for the parent folder; browser mode: null (type the path). */
   pickFolder(): Promise<string | null>;
   removeRepo(repo: string): Promise<void>;
+  /** Show the repo's folder in the system file manager. */
+  revealRepo(repo: string): Promise<void>;
   setMaxParallel(n: number): Promise<void>;
   /** Daily budget across all repos in USD; null removes it. */
   setDailyBudget(usd: number | null): Promise<void>;
@@ -138,6 +141,7 @@ const web: Transport = {
   },
   pickFolder: async () => null,
   removeRepo: (repo) => post("remove-repo", { repo }),
+  revealRepo: (repo) => post("reveal", { repo }),
   setMaxParallel: (n) => post("settings", { maxParallel: n }),
   setDailyBudget: (usd) => post("settings", { dailyBudget: usd }),
   setUsageCap: (cap) => post("settings", { usageCap: cap }),
@@ -217,6 +221,7 @@ const tauri: Transport = {
     return typeof p === "string" ? p : null;
   },
   removeRepo: (repo) => tauriInvoke("remove_repo", { repo }),
+  revealRepo: (repo) => revealItemInDir(repo).catch((e) => Promise.reject(new Error(`could not show the folder: ${e}`))),
   setMaxParallel: (n) => tauriInvoke("set_max_parallel", { maxParallel: n }),
   setDailyBudget: (usd) => tauriInvoke("set_daily_budget", { dailyBudget: usd }),
   setUsageCap: (cap) => tauriInvoke("set_usage_cap", { fiveHour: cap.fiveHour, week: cap.week }),

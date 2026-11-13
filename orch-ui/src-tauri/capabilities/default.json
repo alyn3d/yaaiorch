@@ -9,6 +9,23 @@
     "core:default",
     "dialog:default",
     "notification:default",
-    "opener:default"
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "vscode://file/*"
+        },
+        {
+          "url": "cursor://file/*"
+        },
+        {
+          "url": "windsurf://file/*"
+        },
+        {
+          "url": "vscode-insiders://file/*"
+        }
+      ]
+    }
   ]
 }

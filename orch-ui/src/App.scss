@@ -723,6 +723,58 @@ button {
   }
 }
 
+// "Open in VS Code" split button and its menu, in the repo page head.
+.open-in {
+  position: relative;
+  .split-button {
+    display: inline-flex;
+    > button:first-child {
+      border-radius: var(--radius) 0 0 var(--radius);
+    }
+    > button:last-child {
+      border-radius: 0 var(--radius) var(--radius) 0;
+      border-left: none;
+      padding: 0 9px;
+    }
+  }
+  .menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    min-width: 100%;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-2);
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    button {
+      justify-content: flex-start;
+      background: transparent;
+      border-color: transparent;
+      font-weight: 400;
+      &:hover:not(:disabled),
+      &:focus-visible {
+        background: var(--surface-3);
+      }
+    }
+    hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 4px 0;
+    }
+  }
+  .error {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    width: max-content;
+    max-width: 320px;
+  }
+}
+
 .composer {
   padding: 0;
   gap: 0;

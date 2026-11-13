@@ -3,6 +3,7 @@ import { pluginOpts } from "./Plugins";
 import type { Power } from "./types";
 import { RunPanel } from "./RunView";
 import { BriefBox } from "./Brief";
+import { OpenIn } from "./OpenIn";
 import { briefProgress, leftText } from "./progress";
 import { usd } from "./repoStatus";
 import { SettingsPanel, modelSpec, useRepoSettings } from "./Settings";
@@ -115,6 +116,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           </p>
         </div>
         <div className="page-actions">
+          <OpenIn repo={repo} />
           <button
             disabled={busy || badSettings}
             title="Read-only: the architect studies the repo and writes .orchestrator/brief.md (stack, layout, conventions, commands), which every later goal and its agents reuse. Runs at this power tier; one agent call."

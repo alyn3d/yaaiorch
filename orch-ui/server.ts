@@ -627,6 +627,19 @@ http
           sendInit();
           return json(200, { ok: true });
         }
+        if (url.pathname === "/api/reveal") {
+          // The repo's folder in the system file manager. Only an open repo's path, passed as an argument (no shell).
+          const [cmd, args] =
+            process.platform === "win32"
+              ? [join(process.env.SystemRoot ?? "C:\\Windows", "explorer.exe"), [s.repo]]
+              : process.platform === "darwin"
+                ? ["open", [s.repo]]
+                : ["xdg-open", [s.repo]];
+          const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+          child.on("error", () => {}); // explorer.exe exits 1 even when it worked; a missing xdg-open has nothing to report to
+          child.unref();
+          return json(200, { ok: true });
+        }
         if (url.pathname === "/api/run") {
           if (!b.goal?.trim()) return json(400, { error: "goal required" });
           requestStart(s, ["run", ...flags(b), b.goal], `run: ${b.goal.slice(0, 60)}`);

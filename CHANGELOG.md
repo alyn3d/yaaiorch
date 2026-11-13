@@ -5,6 +5,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- **Open in VS Code** on every repo page, with a menu for Cursor, Windsurf, VS Code Insiders and the system file
+  manager. Editors open through their URL scheme (`vscode://file/...`), so nothing is spawned; the app remembers
+  the editor you used last.
+
 ### Fixed
 - **The macOS universal build** of the desktop app: `fetch-node.mjs` now keeps the x64 and arm64 Node.js binaries
   next to the fused universal one, since Tauri's per-architecture builds look for them. 0.5.0 shipped without a

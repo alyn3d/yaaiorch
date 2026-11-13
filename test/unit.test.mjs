@@ -253,6 +253,25 @@ describe("brief progress (orch-ui/src/progress.ts)", () => {
   });
 });
 
+describe("open in editor (orch-ui/src/editorLinks.ts)", () => {
+  let o;
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    o = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "editorLinks.ts")).href, import.meta.url);
+  });
+  test("editor URLs for Windows and POSIX paths", () => {
+    assert.equal(o.editorUrl("vscode", "D:\\code\\my app"), "vscode://file/D:/code/my%20app");
+    assert.equal(o.editorUrl("cursor", "/home/me/proj"), "cursor://file/home/me/proj");
+    assert.equal(o.editorUrl("vscode", "/srv/a#b?c"), "vscode://file/srv/a%23b%3Fc");
+  });
+  test("file manager name", () => {
+    assert.equal(o.fileManager("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), "Explorer");
+    assert.equal(o.fileManager("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"), "Finder");
+    assert.equal(o.fileManager("Mozilla/5.0 (X11; Linux x86_64)"), "file manager");
+  });
+});
+
 describe("run view (orch-ui/src/reduce.ts)", () => {
   let reduce;
   before(async () => {
