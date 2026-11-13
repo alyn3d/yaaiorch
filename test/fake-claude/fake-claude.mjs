@@ -80,7 +80,9 @@ if (env.FAKE_USAGE && opt("--output-format") === "stream-json") {
   const resetsAt = Math.floor(Date.now() / 1000) + Number(env.FAKE_USAGE_RESET_S ?? 3600);
   const win = (utilization) => ({ utilization, resetsAt, status: "allowed" });
   const unifiedWindows = { ...(Number.isFinite(h5) ? { five_hour: win(h5) } : {}), ...(Number.isFinite(week) ? { seven_day: win(week) } : {}) };
-  process.stdout.write(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt, rateLimitType: "five_hour", unifiedWindows } }) + "\n");
+  process.stdout.write(
+    JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt, rateLimitType: "five_hour", unifiedWindows } }) + "\n",
+  );
 }
 
 // Usage limit, exactly as the real CLI reports it.
@@ -91,10 +93,15 @@ if (env.FAKE_LIMIT_ON || env.FAKE_LIMIT_AFTER) {
   const listed = (env.FAKE_LIMIT_ON ?? "").split(",").map(Number).includes(n);
   if (listed || (env.FAKE_LIMIT_AFTER && n > Number(env.FAKE_LIMIT_AFTER))) {
     log(`${agent}: usage limit (call ${n})`);
-    process.stdout.write(JSON.stringify({
-      type: "result", subtype: "success", is_error: true, total_cost_usd: 0,
-      result: "You've hit your 5-hour limit · resets 1:30am (Europe/London)",
-    }));
+    process.stdout.write(
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        total_cost_usd: 0,
+        result: "You've hit your 5-hour limit · resets 1:30am (Europe/London)",
+      }),
+    );
     process.exit(1);
   }
 }
@@ -105,10 +112,15 @@ if (env.FAKE_TRANSIENT_ONCE === agent) {
   if (!existsSync(flag)) {
     writeFileSync(flag, "1");
     log(`${agent}: transient error`);
-    process.stdout.write(JSON.stringify({
-      type: "result", subtype: "success", is_error: true, total_cost_usd: 0,
-      result: 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
-    }));
+    process.stdout.write(
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        total_cost_usd: 0,
+        result: 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+      }),
+    );
     process.exit(1);
   }
 }
@@ -136,7 +148,9 @@ if (prompt.includes("Study this repository")) {
     log(`architect: notes=${prompt.includes("Notes from earlier goals") && prompt.includes("FAKE LESSON") ? "seen" : "none"}`);
     // Context between rounds and the project brief, as the architect sees them.
     if (prompt.includes("may be out of date")) log("architect: brief stale");
-    log(`architect: previousRound=${/What round \d+ did/.test(prompt) && prompt.includes("Plan: fake plan")} brief=${prompt.includes("FAKE BRIEF") ? "seen" : prompt.includes("No project brief exists yet") ? "asked" : "none"}`);
+    log(
+      `architect: previousRound=${/What round \d+ did/.test(prompt) && prompt.includes("Plan: fake plan")} brief=${prompt.includes("FAKE BRIEF") ? "seen" : prompt.includes("No project brief exists yet") ? "asked" : "none"}`,
+    );
     const plan = {
       summary: "fake plan",
       tasks: [

@@ -46,19 +46,33 @@ export function PluginsPanel({ repo, value, onChange }: { repo: string; value: P
     <details className="models plugins" onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
       <summary>
         Plugins{" "}
-        {pluginOpts(value) ? <span className="badge warn">{summary}{value.hooks ? "" : ", no hooks"}</span> : <span className="muted">(as in Claude Code)</span>}
+        {pluginOpts(value) ? (
+          <span className="badge warn">
+            {summary}
+            {value.hooks ? "" : ", no hooks"}
+          </span>
+        ) : (
+          <span className="muted">(as in Claude Code)</span>
+        )}
       </summary>
       <div className="row plugin-head">
         <label className="check switch" title="Off: agents run without any of your Claude Code plugins">
           <input type="checkbox" role="switch" checked={value.on} onChange={(e) => onChange({ ...value, on: e.target.checked })} />
           Plugins for agents
         </label>
-        <label className="check" title="Hooks from your Claude Code settings and from plugins (SessionStart, UserPromptSubmit, …). Off disables all of them for the agents, including this repo's project hooks.">
+        <label
+          className="check"
+          title="Hooks from your Claude Code settings and from plugins (SessionStart, UserPromptSubmit, …). Off disables all of them for the agents, including this repo's project hooks."
+        >
           <input type="checkbox" checked={value.hooks} onChange={(e) => onChange({ ...value, hooks: e.target.checked })} />
           Hooks
         </label>
         <span className="spacer" />
-        {list && <button type="button" onClick={() => load(true)} disabled={loading}>Refresh</button>}
+        {list && (
+          <button type="button" onClick={() => load(true)} disabled={loading}>
+            Refresh
+          </button>
+        )}
       </div>
       {loading && <p className="muted">Reading plugins… (one Claude Code call per plugin)</p>}
       {error && <p className="error">{error}</p>}
@@ -72,7 +86,9 @@ export function PluginsPanel({ repo, value, onChange }: { repo: string; value: P
                   <input type="checkbox" checked={on} disabled={!value.on || !p.enabled} onChange={(e) => toggle(p.id, e.target.checked)} />
                   <span className="plugin-name">{p.name}</span>
                 </label>
-                <span className="muted">{p.id.includes("@") ? p.id.split("@")[1] : ""} · {p.scope}</span>
+                <span className="muted">
+                  {p.id.includes("@") ? p.id.split("@")[1] : ""} · {p.scope}
+                </span>
                 <span className="spacer" />
                 <span className="cost">{p.enabled ? tok(p.tokens) : "off in Claude Code"}</span>
               </li>
@@ -82,8 +98,7 @@ export function PluginsPanel({ repo, value, onChange }: { repo: string; value: P
         </ul>
       )}
       <p className="muted">
-        Only affects this repo's agents; Claude Code itself is unchanged.{" "}
-        {list && saved > 0 && <>Off here saves {tok(saved)} of context per agent call.</>}
+        Only affects this repo's agents; Claude Code itself is unchanged. {list && saved > 0 && <>Off here saves {tok(saved)} of context per agent call.</>}
         Token figures are each plugin's always-on context; text that hooks inject (for example a session-start message) comes on top.
       </p>
     </details>

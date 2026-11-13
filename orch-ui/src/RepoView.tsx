@@ -47,8 +47,15 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
   const [settings, setSettings] = useRepoSettings(repo);
   const models = modelSpec(settings);
   const opts = {
-    power, maxRounds: Math.min(20, Math.max(1, Math.round(maxRounds) || 1)), dryRun, maxCost: cap > 0 ? cap : undefined,
-    models: models.spec, onLimit: settings.onLimit, fast: settings.fast, critic: settings.critic, plugins: pluginOpts(settings.plugins),
+    power,
+    maxRounds: Math.min(20, Math.max(1, Math.round(maxRounds) || 1)),
+    dryRun,
+    maxCost: cap > 0 ? cap : undefined,
+    models: models.spec,
+    onLimit: settings.onLimit,
+    fast: settings.fast,
+    critic: settings.critic,
+    plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;
   const rounds = state.lastRun?.state ?? [];
@@ -59,7 +66,9 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
 
   return (
     <div className="repo-view" hidden={hidden}>
-      <p className="repo" title={repo}>{repo}</p>
+      <p className="repo" title={repo}>
+        {repo}
+      </p>
 
       {problems.length > 0 && (
         <section className="card notice">
@@ -81,11 +90,21 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
             {confirmRollback ? (
               <>
                 <span className="muted">Discard them? They stay on an orchestrator/discarded-* branch.</span>
-                <button className="danger" onClick={() => { setConfirmRollback(false); call("rollback"); }}>Roll back</button>
+                <button
+                  className="danger"
+                  onClick={() => {
+                    setConfirmRollback(false);
+                    call("rollback");
+                  }}
+                >
+                  Roll back
+                </button>
                 <button onClick={() => setConfirmRollback(false)}>Cancel</button>
               </>
             ) : (
-              <button className="danger" onClick={() => setConfirmRollback(true)}>Roll back to checkpoint…</button>
+              <button className="danger" onClick={() => setConfirmRollback(true)}>
+                Roll back to checkpoint…
+              </button>
             )}
           </div>
         </section>
@@ -102,7 +121,9 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           <label>
             Power
             <select value={power} onChange={(e) => setPower(e.target.value as Power)}>
-              {POWERS.map((p) => <option key={p}>{p}</option>)}
+              {POWERS.map((p) => (
+                <option key={p}>{p}</option>
+              ))}
             </select>
           </label>
           <label>
@@ -124,8 +145,17 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           >
             Learn repo
           </button>
-          <button disabled={!goal.trim()} onClick={async () => { if (await call("add", { goal })) setGoal(""); }}>Add to queue</button>
-          <button className="primary" disabled={busy || !goal.trim() || badSettings} onClick={() => call("run", { goal, ...opts })}>Run now</button>
+          <button
+            disabled={!goal.trim()}
+            onClick={async () => {
+              if (await call("add", { goal })) setGoal("");
+            }}
+          >
+            Add to queue
+          </button>
+          <button className="primary" disabled={busy || !goal.trim() || badSettings} onClick={() => call("run", { goal, ...opts })}>
+            Run now
+          </button>
         </div>
         <SettingsPanel repo={repo} power={power} settings={settings} onChange={setSettings} />
         {error && <p className="error">{error}</p>}
@@ -136,44 +166,72 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           <h2>Queue</h2>
           <span className="spacer" />
           {/* "Plan only" would leave each goal pending and replan it forever, so the loop refuses it. */}
-          <button disabled={busy || dryRun || badSettings} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", { ...opts, untilEmpty: true })}>Process queue</button>
-          <button disabled={busy || dryRun || badSettings} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", opts)}>Loop (watch)</button>
+          <button
+            disabled={busy || dryRun || badSettings}
+            title={dryRun ? "Untick Plan only to process the queue" : ""}
+            onClick={() => call("loop", { ...opts, untilEmpty: true })}
+          >
+            Process queue
+          </button>
+          <button disabled={busy || dryRun || badSettings} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", opts)}>
+            Loop (watch)
+          </button>
         </div>
         {state.queue.length ? (
           <ul className="queue">
             {state.queue.map((i) => (
               <li key={i.id}>
                 <span className={`badge ${i.status}`}>{i.status}</span>
-                <span>#{i.id} {i.goal}</span>
+                <span>
+                  #{i.id} {i.goal}
+                </span>
                 {i.note && <span className="note">{i.note}</span>}
               </li>
             ))}
           </ul>
-        ) : <p className="muted">Queue empty</p>}
+        ) : (
+          <p className="muted">Queue empty</p>
+        )}
       </section>
 
-      {run ? <RunPanel run={run} /> : (
+      {run ? (
+        <RunPanel run={run} />
+      ) : (
         <section className="card">
           <div className="row">
             <h2>Last run{state.lastRun ? `: ${state.lastRun.goal.slice(0, 60)}` : ""}</h2>
-            {state.lastRun?.status && <span className={`badge ${state.lastRun.status === "passed" ? "done" : state.lastRun.status === "running" ? "running" : "failed"}`}>{state.lastRun.status}</span>}
+            {state.lastRun?.status && (
+              <span className={`badge ${state.lastRun.status === "passed" ? "done" : state.lastRun.status === "running" ? "running" : "failed"}`}>
+                {state.lastRun.status}
+              </span>
+            )}
             <span className="spacer" />
             {state.lastRun?.cost !== undefined && <span className="muted">${state.lastRun.cost.toFixed(2)}</span>}
           </div>
-          {rounds.length ? rounds.map((r) => (
-            <div key={r.round} className="round">
-              <div className="row">
-                <strong>Round {r.round}</strong>
-                {r.power && <span className="badge">{r.power}</span>}
-                <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>
-                <span className="spacer" />
-                {r.cost !== undefined && <span className="muted">${r.cost.toFixed(2)}</span>}
+          {rounds.length ? (
+            rounds.map((r) => (
+              <div key={r.round} className="round">
+                <div className="row">
+                  <strong>Round {r.round}</strong>
+                  {r.power && <span className="badge">{r.power}</span>}
+                  <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>
+                  <span className="spacer" />
+                  {r.cost !== undefined && <span className="muted">${r.cost.toFixed(2)}</span>}
+                </div>
+                <p>{r.plan}</p>
+                {r.touched.length > 0 && <p className="muted">Touched: {r.touched.join(", ")}</p>}
+                {r.failures.length > 0 && (
+                  <ul className="failures">
+                    {r.failures.map((f, i) => (
+                      <li key={i}>{f}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
-              <p>{r.plan}</p>
-              {r.touched.length > 0 && <p className="muted">Touched: {r.touched.join(", ")}</p>}
-              {r.failures.length > 0 && <ul className="failures">{r.failures.map((f, i) => <li key={i}>{f}</li>)}</ul>}
-            </div>
-          )) : <p className="muted">No completed rounds yet</p>}
+            ))
+          ) : (
+            <p className="muted">No completed rounds yet</p>
+          )}
         </section>
       )}
 
@@ -184,12 +242,18 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           {state.queued && <span className="badge warn">waiting: {state.waitReason ?? "free slot"}</span>}
           <span className="spacer" />
           {state.running?.label === "queue loop" && (
-            <button title="Let the current goal finish, then stop the queue (pending goals stay pending)" onClick={() => call("stop-after")}>Stop after this goal</button>
+            <button title="Let the current goal finish, then stop the queue (pending goals stay pending)" onClick={() => call("stop-after")}>
+              Stop after this goal
+            </button>
           )}
-          <button className="danger" disabled={!busy} onClick={() => call("stop")}>{state.queued && !state.running ? "Cancel" : "Stop"}</button>
+          <button className="danger" disabled={!busy} onClick={() => call("stop")}>
+            {state.queued && !state.running ? "Cancel" : "Stop"}
+          </button>
           <button onClick={() => call("clear-log")}>Clear</button>
         </div>
-        <pre ref={logRef} className="log">{log.join("\n") || "No output yet"}</pre>
+        <pre ref={logRef} className="log">
+          {log.join("\n") || "No output yet"}
+        </pre>
       </section>
     </div>
   );

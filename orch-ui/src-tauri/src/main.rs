@@ -103,7 +103,12 @@ impl Inner {
     }
     /// "5h=80,week=90" for --usage-cap, or "" without caps.
     fn cap_spec(&self) -> String {
-        WINDOWS.iter().zip(self.usage_cap).filter_map(|((_, _, cli), c)| c.map(|c| format!("{cli}={c}"))).collect::<Vec<_>>().join(",")
+        WINDOWS
+            .iter()
+            .zip(self.usage_cap)
+            .filter_map(|((_, _, cli), c)| c.map(|c| format!("{cli}={c}")))
+            .collect::<Vec<_>>()
+            .join(",")
     }
     fn global_value(&self) -> Value {
         json!({
@@ -166,7 +171,12 @@ fn emit_global<R: Runtime>(app: &AppHandle<R>) {
         let st = app.state::<AppState>();
         let g = st.0.lock().unwrap();
         let gate = g.gate();
-        let waiting: Vec<Value> = g.sessions.iter().filter(|s| s.pending.is_some()).map(|s| session_value(s, gate.as_deref())).collect();
+        let waiting: Vec<Value> = g
+            .sessions
+            .iter()
+            .filter(|s| s.pending.is_some())
+            .map(|s| session_value(s, gate.as_deref()))
+            .collect();
         (g.global_value(), waiting)
     };
     let _ = app.emit("orch-global", global);
@@ -219,7 +229,11 @@ fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
         emit_global(app);
     }
     // A run pausing at its own usage cap needs no extra hold: the reading over the cap already holds new starts.
-    let waiting_until = if kind == "waiting" && ev["reason"] != "usage_cap" { ev["until"].as_u64() } else { None };
+    let waiting_until = if kind == "waiting" && ev["reason"] != "usage_cap" {
+        ev["until"].as_u64()
+    } else {
+        None
+    };
     if kind == "usage_limit" || waiting_until.is_some() {
         let until = waiting_until.or_else(|| ev["resetAt"].as_u64()).unwrap_or(now_ms() + 30 * 60_000);
         let shown = {
@@ -232,7 +246,11 @@ fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
             g.usage_limit.as_ref().map(|(_, u)| *u).unwrap_or(until)
         };
         let t = chrono::DateTime::from_timestamp_millis(shown as i64).map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string());
-        push_line(app, key, format!("-- usage limit: new runs in all repos wait until {} --", t.unwrap_or_default()));
+        push_line(
+            app,
+            key,
+            format!("-- usage limit: new runs in all repos wait until {} --", t.unwrap_or_default()),
+        );
         emit_global(app);
     }
 }
@@ -453,7 +471,11 @@ fn spawn_orch<R: Runtime>(app: &AppHandle<R>, key: &str, args: Vec<String>, labe
         let st = app.state::<AppState>();
         let mut g = st.0.lock().unwrap();
         if let Some(i) = g.find(key) {
-            g.sessions[i].running = Some(Running { pid: child.id(), label, started_at: now_ms() });
+            g.sessions[i].running = Some(Running {
+                pid: child.id(),
+                label,
+                started_at: now_ms(),
+            });
         }
     }
     push_line(app, key, format!("$ orch {}", args.join(" ")));
@@ -605,7 +627,13 @@ fn add_session(g: &mut Inner, path: &Path) -> Result<String, String> {
     }
     let key = key_of(path);
     if g.find(&key).is_none() {
-        g.sessions.push(Session { repo: path.to_path_buf(), running: None, pending: None, log: Vec::new(), events: Vec::new() });
+        g.sessions.push(Session {
+            repo: path.to_path_buf(),
+            running: None,
+            pending: None,
+            log: Vec::new(),
+            events: Vec::new(),
+        });
     }
     Ok(key)
 }
@@ -711,7 +739,14 @@ fn run_goal(
     if goal.trim().is_empty() {
         return Err("goal required".into());
     }
-    let extra = Extra { max_cost, models, on_limit, fast, critic, plugins };
+    let extra = Extra {
+        max_cost,
+        models,
+        on_limit,
+        fast,
+        critic,
+        plugins,
+    };
     let mut args = vec!["run".to_string()];
     args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     let label = format!("run: {}", goal.chars().take(60).collect::<String>());
@@ -735,7 +770,14 @@ fn run_loop(
     critic: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
-    let extra = Extra { max_cost, models, on_limit, fast, critic, plugins };
+    let extra = Extra {
+        max_cost,
+        models,
+        on_limit,
+        fast,
+        critic,
+        plugins,
+    };
     let mut args = vec!["loop".to_string()];
     args.extend(flags(&power, max_rounds, dry_run.unwrap_or(false), &extra));
     if until_empty.unwrap_or(false) {
@@ -763,9 +805,7 @@ fn add_goal(app: AppHandle, repo: String, goal: String) -> Result<(), String> {
 #[tauri::command(async)]
 fn agents(app: AppHandle, repo: String) -> Result<String, String> {
     let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
-    let out = node_cmd(&app, &dir, &["agents".into()])?
-        .output()
-        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    let out = node_cmd(&app, &dir, &["agents".into()])?.output().map_err(|e| format!("{NODE_HINT}: {e}"))?;
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
@@ -783,7 +823,14 @@ fn learn_repo(
     critic: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
-    let extra = Extra { max_cost, models, on_limit, fast: None, critic, plugins };
+    let extra = Extra {
+        max_cost,
+        models,
+        on_limit,
+        fast: None,
+        critic,
+        plugins,
+    };
     let mut args = vec!["learn".to_string()];
     args.extend(flags(&power, max_rounds.unwrap_or(1), false, &extra));
     request_start(&app, &repo, args, "learn repo".into())
@@ -808,7 +855,14 @@ fn plugins(app: AppHandle, repo: String) -> Result<Value, String> {
         .lines()
         .find(|l| l.starts_with('['))
         .and_then(|l| serde_json::from_str(l).ok())
-        .ok_or_else(|| String::from_utf8_lossy(&out.stderr).trim().lines().last().unwrap_or("could not list plugins").to_string())
+        .ok_or_else(|| {
+            String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .lines()
+                .last()
+                .unwrap_or("could not list plugins")
+                .to_string()
+        })
 }
 
 /// `orch doctor --json` in a repo. Async so starting node does not freeze the window.
@@ -886,7 +940,10 @@ fn main() {
             if let Ok(dir) = app.path().app_config_dir() {
                 let saved = read_json(dir.join("repos.json"), json!({}));
                 // Before multi-repo support the app remembered one repo in repo.txt.
-                let mut repos: Vec<String> = saved["repos"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+                let mut repos: Vec<String> = saved["repos"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
                 if repos.is_empty() {
                     if let Ok(s) = fs::read_to_string(dir.join("repo.txt")) {
                         repos.push(s.trim().to_string());
@@ -942,14 +999,39 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, add_repo, remove_repo, set_max_parallel, set_daily_budget, set_usage_cap, clear_limit, run_goal, run_loop, add_goal, agents, stop, clear_log, rollback, learn_repo, stop_after, doctor, plugins
+            snapshot,
+            add_repo,
+            remove_repo,
+            set_max_parallel,
+            set_daily_budget,
+            set_usage_cap,
+            clear_limit,
+            run_goal,
+            run_loop,
+            add_goal,
+            agents,
+            stop,
+            clear_log,
+            rollback,
+            learn_repo,
+            stop_after,
+            doctor,
+            plugins
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            let pids: Vec<u32> = handle.state::<AppState>().0.lock().unwrap().sessions.iter().filter_map(|s| s.running.as_ref().map(|r| r.pid)).collect();
+            let pids: Vec<u32> = handle
+                .state::<AppState>()
+                .0
+                .lock()
+                .unwrap()
+                .sessions
+                .iter()
+                .filter_map(|s| s.running.as_ref().map(|r| r.pid))
+                .collect();
             for pid in pids {
                 kill_tree(pid);
             }
@@ -964,21 +1046,44 @@ mod tests {
     #[test]
     fn budget_caps_max_cost() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(with_budget(v(&["run", "g", "--max-cost", "5"]), Some(1.0), ""), v(&["run", "g", "--max-cost", "1.00"]));
-        assert_eq!(with_budget(v(&["run", "g", "--max-cost", "0.5"]), Some(1.0), ""), v(&["run", "g", "--max-cost", "0.50"]));
+        assert_eq!(
+            with_budget(v(&["run", "g", "--max-cost", "5"]), Some(1.0), ""),
+            v(&["run", "g", "--max-cost", "1.00"])
+        );
+        assert_eq!(
+            with_budget(v(&["run", "g", "--max-cost", "0.5"]), Some(1.0), ""),
+            v(&["run", "g", "--max-cost", "0.50"])
+        );
         assert_eq!(with_budget(v(&["loop"]), Some(2.5), ""), v(&["loop", "--max-cost", "2.50"]));
         assert_eq!(with_budget(v(&["run", "g"]), None, ""), v(&["run", "g"]));
         assert_eq!(with_budget(v(&["rollback"]), Some(1.0), "5h=80"), v(&["rollback"]));
-        assert_eq!(with_budget(v(&["run", "g"]), None, "5h=80,week=90"), v(&["run", "g", "--usage-cap", "5h=80,week=90"]));
-        assert_eq!(with_budget(v(&["run", "g", "--usage-cap", "5h=50"]), None, "5h=80"), v(&["run", "g", "--usage-cap", "5h=50"]));
+        assert_eq!(
+            with_budget(v(&["run", "g"]), None, "5h=80,week=90"),
+            v(&["run", "g", "--usage-cap", "5h=80,week=90"])
+        );
+        assert_eq!(
+            with_budget(v(&["run", "g", "--usage-cap", "5h=50"]), None, "5h=80"),
+            v(&["run", "g", "--usage-cap", "5h=50"])
+        );
     }
 
     #[test]
     fn plugin_flags() {
-        let extra = |p: PluginOpts| Extra { max_cost: None, models: None, on_limit: None, fast: None, critic: None, plugins: Some(p) };
+        let extra = |p: PluginOpts| Extra {
+            max_cost: None,
+            models: None,
+            on_limit: None,
+            fast: None,
+            critic: None,
+            plugins: Some(p),
+        };
         let tail = |e: Extra| flags("heavy", 1, false, &e)[4..].to_vec();
         assert!(tail(extra(PluginOpts::default())).is_empty());
-        let p = PluginOpts { off: Some(true), disable: Some(vec!["caveman@caveman".into(), "a b;rm".into(), "@x".into(), "x@".into()]), hooks: Some(false) };
+        let p = PluginOpts {
+            off: Some(true),
+            disable: Some(vec!["caveman@caveman".into(), "a b;rm".into(), "@x".into(), "x@".into()]),
+            hooks: Some(false),
+        };
         assert_eq!(tail(extra(p)), ["--plugins", "off", "--disable-plugins", "caveman@caveman", "--no-hooks"]);
         assert!(valid_plugin_id("superpowers@claude-plugins-official") && valid_plugin_id("local-plugin"));
         assert!(!valid_plugin_id("a@b@c") && !valid_plugin_id("") && !valid_plugin_id("-x"));
@@ -986,7 +1091,11 @@ mod tests {
 
     #[test]
     fn gate_reports_limit_then_budget() {
-        let mut g = Inner { daily_budget: Some(1.0), spent_usd: 0.5, ..Inner::default() };
+        let mut g = Inner {
+            daily_budget: Some(1.0),
+            spent_usd: 0.5,
+            ..Inner::default()
+        };
         assert_eq!(g.gate(), None);
         g.spent_usd = 1.0;
         assert!(g.gate().unwrap().contains("daily budget"));
@@ -995,7 +1104,10 @@ mod tests {
         g.usage_limit = Some(("r".into(), now_ms() - 1));
         assert!(g.gate().unwrap().contains("daily budget"));
 
-        let mut g = Inner { usage: [Some((85.0, now_ms() + 60_000)), Some((20.0, now_ms() + 60_000))], ..Inner::default() };
+        let mut g = Inner {
+            usage: [Some((85.0, now_ms() + 60_000)), Some((20.0, now_ms() + 60_000))],
+            ..Inner::default()
+        };
         assert_eq!(g.gate(), None, "no caps set");
         g.usage_cap = [Some(90.0), Some(20.0)];
         assert!(g.gate().unwrap().starts_with("weekly usage at 20% (cap 20%"), "{:?}", g.gate());
@@ -1026,7 +1138,10 @@ mod tests {
     fn runs_orch_in_two_repos_within_the_parallel_limit() {
         let repo = PathBuf::from(std::env::var("TEST_REPO").expect("set TEST_REPO, ORCH_PATH and CLAUDE_BIN to run this test"));
         assert!(std::env::var("ORCH_PATH").is_ok(), "set ORCH_PATH to the built orch.mjs");
-        assert!(std::env::var("CLAUDE_BIN").is_ok(), "set CLAUDE_BIN to test/fake-claude/claude.cmd (or claude on POSIX)");
+        assert!(
+            std::env::var("CLAUDE_BIN").is_ok(),
+            "set CLAUDE_BIN to test/fake-claude/claude.cmd (or claude on POSIX)"
+        );
         let second = repo.join("second-repo");
         fs::create_dir_all(&second).unwrap();
 
@@ -1048,7 +1163,10 @@ mod tests {
             args
         };
         request_start(&h, &a, run_args(), "a".into()).unwrap();
-        assert!(request_start(&h, &a, vec!["agents".into()], "x".into()).is_err(), "a second run in the same repo is refused");
+        assert!(
+            request_start(&h, &a, vec!["agents".into()], "x".into()).is_err(),
+            "a second run in the same repo is refused"
+        );
         request_start(&h, &b, run_args(), "b".into()).unwrap();
         {
             let st = h.state::<AppState>();

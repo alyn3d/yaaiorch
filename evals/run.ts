@@ -41,9 +41,25 @@ type Case = { id: string; fixture: string; kind: string; difficulty: string; goa
 const goalsOf = (c: Case): string[] => c.goals ?? [c.goal!];
 /** `power` is the configuration label: an orch tier ("economy"), or "single:<model>" for the control group. */
 type Run = {
-  case: string; kind: string; difficulty: string; power: string; rep: number; runner?: "orch" | "single";
-  claimed: boolean; hidden: boolean; rounds: number; cost: number; seconds: number; goals?: number;
-  stuck: number; finalPower?: string; error?: string; exit: number | null; timedOut: boolean; dir: string; gradeTail: string;
+  case: string;
+  kind: string;
+  difficulty: string;
+  power: string;
+  rep: number;
+  runner?: "orch" | "single";
+  claimed: boolean;
+  hidden: boolean;
+  rounds: number;
+  cost: number;
+  seconds: number;
+  goals?: number;
+  stuck: number;
+  finalPower?: string;
+  error?: string;
+  exit: number | null;
+  timedOut: boolean;
+  dir: string;
+  gradeTail: string;
 };
 
 const EVALS = dirname(fileURLToPath(import.meta.url));
@@ -73,23 +89,46 @@ const { values: a } = parseArgs({
 const LIMIT_RE = /\b(?:hit|reached) your [^\n.]{0,40}?limit\b/i;
 
 const allCases: Case[] = JSON.parse(readFileSync(join(EVALS, "cases.json"), "utf8"));
-const wanted = a.cases?.split(",").map((s) => s.trim()).filter(Boolean);
+const wanted = a.cases
+  ?.split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const unknown = wanted?.filter((id) => !allCases.some((c) => c.id === id)) ?? [];
 if (unknown.length) fail(`unknown case(s): ${unknown.join(", ")}. Known: ${allCases.map((c) => c.id).join(", ")}`);
 const cases = wanted ? allCases.filter((c) => wanted.includes(c.id)) : allCases;
-const powers = a.power === "none" ? [] : a.power!.split(",").map((s) => s.trim()).filter(Boolean);
+const powers =
+  a.power === "none"
+    ? []
+    : a
+        .power!.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
 // Suffixes add orch options: "economy+fast" (direct attempt first), "economy+nomem" (no project brief or notes,
 // to measure what they are worth), "economy+critic" (plan critic). They combine: "heavy+nomem+critic".
 const SUFFIXES: Record<string, string[]> = { fast: ["--fast"], nomem: ["--no-brief", "--no-notes"], critic: ["--critic"] };
 const tierOf = (label: string) => label.split("+")[0];
-const suffixArgs = (label: string) => label.split("+").slice(1).flatMap((x) => SUFFIXES[x] ?? []);
+const suffixArgs = (label: string) =>
+  label
+    .split("+")
+    .slice(1)
+    .flatMap((x) => SUFFIXES[x] ?? []);
 for (const p of powers) {
-  const bad = p.split("+").slice(1).filter((x) => !SUFFIXES[x]);
+  const bad = p
+    .split("+")
+    .slice(1)
+    .filter((x) => !SUFFIXES[x]);
   if (!TIERS.includes(tierOf(p)) || bad.length)
-    fail(`unknown power "${p}"; use ${TIERS.join(", ")} with optional ${Object.keys(SUFFIXES).map((x) => `+${x}`).join(", ")}, or none`);
+    fail(
+      `unknown power "${p}"; use ${TIERS.join(", ")} with optional ${Object.keys(SUFFIXES)
+        .map((x) => `+${x}`)
+        .join(", ")}, or none`,
+    );
 }
 for (const c of allCases) if (!c.goal && !c.goals?.length) fail(`case ${c.id} has neither goal nor goals`);
-const singles = (a.single ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const singles = (a.single ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 for (const m of singles) if (!/^[\w.:-]+$/.test(m)) fail(`bad model name "${m}"`);
 /** Configuration labels, in table order: orch tiers, then the single-agent control group. */
 const configs = [...powers, ...singles.map((m) => `single:${m}`)];
@@ -141,7 +180,9 @@ if (a.reference) {
     const after = grade(solved, c);
     const ok = !before.pass && after.pass;
     if (!ok) bad++;
-    console.log(`${ok ? "ok  " : "BAD "} ${c.id.padEnd(20)} untouched fixture: ${before.pass ? "PASSES (tests too weak)" : "fails"}   reference: ${after.pass ? "passes" : "FAILS"}`);
+    console.log(
+      `${ok ? "ok  " : "BAD "} ${c.id.padEnd(20)} untouched fixture: ${before.pass ? "PASSES (tests too weak)" : "fails"}   reference: ${after.pass ? "passes" : "FAILS"}`,
+    );
     if (!after.pass) console.log(after.tail.replace(/^/gm, "       "));
   }
   console.log(bad ? `\n${bad} case(s) need fixing` : "\nall cases discriminate: the hidden tests fail before and pass with the reference");
@@ -149,9 +190,7 @@ if (a.reference) {
 }
 
 // ---------- normal mode: run orch and grade ----------
-const orchArgs = a.orch
-  ? [a.orch]
-  : [join(ROOT, "orch-ui", "node_modules", "tsx", "dist", "cli.mjs"), join(ROOT, "orch.ts")];
+const orchArgs = a.orch ? [a.orch] : [join(ROOT, "orch-ui", "node_modules", "tsx", "dist", "cli.mjs"), join(ROOT, "orch.ts")];
 if (!existsSync(orchArgs[0])) fail(`${orchArgs[0]} not found (run "npm install" in orch-ui, or pass --orch)`);
 
 function killTree(pid?: number) {
@@ -170,15 +209,22 @@ function runOrch(dir: string, goal: string, power: string): Promise<{ exit: numb
   return new Promise((resolve) => {
     const start = Date.now();
     const args = [
-      ...orchArgs, "run", goal,
-      "--power", tierOf(power),
+      ...orchArgs,
+      "run",
+      goal,
+      "--power",
+      tierOf(power),
       ...suffixArgs(power),
       // The runner handles the usage limit itself (stop or --wait-on-limit), so orch must not wait.
-      "--on-limit", "stop",
+      "--on-limit",
+      "stop",
       ...(a["orch-model"] ? ["--model", a["orch-model"]] : []),
-      "--max-rounds", a["max-rounds"]!,
-      "--max-cost", a["max-cost"]!,
-      "--agent-timeout", a["agent-timeout"]!,
+      "--max-rounds",
+      a["max-rounds"]!,
+      "--max-cost",
+      a["max-cost"]!,
+      "--agent-timeout",
+      a["agent-timeout"]!,
     ];
     const env = { ...process.env, ORCH_EVENTS: "1", FORCE_COLOR: "0", ...(a["claude-bin"] ? { CLAUDE_BIN: a["claude-bin"] } : {}) };
     const p = spawn(process.execPath, args, { cwd: dir, env, windowsHide: true, detached: process.platform !== "win32" });
@@ -201,10 +247,13 @@ function runOrch(dir: string, goal: string, power: string): Promise<{ exit: numb
     p.stdout.on("data", onData);
     p.stderr.on("data", onData);
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTree(p.pid);
-    }, Number(a["eval-timeout"]) * 60_000);
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        killTree(p.pid);
+      },
+      Number(a["eval-timeout"]) * 60_000,
+    );
     p.on("close", (exit) => {
       clearTimeout(timer);
       resolve({ exit, events, seconds: Math.round((Date.now() - start) / 1000), timedOut });
@@ -226,13 +275,18 @@ function checksIn(dir: string): Record<string, string> {
     if (checks) return checks;
   }
   const pkg = join(dir, "package.json");
-  const scripts: Record<string, string> = existsSync(pkg) ? JSON.parse(readFileSync(pkg, "utf8")).scripts ?? {} : {};
+  const scripts: Record<string, string> = existsSync(pkg) ? (JSON.parse(readFileSync(pkg, "utf8")).scripts ?? {}) : {};
   return Object.fromEntries(
     ["typecheck", "lint", "test", "build"].filter((s) => scripts[s] && !/no test specified/.test(scripts[s])).map((s) => [s, `npm run ${s}`]),
   );
 }
 
-type SingleResult = { exit: number | null; seconds: number; timedOut: boolean; result?: { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number } };
+type SingleResult = {
+  exit: number | null;
+  seconds: number;
+  timedOut: boolean;
+  result?: { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number };
+};
 
 function runSingle(dir: string, goal: string, model: string): Promise<SingleResult> {
   const checks = checksIn(dir);
@@ -246,14 +300,25 @@ function runSingle(dir: string, goal: string, model: string): Promise<SingleResu
     `You can run the repository's checks: ${Object.values(checks).join(", ") || "none are configured"}.\n` +
     `When you are done, end your reply with exactly one of these lines: "Status: COMPLETE", "Status: PARTIAL" or "Status: FAILED".`;
   const args = [
-    "-p", "--model", model, "--output-format", "json",
-    "--permission-mode", "acceptEdits", "--settings", ".orchestrator/single-settings.json",
-    "--max-budget-usd", a["max-cost"]!,
+    "-p",
+    "--model",
+    model,
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "acceptEdits",
+    "--settings",
+    ".orchestrator/single-settings.json",
+    "--max-budget-usd",
+    a["max-cost"]!,
   ];
   return new Promise((resolve) => {
     const start = Date.now();
     const p = spawn(CLAUDE_CMD.file, [...CLAUDE_CMD.pre, ...args], {
-      cwd: dir, shell: CLAUDE_CMD.shell, windowsHide: true, detached: process.platform !== "win32",
+      cwd: dir,
+      shell: CLAUDE_CMD.shell,
+      windowsHide: true,
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
     const log = join(dir, "..", `${dir.split(/[\\/]/).pop()}.single.log`);
@@ -262,10 +327,13 @@ function runSingle(dir: string, goal: string, model: string): Promise<SingleResu
     p.stdout.on("data", (d: string) => (out += d));
     p.stderr.on("data", (d: Buffer) => appendFileSync(log, d));
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTree(p.pid);
-    }, Number(a["eval-timeout"]) * 60_000);
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        killTree(p.pid);
+      },
+      Number(a["eval-timeout"]) * 60_000,
+    );
     p.on("close", (exit) => {
       clearTimeout(timer);
       appendFileSync(log, out);
@@ -290,7 +358,10 @@ const key = (caseId: string, power: string, rep: number) => `${caseId}|${power}|
 // --resume: keep the finished runs, drop the ones a usage limit spoiled, and run only what is missing.
 if (a.resume) {
   if (!existsSync(jsonl)) fail(`no results to resume: ${jsonl}`);
-  const old: Run[] = readFileSync(jsonl, "utf8").split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+  const old: Run[] = readFileSync(jsonl, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
   const kept = old.filter((r) => !LIMIT_RE.test(r.error ?? ""));
   writeFileSync(jsonl, kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
   runs.push(...kept);
@@ -333,7 +404,11 @@ async function oneSingle(job: Job, model: string) {
   rmSync(dir, { recursive: true, force: true });
   setupRepo(dir, c);
   // A series: one call per goal, in order, on the same repo (the single agent keeps no memory between them).
-  let claimed = true, cost = 0, seconds = 0, error: string | undefined, last: SingleResult | undefined;
+  let claimed = true,
+    cost = 0,
+    seconds = 0,
+    error: string | undefined,
+    last: SingleResult | undefined;
   for (const goal of goalsOf(c)) {
     const r = (last = await runSingle(dir, goal, model));
     const text = typeof r.result?.result === "string" ? r.result.result : "";
@@ -342,13 +417,34 @@ async function oneSingle(job: Job, model: string) {
     claimed &&= !failed && /Status:\s*COMPLETE/i.test(text);
     cost += r.result?.total_cost_usd ?? 0;
     seconds += r.seconds;
-    error ??= r.timedOut ? "eval timeout" : !r.result ? `claude exited ${r.exit} without JSON` : failed ? `claude: ${r.result.subtype ?? `exit ${r.exit}`} ${text.slice(0, 120)}`.trim() : undefined;
+    error ??= r.timedOut
+      ? "eval timeout"
+      : !r.result
+        ? `claude exited ${r.exit} without JSON`
+        : failed
+          ? `claude: ${r.result.subtype ?? `exit ${r.exit}`} ${text.slice(0, 120)}`.trim()
+          : undefined;
   }
   const g = grade(dir, c);
   record({
-    case: c.id, kind: c.kind, difficulty: c.difficulty, power, rep, runner: "single",
-    claimed, hidden: g.pass, rounds: goalsOf(c).length, cost, seconds, stuck: 0, goals: goalsOf(c).length, error,
-    exit: last?.exit ?? null, timedOut: !!last?.timedOut, dir, gradeTail: g.pass ? "" : g.tail,
+    case: c.id,
+    kind: c.kind,
+    difficulty: c.difficulty,
+    power,
+    rep,
+    runner: "single",
+    claimed,
+    hidden: g.pass,
+    rounds: goalsOf(c).length,
+    cost,
+    seconds,
+    stuck: 0,
+    goals: goalsOf(c).length,
+    error,
+    exit: last?.exit ?? null,
+    timedOut: !!last?.timedOut,
+    dir,
+    gradeTail: g.pass ? "" : g.tail,
   });
 }
 
@@ -361,7 +457,10 @@ async function one(job: Job) {
   // A series runs its goals in turn on the same repo; a failed goal does not stop the next one (a user
   // would go on too), and the series counts as claimed only if every goal passed.
   const all: any[] = [];
-  let claimed = true, cost = 0, seconds = 0, error: string | undefined;
+  let claimed = true,
+    cost = 0,
+    seconds = 0,
+    error: string | undefined;
   let last: Awaited<ReturnType<typeof runOrch>> | undefined;
   for (const [i, goal] of goalsOf(c).entries()) {
     const r = (last = await runOrch(dir, goal, power));
@@ -372,25 +471,36 @@ async function one(job: Job) {
     claimed &&= !!end?.passed;
     cost += end?.cost ?? 0;
     seconds += r.seconds;
-    const why = r.timedOut ? "eval timeout" : end?.error ?? (end ? undefined : `orch exited ${r.exit} without goal_end`);
+    const why = r.timedOut ? "eval timeout" : (end?.error ?? (end ? undefined : `orch exited ${r.exit} without goal_end`));
     if (why && !error) error = goalsOf(c).length > 1 ? `goal ${i + 1}: ${why}` : why;
   }
   const g = grade(dir, c);
   const rounds = all.filter((e) => e.type === "round_start");
   record({
-    case: c.id, kind: c.kind, difficulty: c.difficulty, power, rep, runner: "orch",
-    claimed, hidden: g.pass,
-    rounds: rounds.length, cost: Math.round(cost * 10_000) / 10_000, seconds, goals: goalsOf(c).length,
+    case: c.id,
+    kind: c.kind,
+    difficulty: c.difficulty,
+    power,
+    rep,
+    runner: "orch",
+    claimed,
+    hidden: g.pass,
+    rounds: rounds.length,
+    cost: Math.round(cost * 10_000) / 10_000,
+    seconds,
+    goals: goalsOf(c).length,
     stuck: all.filter((e) => e.type === "stuck").length,
     finalPower: rounds.at(-1)?.power,
     error,
-    exit: last?.exit ?? null, timedOut: !!last?.timedOut, dir, gradeTail: g.pass ? "" : g.tail,
+    exit: last?.exit ?? null,
+    timedOut: !!last?.timedOut,
+    dir,
+    gradeTail: g.pass ? "" : g.tail,
   });
 }
 
 for (const c of cases)
-  for (const power of configs)
-    for (let rep = 1; rep <= Number(a.repeat); rep++) if (!done.has(key(c.id, power, rep))) jobs.push({ c, power, rep });
+  for (const power of configs) for (let rep = 1; rep <= Number(a.repeat); rep++) if (!done.has(key(c.id, power, rep))) jobs.push({ c, power, rep });
 console.log(`${jobs.length} run(s) to do: ${cases.length} case(s) x ${configs.join("/")} x ${a.repeat}, ${a.parallel} at a time`);
 console.log(`work dirs: ${workRoot}\nresults:   ${jsonl}\n`);
 
@@ -410,13 +520,18 @@ const avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.le
 const lines: string[] = [];
 lines.push(`# Eval ${stamp}`, "");
 lines.push(`Cases: ${cases.map((c) => c.id).join(", ")}  `);
-lines.push(`Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["orch-model"] ? `, orch models ${a["orch-model"]}` : ""}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}`, "");
+lines.push(
+  `Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["orch-model"] ? `, orch models ${a["orch-model"]}` : ""}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}`,
+  "",
+);
 if (stoppedBy)
   lines.push(
-    `**Stopped early: ${stoppedBy}.** ${jobs.length} run(s) not done. Finish with:`, "",
+    `**Stopped early: ${stoppedBy}.** ${jobs.length} run(s) not done. Finish with:`,
+    "",
     "```",
     `node evals/run.ts --resume ${stamp} --power ${powers.join(",") || "none"}${singles.length ? ` --single ${singles.join(",")}` : ""} --repeat ${a.repeat}${wanted ? ` --cases ${wanted.join(",")}` : ""}`,
-    "```", "",
+    "```",
+    "",
   );
 lines.push("## By configuration", "");
 lines.push("Orch tiers run the full loop; `single:<model>` is the control group: one `claude -p` call with the same goal, permissions, checks and budget.", "");
@@ -432,7 +547,10 @@ for (const p of configs) {
 }
 lines.push("", "False pass: the run reported success (orch: QA passed; single: Status: COMPLETE) but the hidden tests failed.", "");
 if (cases.some((c) => c.goals))
-  lines.push("Series cases run several goals in a row on one repo; their rounds and cost are totals over all goals, and they count as claimed only if every goal passed.", "");
+  lines.push(
+    "Series cases run several goals in a row on one repo; their rounds and cost are totals over all goals, and they count as claimed only if every goal passed.",
+    "",
+  );
 lines.push("## By case", "");
 lines.push(`| case | kind | ${configs.join(" | ")} |`);
 lines.push(`|---|---|${configs.map(() => "---").join("|")}|`);

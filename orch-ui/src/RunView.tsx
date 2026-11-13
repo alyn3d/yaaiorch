@@ -9,10 +9,15 @@ const fmt = (ms: number) => {
 const money = (n?: number) => (n === undefined ? "" : `$${n.toFixed(2)}`);
 
 const tone = (s: string) =>
-  s === "running" ? "running"
-  : ["COMPLETE", "PASS"].includes(s) ? "done"
-  : ["PARTIAL", "PHANTOM", "UNKNOWN", "SKIPPED", "STOPPED"].includes(s) ? "warn"
-  : s === "queued" ? "" : "failed";
+  s === "running"
+    ? "running"
+    : ["COMPLETE", "PASS"].includes(s)
+      ? "done"
+      : ["PARTIAL", "PHANTOM", "UNKNOWN", "SKIPPED", "STOPPED"].includes(s)
+        ? "warn"
+        : s === "queued"
+          ? ""
+          : "failed";
 
 function useNow(active: boolean) {
   const [now, setNow] = useState(Date.now());
@@ -39,7 +44,13 @@ function Task({ t, now }: { t: TaskView; now: number }) {
       {t.files.length > 0 && <p className="muted files">{t.files.join(", ")}</p>}
       {t.touched.length > 0 && <p className="muted files">changed: {t.touched.join(", ")}</p>}
       {t.error && <p className="error">{t.error}</p>}
-      {t.failures.length > 0 && <ul className="failures">{t.failures.map((f, i) => <li key={i}>{f}</li>)}</ul>}
+      {t.failures.length > 0 && (
+        <ul className="failures">
+          {t.failures.map((f, i) => (
+            <li key={i}>{f}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -61,9 +72,10 @@ export function RunPanel({ run }: { run: Run }) {
         </span>
         <span className="spacer" />
         <span className="cost" title="Cost of agent calls in this goal">
-          {money(run.cost)}{run.maxCost !== undefined ? ` / ${money(run.maxCost)}` : ""}
+          {money(run.cost)}
+          {run.maxCost !== undefined ? ` / ${money(run.maxCost)}` : ""}
         </span>
-        <span className="muted">{fmt((run.status === "running" ? now : run.rounds.at(-1)?.tasks.at(-1)?.endedAt ?? now) - run.startedAt)}</span>
+        <span className="muted">{fmt((run.status === "running" ? now : (run.rounds.at(-1)?.tasks.at(-1)?.endedAt ?? now)) - run.startedAt)}</span>
       </div>
       {/* The checkpoint and its rollback offer are shown by App from last-run.json, which stays correct after a rollback. */}
       {run.checkpoint && run.status === "running" && <p className="muted">Checkpoint: {run.checkpoint}</p>}
@@ -71,23 +83,47 @@ export function RunPanel({ run }: { run: Run }) {
       {run.rounds.map((r) => (
         <div key={r.round} className="round">
           <div className="row">
-            <strong>Round {r.round}/{run.maxRounds}</strong>
-            {r.power && <span className="badge" title="Power tier for this round">{r.power}</span>}
-            {r.mode === "direct" && <span className="badge" title="Fast path: one agent did the whole goal">direct</span>}
+            <strong>
+              Round {r.round}/{run.maxRounds}
+            </strong>
+            {r.power && (
+              <span className="badge" title="Power tier for this round">
+                {r.power}
+              </span>
+            )}
+            {r.mode === "direct" && (
+              <span className="badge" title="Fast path: one agent did the whole goal">
+                direct
+              </span>
+            )}
             {r.architect === "running" && <span className="badge running">architect planning</span>}
             {r.passed !== undefined && <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>}
             <span className="spacer" />
-            {r.cost !== undefined && <span className="cost" title="Cost of this round">{money(r.cost)}</span>}
+            {r.cost !== undefined && (
+              <span className="cost" title="Cost of this round">
+                {money(r.cost)}
+              </span>
+            )}
           </div>
-          {r.summary && <p>{r.summary}{r.architectCost !== undefined && <span className="cost"> (plan {money(r.architectCost)})</span>}</p>}
+          {r.summary && (
+            <p>
+              {r.summary}
+              {r.architectCost !== undefined && <span className="cost"> (plan {money(r.architectCost)})</span>}
+            </p>
+          )}
           {r.models && (
             <p className="cost" title="Model used per role in this round">
-              {Object.entries(r.models).map(([role, model]) => `${role}: ${model}`).join(" · ")}
+              {Object.entries(r.models)
+                .map(([role, model]) => `${role}: ${model}`)
+                .join(" · ")}
             </p>
           )}
           {r.critic && (
             <p className={r.critic.approved ? "cost" : "note"} title={r.critic.issues.join("\n")}>
-              Plan critic: {r.critic.approved ? "approved" : `rejected (${r.critic.issues.length} issue${r.critic.issues.length === 1 ? "" : "s"}): ${r.critic.issues.join("; ")}${r.critic.revised ? ", plan revised" : ""}`}
+              Plan critic:{" "}
+              {r.critic.approved
+                ? "approved"
+                : `rejected (${r.critic.issues.length} issue${r.critic.issues.length === 1 ? "" : "s"}): ${r.critic.issues.join("; ")}${r.critic.revised ? ", plan revised" : ""}`}
               {r.critic.cost !== undefined && <span className="cost"> ({money(r.critic.cost)})</span>}
             </p>
           )}
@@ -100,11 +136,16 @@ export function RunPanel({ run }: { run: Run }) {
           {r.checks && (
             <div className="row">
               <p className="phase">Checks</p>
-              {r.checks.length ? r.checks.map((c) => (
-                <span key={c.name} className={`badge ${c.ok ? "done" : "failed"}`} title={`${c.command} (${fmt(c.ms)})`}>
-                  {c.name}{c.ok ? "" : ` exit ${c.code}`}
-                </span>
-              )) : <span className="muted">none configured</span>}
+              {r.checks.length ? (
+                r.checks.map((c) => (
+                  <span key={c.name} className={`badge ${c.ok ? "done" : "failed"}`} title={`${c.command} (${fmt(c.ms)})`}>
+                    {c.name}
+                    {c.ok ? "" : ` exit ${c.code}`}
+                  </span>
+                ))
+              ) : (
+                <span className="muted">none configured</span>
+              )}
             </div>
           )}
           {PHASES.map(({ key, label }) => {
@@ -112,7 +153,11 @@ export function RunPanel({ run }: { run: Run }) {
             return ts.length ? (
               <div key={key}>
                 <p className="phase">{label}</p>
-                <div className="tasks">{ts.map((t) => <Task key={t.id} t={t} now={now} />)}</div>
+                <div className="tasks">
+                  {ts.map((t) => (
+                    <Task key={t.id} t={t} now={now} />
+                  ))}
+                </div>
               </div>
             ) : null;
           })}

@@ -42,7 +42,12 @@ export function findOnPath(name: string, env: NodeJS.ProcessEnv = process.env): 
   const own = extname(name).toLowerCase();
   const tries = exts.some((e) => e.toLowerCase() === own) ? [""] : exts.map((e) => e.toLowerCase());
   const hasDir = isAbsolute(name) || /[\\/]/.test(name);
-  const dirs = hasDir ? [""] : (env.PATH ?? env.Path ?? "").split(";").map((d) => d.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean);
+  const dirs = hasDir
+    ? [""]
+    : (env.PATH ?? env.Path ?? "")
+        .split(";")
+        .map((d) => d.trim().replace(/^"(.*)"$/, "$1"))
+        .filter(Boolean);
   for (const dir of dirs)
     for (const ext of tries) {
       const p = hasDir ? resolve(name + ext) : join(dir, name + ext);

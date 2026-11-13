@@ -14,8 +14,14 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
   switch (ev.type) {
     case "goal_start":
       return {
-        goal: ev.goal, maxRounds: ev.maxRounds, dryRun: ev.dryRun, maxCost: ev.maxCost,
-        status: "running", startedAt: ev.t, rounds: [], cost: 0,
+        goal: ev.goal,
+        maxRounds: ev.maxRounds,
+        dryRun: ev.dryRun,
+        maxCost: ev.maxCost,
+        status: "running",
+        startedAt: ev.t,
+        rounds: [],
+        cost: 0,
       };
     case "goal_end":
       return (
@@ -32,7 +38,16 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
           ...run,
           rounds: [
             ...run.rounds,
-            { round: ev.round, power: ev.power, models: ev.models, mode: ev.mode, architect: ev.mode === "direct" ? "done" : "running", summary: "", tasks: [], failures: [] },
+            {
+              round: ev.round,
+              power: ev.power,
+              models: ev.models,
+              mode: ev.mode,
+              architect: ev.mode === "direct" ? "done" : "running",
+              summary: "",
+              tasks: [],
+              failures: [],
+            },
           ],
         }
       );
@@ -45,8 +60,14 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
           architectCost: ev.cost,
           summary: ev.summary,
           tasks: ev.tasks.map((t: any): TaskView => ({
-            id: t.id, agent: t.agent, phase: t.phase, task: t.task, files: t.files ?? [],
-            status: "queued", touched: [], failures: [],
+            id: t.id,
+            agent: t.agent,
+            phase: t.phase,
+            task: t.task,
+            files: t.files ?? [],
+            status: "queued",
+            touched: [],
+            failures: [],
           })),
         }))
       );
@@ -57,7 +78,13 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
         run &&
         upd({ ...run, cost: run.cost + (ev.cost ?? 0) }, ev.round, (r) =>
           updTask(r, ev.id, (t) => ({
-            ...t, status: ev.status, touched: ev.touched ?? [], failures: ev.failures ?? [], error: ev.error, cost: ev.cost, endedAt: ev.t,
+            ...t,
+            status: ev.status,
+            touched: ev.touched ?? [],
+            failures: ev.failures ?? [],
+            error: ev.error,
+            cost: ev.cost,
+            endedAt: ev.t,
           })),
         )
       );
@@ -69,11 +96,15 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
         upd(run, ev.round, (r) => ({
           ...r,
           note:
-            ev.action === "stop" ? `No progress again (${ev.reason}): stopped the goal.`
-            : ev.action === "escalate" && ev.agents
-              ? `No progress (${ev.reason}): only the failing tasks move up next round (${Object.entries(ev.agents as Record<string, string>).map(([a, p]) => `${a} at ${p}`).join(", ")}).`
-            : ev.action === "escalate" ? `No progress (${ev.reason}): next round runs at power ${ev.power}.`
-            : `No progress (${ev.reason}): already at max power, retrying with a different approach.`,
+            ev.action === "stop"
+              ? `No progress again (${ev.reason}): stopped the goal.`
+              : ev.action === "escalate" && ev.agents
+                ? `No progress (${ev.reason}): only the failing tasks move up next round (${Object.entries(ev.agents as Record<string, string>)
+                    .map(([a, p]) => `${a} at ${p}`)
+                    .join(", ")}).`
+                : ev.action === "escalate"
+                  ? `No progress (${ev.reason}): next round runs at power ${ev.power}.`
+                  : `No progress (${ev.reason}): already at max power, retrying with a different approach.`,
         }))
       );
     case "unowned":
@@ -95,9 +126,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
             rounds: run.rounds.map((r) => ({
               ...r,
               architect: "done",
-              tasks: r.tasks.map((t) =>
-                t.status === "running" || t.status === "queued" ? { ...t, status: "STOPPED", endedAt: t.startedAt && ev.t } : t,
-              ),
+              tasks: r.tasks.map((t) => (t.status === "running" || t.status === "queued" ? { ...t, status: "STOPPED", endedAt: t.startedAt && ev.t } : t)),
             })),
           }
         : run;

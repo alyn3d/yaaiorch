@@ -117,9 +117,20 @@ describe("failureKey, verdicts and reviews", () => {
     assert.deepEqual(o.asReview({ approved: false, issues: ["x"] }), { approved: false, issues: ["x"] });
   });
   test("TRANSIENT_RE: API trouble yes; usage limit, timeouts and task output no", () => {
-    for (const t of ['be: CLI returned success: API Error: 529 {"type":"overloaded_error"}', "API Error: 500 Internal", "API Error: 429 rate_limit_error", "connect ECONNRESET", "fetch failed"])
+    for (const t of [
+      'be: CLI returned success: API Error: 529 {"type":"overloaded_error"}',
+      "API Error: 500 Internal",
+      "API Error: 429 rate_limit_error",
+      "connect ECONNRESET",
+      "fetch failed",
+    ])
       assert.ok(o.TRANSIENT_RE.test(t), t);
-    for (const t of ["You've hit your 5-hour limit", "be timed out after 30 min", "be: CLI returned error_during_execution: 500 tests failed", "budget of $1.00 used up"])
+    for (const t of [
+      "You've hit your 5-hour limit",
+      "be timed out after 30 min",
+      "be: CLI returned error_during_execution: 500 tests failed",
+      "budget of $1.00 used up",
+    ])
       assert.ok(!o.TRANSIENT_RE.test(t), t);
   });
 });
@@ -151,10 +162,12 @@ describe("claude-bin: start claude without a shell on Windows", () => {
     const cli = join(d, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
     file(cli);
     file(join(d, "claude"));
-    file(join(d, "claude.cmd"),
-      '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n' +
-      'IF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n)\r\n' +
-      'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n');
+    file(
+      join(d, "claude.cmd"),
+      "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n" +
+        'IF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n)\r\n' +
+        'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n',
+    );
     const c = cb.resolveClaude("claude", env(d), "win32");
     assert.deepEqual([c.file, c.pre, c.shell], [process.execPath, [cli], false]);
   });

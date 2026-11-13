@@ -30,7 +30,7 @@ export function App() {
 
   // Keep a valid tab selected as repos open and close. The overview is there from two repos on.
   const showOverview = order.length >= 2;
-  const current = order.includes(active) || (active === OVERVIEW && showOverview) ? active : order[0] ?? "";
+  const current = order.includes(active) || (active === OVERVIEW && showOverview) ? active : (order[0] ?? "");
   useEffect(() => {
     try {
       if (current) localStorage.setItem(ACTIVE_KEY, current);
@@ -73,7 +73,10 @@ export function App() {
         <label title="How many repos may run at the same time; further starts wait for a free slot. All repos share one Claude usage limit.">
           Parallel
           <input
-            type="number" min={1} max={16} value={maxParallel}
+            type="number"
+            min={1}
+            max={16}
+            value={maxParallel}
             onChange={(e) => {
               const n = Math.round(Number(e.target.value));
               if (n >= 1 && n <= 16) guard(() => setMaxParallel(n));
@@ -81,7 +84,8 @@ export function App() {
           />
         </label>
         <Limits
-          g={global} now={now}
+          g={global}
+          now={now}
           onBudget={(v) => guard(() => transport.setDailyBudget(v))}
           onCap={(w, v) => guard(() => transport.setUsageCap({ ...global.usageCap, [w]: v }))}
         />
@@ -91,7 +95,9 @@ export function App() {
       <nav className="tabs" role="tablist">
         {showOverview && (
           <div className={`tab ${current === OVERVIEW ? "active" : ""}`} role="tab" aria-selected={current === OVERVIEW} title="All repos at a glance">
-            <button className="tab-name" onClick={() => setActive(OVERVIEW)}>Overview</button>
+            <button className="tab-name" onClick={() => setActive(OVERVIEW)}>
+              Overview
+            </button>
           </div>
         )}
         {order.map((repo) => {
@@ -106,7 +112,9 @@ export function App() {
                 {baseName(repo)}
               </button>
               <button
-                className="tab-close" disabled={busy} aria-label={`Close ${baseName(repo)}`}
+                className="tab-close"
+                disabled={busy}
+                aria-label={`Close ${baseName(repo)}`}
                 title={busy ? "Stop this repo's run before closing the tab" : "Close tab (the repo is not changed)"}
                 onClick={() => guard(() => transport.removeRepo(repo))}
               >
@@ -116,12 +124,24 @@ export function App() {
           );
         })}
         {canPickRepo || !adding ? (
-          <button className="tab-add" onClick={() => (canPickRepo ? addRepo() : setAdding(true))} title="Open another repo in a new tab">+ Repo</button>
+          <button className="tab-add" onClick={() => (canPickRepo ? addRepo() : setAdding(true))} title="Open another repo in a new tab">
+            + Repo
+          </button>
         ) : (
-          <form className="tab-add-form" onSubmit={(e) => { e.preventDefault(); addRepo(); }}>
+          <form
+            className="tab-add-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              addRepo();
+            }}
+          >
             <input autoFocus placeholder="Path to the repo folder" value={newPath} onChange={(e) => setNewPath(e.target.value)} />
-            <button className="primary" type="submit">Open</button>
-            <button type="button" onClick={() => setAdding(false)}>Cancel</button>
+            <button className="primary" type="submit">
+              Open
+            </button>
+            <button type="button" onClick={() => setAdding(false)}>
+              Cancel
+            </button>
           </form>
         )}
       </nav>
@@ -135,23 +155,33 @@ export function App() {
               in {baseName(global.usageLimit.repo)}. New runs in all repos wait until {clock(global.usageLimit.until)}; running ones wait on their own.
             </span>
             <span className="spacer" />
-            <button onClick={() => guard(() => transport.clearLimit())} title="Start waiting runs now; if the limit is still on, they hit it again and wait.">Try now</button>
+            <button onClick={() => guard(() => transport.clearLimit())} title="Start waiting runs now; if the limit is still on, they hit it again and wait.">
+              Try now
+            </button>
           </div>
         </section>
       )}
       {(() => {
         const o = overCap(global, now);
-        return o && (
-          <section className="card notice banner" role="status">
-            <div className="row">
-              <strong>Usage cap reached</strong>
-              <span className="muted">
-                Claude {o.label} usage is at {o.pct}% (your cap: {o.cap}%). New runs wait and running goals pause before their next agent call until {clock(o.resetsAt)}.
-              </span>
-              <span className="spacer" />
-              <button onClick={() => guard(() => transport.clearLimit())} title="Forget the reading and start waiting runs now; the next agent call reads the usage again.">Try now</button>
-            </div>
-          </section>
+        return (
+          o && (
+            <section className="card notice banner" role="status">
+              <div className="row">
+                <strong>Usage cap reached</strong>
+                <span className="muted">
+                  Claude {o.label} usage is at {o.pct}% (your cap: {o.cap}%). New runs wait and running goals pause before their next agent call until{" "}
+                  {clock(o.resetsAt)}.
+                </span>
+                <span className="spacer" />
+                <button
+                  onClick={() => guard(() => transport.clearLimit())}
+                  title="Forget the reading and start waiting runs now; the next agent call reads the usage again."
+                >
+                  Try now
+                </button>
+              </div>
+            </section>
+          )
         );
       })()}
       {global.budget.limit !== null && global.budget.spent >= global.budget.limit && (
@@ -159,7 +189,8 @@ export function App() {
           <div className="row">
             <strong>Daily budget used up</strong>
             <span className="muted">
-              {usd(global.budget.spent)} of {usd(global.budget.limit)} spent today. New runs wait until tomorrow; raise or clear <em>Daily $</em> to continue now.
+              {usd(global.budget.spent)} of {usd(global.budget.limit)} spent today. New runs wait until tomorrow; raise or clear <em>Daily $</em> to continue
+              now.
             </span>
           </div>
         </section>
@@ -175,11 +206,7 @@ export function App() {
       )}
 
       {showOverview && current === OVERVIEW && (
-        <Overview
-          sessions={sessions} order={order} now={now}
-          onOpen={setActive}
-          onStop={(repo) => guard(() => transport.call("stop", { repo }))}
-        />
+        <Overview sessions={sessions} order={order} now={now} onOpen={setActive} onStop={(repo) => guard(() => transport.call("stop", { repo }))} />
       )}
 
       {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}

@@ -107,7 +107,11 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     // Read-only roles vs implementers.
     for (const c of r.calls.filter((c) => c.startsWith("call agent="))) {
       const readOnly = /agent=(architect|qa) /.test(c);
-      assert.match(c, readOnly ? /mode=default settings=\.orchestrator\/readonly-settings\.json/ : /mode=acceptEdits settings=\.orchestrator\/agent-settings\.json/, c);
+      assert.match(
+        c,
+        readOnly ? /mode=default settings=\.orchestrator\/readonly-settings\.json/ : /mode=acceptEdits settings=\.orchestrator\/agent-settings\.json/,
+        c,
+      );
     }
     assert.match(git(dir, "log", "--format=%s"), /orch: build it \(round 1\)/);
     assert.deepEqual(branches(dir), [], "checkpoint deleted on pass");
@@ -195,7 +199,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     writeConfig(dir, { checks: { boom: 'node -e "console.log(42); process.exit(3)"' } });
     const r = orch(dir, ["run", "x", "--max-rounds", "1"]);
     assert.equal(r.code, 1);
-    assert.deepEqual(r.last("checks").results.map((c) => [c.name, c.ok, c.code]), [["boom", false, 3]]);
+    assert.deepEqual(
+      r.last("checks").results.map((c) => [c.name, c.ok, c.code]),
+      [["boom", false, 3]],
+    );
     assert.equal(r.ev("task_end").find((e) => e.agent === "qa").status, "PASS");
     assert.equal(r.last("round_end").passed, false);
     assert.ok(r.last("round_end").failures.some((f) => /check "boom" failed/.test(f)));
@@ -219,7 +226,17 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const calls = r.calls.filter((c) => c.startsWith("call "));
     const capOf = (c) => [/agent=(\S+)/.exec(c)[1], Number(/ cap=(\S+)$/.exec(c)[1])];
     // architect 0.30 -> foundation fe gets the 0.25 left -> be and fe build in parallel: 0.20 left, 0.10 each -> qa 0.10.
-    assert.deepEqual(calls.map(capOf), [["architect", 0.3], ["fe", 0.25], ["be", 0.1], ["fe", 0.1], ["qa", 0.1]], calls.join("\n"));
+    assert.deepEqual(
+      calls.map(capOf),
+      [
+        ["architect", 0.3],
+        ["fe", 0.25],
+        ["be", 0.1],
+        ["fe", 0.1],
+        ["qa", 0.1],
+      ],
+      calls.join("\n"),
+    );
     assert.equal(r.last("goal_end").cost, 0.25);
   });
 
@@ -249,7 +266,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(stuck[0].power, "heavy", "the round's tier stays");
     const models = (agent) => r.calls.filter((c) => c.startsWith(`call agent=${agent} `)).map((c) => /model=(\S+)/.exec(c)[1]);
     assert.deepEqual(models("be"), ["sonnet", "sonnet", "opus"], "be: heavy impl, then max impl");
-    assert.ok(models("fe").every((m) => m === "sonnet"), `fe stays: ${models("fe")}`);
+    assert.ok(
+      models("fe").every((m) => m === "sonnet"),
+      `fe stays: ${models("fe")}`,
+    );
     assert.ok(models("architect").every((m) => m === "opus"));
     assert.deepEqual(r.ev("round_start").at(-1).agentPower, { be: "max" });
   });
@@ -278,7 +298,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const l = orch(dir, ["learn", "--power", "economy"]);
     assert.equal(l.code, 0, l.out);
     assert.ok(l.calls.includes("learn: called old=false"));
-    assert.ok(l.calls.some((c) => /^call agent=architect mode=default .* model=sonnet/.test(c)), "read-only, economy architect");
+    assert.ok(
+      l.calls.some((c) => /^call agent=architect mode=default .* model=sonnet/.test(c)),
+      "read-only, economy architect",
+    );
     assert.equal(l.last("learn_end").ok, true);
     assert.equal(l.last("learn_end").cost, 0.05);
     const raw = readFileSync(join(dir, ".orchestrator", "brief.md"), "utf8");
@@ -298,7 +321,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const s = orch(dir, ["run", "y", "--max-rounds", "1"], { FAKE_QA: "pass" });
     assert.equal(s.code, 0, s.out);
     assert.ok(s.calls.includes("architect: brief stale"), s.calls.join("\n"));
-    assert.match(readFileSync(join(dir, ".orchestrator", "brief.md"), "utf8"), new RegExp(`commit ${git(dir, "rev-parse", "HEAD~1")}|commit ${git(dir, "rev-parse", "HEAD")}`));
+    assert.match(
+      readFileSync(join(dir, ".orchestrator", "brief.md"), "utf8"),
+      new RegExp(`commit ${git(dir, "rev-parse", "HEAD~1")}|commit ${git(dir, "rev-parse", "HEAD")}`),
+    );
     const again = orch(dir, ["run", "z", "--dry-run"]);
     const staleLines = (x) => x.calls.filter((c) => c === "architect: brief stale").length; // the fake's log spans all runs in dir
     assert.equal(staleLines(again), staleLines(s), "checked once, not every goal");
@@ -315,7 +341,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.deepEqual(critic, ["critic: rejected sawPlan=true"], "one review per round, not of the revised plan");
     assert.ok(r.calls.includes("architect: got critic issues"));
     assert.equal(r.calls.filter((c) => c.startsWith("call agent=architect")).length, 2);
-    assert.ok(r.calls.some((c) => /^call agent=critic mode=default settings=\.orchestrator\/readonly-settings\.json model=opus/.test(c)), "read-only, QA's model");
+    assert.ok(
+      r.calls.some((c) => /^call agent=critic mode=default settings=\.orchestrator\/readonly-settings\.json model=opus/.test(c)),
+      "read-only, QA's model",
+    );
     assert.deepEqual(r.last("critic"), { ...r.last("critic"), round: 1, approved: false, issues: ["the plan forgets the tests"], revised: true });
     assert.ok(!r.last("plan").tasks.some((t) => t.agent === "critic"));
 
@@ -351,7 +380,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     for (const a of adds) assert.equal((await a.done).code, 0);
     const q = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
     assert.equal(q.length, 6);
-    assert.deepEqual(q.map((i) => i.id).sort((a, b) => a - b), [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(
+      q.map((i) => i.id).sort((a, b) => a - b),
+      [1, 2, 3, 4, 5, 6],
+    );
     assert.ok(!existsSync(join(dir, ".orchestrator", "queue.lock")));
 
     writeFileSync(join(dir, ".orchestrator", "queue.json"), '[{"id": 1, "goal": "half wri');
@@ -398,7 +430,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const r = await loop.done;
     assert.equal(r.code, 0, r.out);
     assert.match(r.out, /stop requested: not starting another goal/);
-    assert.deepEqual(queue().map((i) => i.status), ["done", "pending"]);
+    assert.deepEqual(
+      queue().map((i) => i.status),
+      ["done", "pending"],
+    );
     assert.ok(!existsSync(join(dir, ".orchestrator", "stop-after-goal")), "the request is used up");
     assert.ok(r.out.includes('"type":"loop_stop"'));
   });
@@ -435,7 +470,11 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--max-cost-total", "0.4"], { FAKE_QA: "pass" });
     assert.equal(r.code, 0, r.out);
     const q = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
-    assert.deepEqual(q.map((i) => i.status), ["done", "failed", "pending"], r.out);
+    assert.deepEqual(
+      q.map((i) => i.status),
+      ["done", "failed", "pending"],
+      r.out,
+    );
     assert.equal(r.last("loop_stop").reason, "budget");
     assert.ok(r.last("loop_stop").spent > 0.25, "the second goal's spending counts too");
     assert.match(r.out, /loop budget of \$0\.40 used up/);
@@ -455,7 +494,15 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_FAIL_AGENT: "fe" });
     assert.equal(r.code, 1);
     const ends = r.ev("task_end");
-    assert.deepEqual(ends.map((e) => [e.agent, e.phase, e.status]), [["fe", "foundation", "ERROR"], ["be", "build", "SKIPPED"], ["fe", "build", "SKIPPED"], ["qa", "verify", "SKIPPED"]]);
+    assert.deepEqual(
+      ends.map((e) => [e.agent, e.phase, e.status]),
+      [
+        ["fe", "foundation", "ERROR"],
+        ["be", "build", "SKIPPED"],
+        ["fe", "build", "SKIPPED"],
+        ["qa", "verify", "SKIPPED"],
+      ],
+    );
     assert.ok(!r.calls.some((c) => c.startsWith("call agent=be ")), "build agents never called");
   });
 
@@ -465,15 +512,24 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.code, 1);
     assert.match(r.last("goal_end").error, /budget of \$0\.12 used up/);
     assert.match(r.out, /Stopped: budget/);
-    assert.ok(r.calls.some((c) => / cap=0\.12$/.test(c)), "remaining budget passed as --max-budget-usd");
+    assert.ok(
+      r.calls.some((c) => / cap=0\.12$/.test(c)),
+      "remaining budget passed as --max-budget-usd",
+    );
   });
 
   test("stuck rounds move up a tier, then stop the goal", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "5", "--power", "balanced"], { FAKE_QA: "fail", FAKE_NOWRITE: "1" });
     assert.equal(r.code, 1);
-    assert.deepEqual(r.ev("round_start").map((e) => e.power), ["balanced", "heavy"]);
-    assert.deepEqual(r.ev("stuck").map((e) => e.action), ["escalate", "stop"]);
+    assert.deepEqual(
+      r.ev("round_start").map((e) => e.power),
+      ["balanced", "heavy"],
+    );
+    assert.deepEqual(
+      r.ev("stuck").map((e) => e.action),
+      ["escalate", "stop"],
+    );
     assert.ok(r.calls.includes("architect: got stuck note"));
   });
 
@@ -524,10 +580,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--usage-cap", "5h=80,week=95", "--on-limit", "stop"], { FAKE_USAGE: "0.9,0.3" });
     assert.equal(r.code, 3, r.out);
-    assert.deepEqual(
-      { five: r.last("usage").fiveHour.pct, week: r.last("usage").week.pct },
-      { five: 90, week: 30 },
-    );
+    assert.deepEqual({ five: r.last("usage").fiveHour.pct, week: r.last("usage").week.pct }, { five: 90, week: 30 });
     assert.ok(r.last("usage").fiveHour.resetsAt > Date.now());
     assert.equal(r.calls.filter((c) => c.startsWith("call ")).length, 1, "only the architect ran");
     assert.match(r.last("goal_end").error, /5-hour usage at 90% \(cap 80%\)/);
@@ -558,9 +611,14 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const list = orch(dir, ["plugins", "--json", "--details"]);
     assert.equal(list.code, 0, list.out);
     const plugins = JSON.parse(list.out.split(/\r?\n/).find((l) => l.startsWith("[")));
-    assert.deepEqual(plugins.map((p) => [p.id, p.enabled, p.tokens]), [
-      ["caveman@caveman", true, 1234], ["superpowers@claude-plugins-official", true, 1234], ["old@market", false, 1234],
-    ]);
+    assert.deepEqual(
+      plugins.map((p) => [p.id, p.enabled, p.tokens]),
+      [
+        ["caveman@caveman", true, 1234],
+        ["superpowers@claude-plugins-official", true, 1234],
+        ["old@market", false, 1234],
+      ],
+    );
     const settings = (file) => JSON.parse(readFileSync(join(dir, ".orchestrator", file), "utf8"));
 
     let r = orch(dir, ["run", "x", "--max-rounds", "1", "--dry-run"]);
@@ -583,7 +641,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.deepEqual(settings("agent-settings.json").enabledPlugins, { "caveman@caveman": false, "superpowers@claude-plugins-official": false });
     assert.equal(settings("agent-settings.json").disableAllHooks, undefined);
 
-    for (const bad of [["--plugins", "maybe"], ["--disable-plugins", "a b;rm"]]) {
+    for (const bad of [
+      ["--plugins", "maybe"],
+      ["--disable-plugins", "a b;rm"],
+    ]) {
       const b = orch(dir, ["run", "x", "--dry-run", ...bad]);
       assert.notEqual(b.code, 0, bad.join(" "));
     }
@@ -614,7 +675,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(orch(dir, ["status"]).out, /#1 \[done\] goal one[\s\S]*#2 \[done\] goal two/);
     assert.equal(branches(dir, "orchestrator/interrupted-*").length, 1);
     const queue = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
-    assert.ok(queue.every((i) => !i.note), "waiting note cleared");
+    assert.ok(
+      queue.every((i) => !i.note),
+      "waiting note cleared",
+    );
   });
 
   test("fast path: one dev call, judged by the checks, no architect or QA", () => {
@@ -622,11 +686,17 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     writeConfig(dir, { checks: { ok: 'node -e "process.exit(0)"' } });
     const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "2"]);
     assert.equal(r.code, 0, r.out);
-    assert.deepEqual(r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]), ["dev"]);
+    assert.deepEqual(
+      r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]),
+      ["dev"],
+    );
     assert.equal(r.ev("round_start")[0].mode, "direct");
     assert.equal(r.ev("architect_start").length, 0);
     assert.equal(r.last("goal_end").cost, 0.05);
-    assert.match(r.calls.find((c) => c.startsWith("call agent=dev")), /mode=acceptEdits/);
+    assert.match(
+      r.calls.find((c) => c.startsWith("call agent=dev")),
+      /mode=acceptEdits/,
+    );
     assert.ok(existsSync(join(dir, "src", "direct.txt")));
   });
 
@@ -636,7 +706,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     writeConfig(dir, { checks: { api: "node -e \"process.exit(require('fs').existsSync('src/api.ts') ? 0 : 1)\"" } });
     const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "3"]);
     assert.equal(r.code, 0, r.out);
-    assert.deepEqual(r.ev("round_start").map((e) => e.mode ?? "full"), ["direct", "full"]);
+    assert.deepEqual(
+      r.ev("round_start").map((e) => e.mode ?? "full"),
+      ["direct", "full"],
+    );
     assert.equal(r.ev("round_end")[0].passed, false);
     assert.ok(r.ev("round_end")[0].failures.some((f) => /check "api" failed/.test(f)));
     const agents = r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]);
@@ -647,7 +720,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "1"]);
     assert.equal(r.code, 0, r.out);
-    assert.deepEqual(r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]), ["dev", "qa"]);
+    assert.deepEqual(
+      r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]),
+      ["dev", "qa"],
+    );
   });
 
   test("usage limit in run (default wait): work set aside, waits, retries and passes", () => {
@@ -672,7 +748,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.code, 3, r.out);
     assert.equal(r.ev("waiting").length, 0);
     const queue = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
-    assert.deepEqual(queue.map((i) => i.status), ["pending", "pending"]);
+    assert.deepEqual(
+      queue.map((i) => i.status),
+      ["pending", "pending"],
+    );
     assert.match(queue[0].note, /usage limit: stopped/);
     assert.equal(branches(dir, "orchestrator/interrupted-*").length, 1);
     assert.equal(dirty(dir), "");
@@ -716,7 +795,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     });
     assert.equal(r.code, 1);
     const rounds = r.ev("round_start");
-    assert.deepEqual(rounds.map((e) => e.power), ["economy", "balanced"]);
+    assert.deepEqual(
+      rounds.map((e) => e.power),
+      ["economy", "balanced"],
+    );
     assert.equal(rounds[0].models.impl, "haiku");
     assert.equal(rounds[1].models.impl, "sonnet", "alias moved up with the tier");
     const beModels = r.calls.filter((c) => c.startsWith("call agent=be ")).map((c) => /model=(\S+)/.exec(c)[1]);
@@ -753,10 +835,13 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const ok = orch(dir, ["doctor", "--json"]);
     assert.equal(ok.code, 0, ok.out);
     const findings = JSON.parse(ok.out.trim().split(/\r?\n/).at(-1));
-    assert.deepEqual(
-      Object.fromEntries(findings.map((f) => [f.name, f.level])),
-      { node: "ok", claude: "ok", "claude login": "ok", repo: "ok", checks: "warn" },
-    );
+    assert.deepEqual(Object.fromEntries(findings.map((f) => [f.name, f.level])), {
+      node: "ok",
+      claude: "ok",
+      "claude login": "ok",
+      repo: "ok",
+      checks: "warn",
+    });
     writeFileSync(join(dir, "x.txt"), "x");
     const bad = orch(dir, ["doctor"]);
     assert.equal(bad.code, 1);

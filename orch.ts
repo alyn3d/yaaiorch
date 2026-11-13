@@ -1,7 +1,20 @@
 #!/usr/bin/env tsx
 // YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root. Usage: see USAGE below.
 import { spawn, spawnSync, execFileSync, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, unlinkSync, openSync, closeSync, statSync, utimesSync, realpathSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  openSync,
+  closeSync,
+  statSync,
+  utimesSync,
+  realpathSync,
+} from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, basename, dirname, resolve, relative, isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
@@ -99,7 +112,10 @@ function checkModel(name: string, where: string) {
 /** "architect=opus,qa=sonnet,be=claude-opus-5-5": role keys set a role, any other key names an agent. */
 function parseModelSpec(spec: string): Models {
   const m: Models = { roles: {}, agents: {} };
-  for (const part of spec.split(",").map((p) => p.trim()).filter(Boolean)) {
+  for (const part of spec
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)) {
     const [key, value, ...rest] = part.split("=").map((s) => s.trim());
     if (!key || !value || rest.length) throw new Error(`--model: expected key=model, got "${part}"`);
     checkModel(value, "--model");
@@ -228,7 +244,13 @@ const LOCK_STALE_MS = 2 * 60_000;
  */
 function acquireRunLock(cmd: string) {
   mkdirSync(DIR, { recursive: true });
-  const me: LockInfo = { pid: process.pid, host: hostname(), cmd, since: Date.now(), id: `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+  const me: LockInfo = {
+    pid: process.pid,
+    host: hostname(),
+    cmd,
+    since: Date.now(),
+    id: `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  };
   for (let attempt = 1; ; attempt++) {
     try {
       const fd = openSync(RUN_LOCK, "wx");
@@ -253,7 +275,9 @@ function acquireRunLock(cmd: string) {
             `since ${holder.since ? new Date(holder.since).toLocaleString() : "?"}). Wait for it, stop it, or delete ${RUN_LOCK} if you are sure it is gone.`,
           { cause: e },
         );
-      console.warn(`taking over a stale lock (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}): ${sameHost ? "its process is gone" : "not touched for 2 minutes"}`);
+      console.warn(
+        `taking over a stale lock (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}): ${sameHost ? "its process is gone" : "not touched for 2 minutes"}`,
+      );
       try {
         unlinkSync(RUN_LOCK);
       } catch {
@@ -442,9 +466,7 @@ function readJsonFile<T>(path: string, fallback: T): T {
 function loadChecks(cfg: Config): Record<string, string> {
   if (cfg.checks) return cfg.checks;
   const scripts = readJsonFile<{ scripts?: Record<string, string> }>("package.json", {}).scripts ?? {};
-  return Object.fromEntries(
-    CHECK_SCRIPTS.filter((s) => scripts[s] && !/no test specified/.test(scripts[s])).map((s) => [s, `npm run ${s}`]),
-  );
+  return Object.fromEntries(CHECK_SCRIPTS.filter((s) => scripts[s] && !/no test specified/.test(scripts[s])).map((s) => [s, `npm run ${s}`]));
 }
 
 /**
@@ -500,7 +522,11 @@ async function pluginTokens(plugins: Plugin[]): Promise<void> {
 
 /** Settings for the agents' --settings file: plugins switched off and/or hooks disabled. */
 function pluginSettings(c: PluginChoice): { enabledPlugins?: Record<string, false>; disableAllHooks?: true } {
-  const ids = c.off ? listPlugins().filter((p) => p.enabled).map((p) => p.id) : c.disable;
+  const ids = c.off
+    ? listPlugins()
+        .filter((p) => p.enabled)
+        .map((p) => p.id)
+    : c.disable;
   return {
     ...(ids.length ? { enabledPlugins: Object.fromEntries(ids.map((id) => [id, false as const])) } : {}),
     ...(c.hooks ? {} : { disableAllHooks: true as const }),
@@ -510,7 +536,13 @@ function pluginSettings(c: PluginChoice): { enabledPlugins?: Record<string, fals
 function parsePlugins(values: Record<string, string | boolean | undefined>, cfg: Config["plugins"]): PluginChoice {
   const mode = String(values.plugins ?? (cfg?.off ? "off" : "on"));
   if (mode !== "on" && mode !== "off") throw new Error(`--plugins must be on or off, got "${mode}"`);
-  const fromCli = typeof values["disable-plugins"] === "string" ? values["disable-plugins"].split(",").map((x) => x.trim()).filter(Boolean) : [];
+  const fromCli =
+    typeof values["disable-plugins"] === "string"
+      ? values["disable-plugins"]
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean)
+      : [];
   const disable = [...new Set([...(cfg?.disable ?? []), ...fromCli])];
   for (const id of disable)
     if (typeof id !== "string" || !PLUGIN_ID_RE.test(id)) throw new Error(`--disable-plugins: invalid plugin id "${id}" (see "orch plugins")`);
@@ -603,7 +635,10 @@ function parseUsageCap(spec: string, cfg: Config["usageCap"]): UsageCap {
     cap[w] = n;
   };
   for (const [k, v] of Object.entries(cfg ?? {})) set(k, v, "config.json usageCap");
-  for (const part of spec.split(",").map((p) => p.trim()).filter(Boolean)) {
+  for (const part of spec
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)) {
     const [k, v, ...rest] = part.split("=").map((x) => x.trim());
     if (!k || !v || rest.length) throw new Error(`--usage-cap: expected 5h=PERCENT or week=PERCENT, got "${part}"`);
     set(k, v, "--usage-cap");
@@ -614,7 +649,8 @@ function parseUsageCap(spec: string, cfg: Config["usageCap"]): UsageCap {
 /** The first window whose reading is at or over its cap and has not reset yet. */
 function overCap(cap: UsageCap): { window: Window; pct: number; resetsAt: number } | null {
   for (const window of Object.keys(WINDOWS) as Window[]) {
-    const u = usage[window], c = cap[window];
+    const u = usage[window],
+      c = cap[window];
     if (u && c !== undefined && u.pct >= c && u.resetsAt > Date.now()) return { window, ...u };
   }
   return null;
@@ -668,7 +704,14 @@ function nextWallTime(h: number, min: number, zone: string | undefined, now = Da
   if (zone) {
     try {
       const fmt = new Intl.DateTimeFormat("en-US", {
-        timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+        timeZone: zone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
       });
       offset = (t: number) => {
         const p = Object.fromEntries(fmt.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
@@ -717,7 +760,8 @@ function killTree(p: ChildProcess) {
  * API overload, server errors and dropped connections, as the CLI reports them. Matched against the CLI's
  * own error text only (not task output), and never the usage limit, the budget or our agent timeout.
  */
-const TRANSIENT_RE = /API Error: (?:5\d\d|429)\b|overloaded_error|\bapi_error\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|fetch failed|Connection error|Request timed out/i;
+const TRANSIENT_RE =
+  /API Error: (?:5\d\d|429)\b|overloaded_error|\bapi_error\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|fetch failed|Connection error|Request timed out/i;
 
 async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
   for (let attempt = 1; ; attempt++) {
@@ -754,8 +798,7 @@ function parseCliOutput(out: string): CliResult | undefined {
 
 async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
   const { budget } = ctx;
-  if (budget.cap !== undefined && budget.spent >= budget.cap)
-    throw new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`);
+  if (budget.cap !== undefined && budget.spent >= budget.cap) throw new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`);
   const ceiling = await reserve(budget);
   let released = false;
   /** Give the reservation back and count what the call cost (once, however the call ends). */
@@ -770,11 +813,16 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
       "-p",
       ...(agent.builtin ? ["--agents", BUILTIN_FILE] : []),
       ...(existsSync(AGENT_SETTINGS) ? ["--settings", readOnly ? READONLY_SETTINGS : AGENT_SETTINGS] : []),
-      "--agent", agent.name,
-      "--model", model,
+      "--agent",
+      agent.name,
+      "--model",
+      model,
       // stream-json (needs --verbose) also carries rate_limit_event lines with the subscription's usage.
-      "--output-format", "stream-json", "--verbose",
-      "--permission-mode", readOnly ? "default" : "acceptEdits",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      readOnly ? "default" : "acceptEdits",
       // This call's reserved share. The CLI checks it after each turn, so a call can overshoot it a little.
       ...(ceiling !== undefined ? ["--max-budget-usd", (Math.floor(ceiling * 100 + 1e-6) / 100).toFixed(2)] : []),
     ];
@@ -804,8 +852,7 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
         const limit = ctx.timeoutMs >= 60_000 ? `${Math.round(ctx.timeoutMs / 60_000)} min` : `${Math.round(ctx.timeoutMs / 1000)} s`;
         return reject(new Error(`${agent.name} timed out after ${limit}`));
       }
-      if (r?.subtype === "error_max_budget_usd")
-        return reject(new BudgetExceeded(`budget of ${usd(budget.cap ?? 0)} used up (${usd(budget.spent)} spent)`));
+      if (r?.subtype === "error_max_budget_usd") return reject(new BudgetExceeded(`budget of ${usd(budget.cap ?? 0)} used up (${usd(budget.spent)} spent)`));
       const failed = !r || r.is_error || code !== 0;
       const limit = failed && usageLimit(typeof r?.result === "string" ? r.result : out.slice(0, 2000));
       if (limit) return reject(limit);
@@ -825,7 +872,8 @@ function extractJson<T>(text: string): T {
   const fenced = /```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/.exec(text)?.[1];
   for (const c of [fenced, text]) {
     if (!c) continue;
-    const s = c.indexOf("{"), e = c.lastIndexOf("}");
+    const s = c.indexOf("{"),
+      e = c.lastIndexOf("}");
     if (s < 0 || e < s) continue;
     try {
       return JSON.parse(c.slice(s, e + 1)) as T;
@@ -838,7 +886,10 @@ function extractJson<T>(text: string): T {
 
 /** Compare paths the way the file system does: ./a, a\b and A/B (on Windows) are the same file. */
 const normPath = (f: string) => {
-  const p = f.trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+  const p = f
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^(\.\/)+/, "");
   return process.platform === "win32" ? p.toLowerCase() : p;
 };
 
@@ -852,7 +903,10 @@ function badPath(f: string): string | null {
   // eslint-disable-next-line no-control-regex -- matching control characters is the point
   if (/[\u0000-\u001f]/.test(p)) return "contains control characters";
   if (isAbsolute(p) || /^[A-Za-z]:/.test(p) || /^[\\/]/.test(p) || p.startsWith("~")) return "must be a path relative to the repo root";
-  const parts = p.replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
+  const parts = p
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((x) => x && x !== ".");
   if (parts.includes("..")) return "must not leave the repo (..)";
   const first = parts[0]?.toLowerCase();
   if (first === ".git" || first === DIR) return `is inside ${first}/, which agents must not touch`;
@@ -862,7 +916,8 @@ function badPath(f: string): string | null {
     let probe = resolve(root, ...parts);
     while (!existsSync(probe) && dirname(probe) !== probe) probe = dirname(probe);
     const rel = relative(root, realpathSync(probe));
-    if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) return "resolves outside the repo (through a link)";
+    if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel))
+      return "resolves outside the repo (through a link)";
   } catch {
     /* unreadable path: the agent will fail on it anyway */
   }
@@ -898,7 +953,12 @@ function asVerdict(v: Verdict): Verdict {
   if (typeof v?.passed !== "boolean") throw new Error('verdict has no boolean "passed"');
   const failures = Array.isArray(v.failures) ? v.failures.map(String) : [];
   if (!v.passed && !failures.length) failures.push("QA failed without listing failures");
-  const notes = Array.isArray(v.notes) ? v.notes.filter((n) => typeof n === "string" && n.trim()).map((n) => n.trim().slice(0, 300)).slice(0, 3) : [];
+  const notes = Array.isArray(v.notes)
+    ? v.notes
+        .filter((n) => typeof n === "string" && n.trim())
+        .map((n) => n.trim().slice(0, 300))
+        .slice(0, 3)
+    : [];
   return { passed: v.passed, failures, ...(notes.length ? { notes } : {}) };
 }
 
@@ -951,8 +1011,7 @@ function prepareGit(): string {
   }
   if (!hasCommits()) throw new Error("the git repo has no commits yet; make an initial commit first");
   const dirty = dirtyFiles();
-  if (dirty)
-    throw new Error(`working tree has uncommitted changes; commit or stash them first, or run "orch rollback" after a stopped run:\n${dirty}`);
+  if (dirty) throw new Error(`working tree has uncommitted changes; commit or stash them first, or run "orch rollback" after a stopped run:\n${dirty}`);
   const cp = `${BRANCH_PREFIX}checkpoint-${Date.now()}`;
   git("branch", cp);
   console.log(`checkpoint: ${cp} (roll back with: orch rollback)`);
@@ -1069,8 +1128,7 @@ function finishGit(cp: string, goal: string, passed: boolean, park: boolean, int
   }
 }
 
-const checkpoints = () =>
-  git("branch", "--list", `${BRANCH_PREFIX}checkpoint-*`, "--format=%(refname:short)").split("\n").filter(Boolean).sort();
+const checkpoints = () => git("branch", "--list", `${BRANCH_PREFIX}checkpoint-*`, "--format=%(refname:short)").split("\n").filter(Boolean).sort();
 
 /** Undo a goal: reset the current branch to its checkpoint, keeping the discarded work on a branch. */
 function rollback(branch?: string) {
@@ -1125,7 +1183,11 @@ function doctor(): Finding[] {
   const ver = claudeSync(["--version"]);
   const claudeOk = ver.status === 0;
   const via = claudeBin().shell ? ` (through ${claudeBin().via})` : "";
-  f.push({ name: "claude", level: claudeOk ? "ok" : "fail", detail: claudeOk ? `${ver.stdout.trim()}${via}` : `"${CLAUDE} --version" failed${via}; install Claude Code or set CLAUDE_BIN` });
+  f.push({
+    name: "claude",
+    level: claudeOk ? "ok" : "fail",
+    detail: claudeOk ? `${ver.stdout.trim()}${via}` : `"${CLAUDE} --version" failed${via}; install Claude Code or set CLAUDE_BIN`,
+  });
   if (claudeOk) {
     const auth = claudeSync(["auth", "status", "--json"]);
     let loggedIn: boolean | undefined;
@@ -1135,9 +1197,11 @@ function doctor(): Finding[] {
       /* older CLI or fake: unknown */
     }
     f.push(
-      loggedIn === true ? { name: "claude login", level: "ok", detail: "logged in" }
-      : loggedIn === false ? { name: "claude login", level: "fail", detail: 'not logged in; run "claude auth login"' }
-      : { name: "claude login", level: "warn", detail: "could not read login status" },
+      loggedIn === true
+        ? { name: "claude login", level: "ok", detail: "logged in" }
+        : loggedIn === false
+          ? { name: "claude login", level: "fail", detail: 'not logged in; run "claude auth login"' }
+          : { name: "claude login", level: "warn", detail: "could not read login status" },
     );
   }
 
@@ -1148,8 +1212,13 @@ function doctor(): Finding[] {
   else {
     const dirty = dirtyFiles();
     const stale = checkpoints();
-    f.push({ name: "repo", level: dirty ? "fail" : "ok", detail: dirty ? `uncommitted changes (${dirty.split("\n").length}); commit, stash or "orch rollback"` : "clean git repo" });
-    if (stale.length) f.push({ name: "checkpoints", level: "warn", detail: `${stale.length} leftover checkpoint(s), latest ${stale.at(-1)}: "orch rollback" or "orch prune"` });
+    f.push({
+      name: "repo",
+      level: dirty ? "fail" : "ok",
+      detail: dirty ? `uncommitted changes (${dirty.split("\n").length}); commit, stash or "orch rollback"` : "clean git repo",
+    });
+    if (stale.length)
+      f.push({ name: "checkpoints", level: "warn", detail: `${stale.length} leftover checkpoint(s), latest ${stale.at(-1)}: "orch rollback" or "orch prune"` });
   }
   try {
     const checks = loadChecks(readJsonFile<Config>(CONFIG_FILE, {}));
@@ -1166,13 +1235,24 @@ const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 /** `fast`: round 1 is one generalist agent doing the whole goal, verified by the checks; later rounds are the full loop. */
 /** `onLimit`: on a Claude usage limit, wait for the reset and retry the goal (default), or stop. */
 type Opts = {
-  maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean;
+  maxRounds: number;
+  power: Power;
+  dryRun: boolean;
+  park: boolean;
+  agentTimeoutMs: number;
+  maxCost?: number;
+  fast: boolean;
   /** Files changed outside every task's list fail the round (else QA is told). */
   strictFiles: boolean;
   /** loop: spending cap over all goals of this loop run. */
   maxCostTotal?: number;
-  models: Models; onLimit: "wait" | "stop"; usageCap: UsageCap; plugins: PluginChoice; brief: boolean;
-  notes: boolean; critic: boolean;
+  models: Models;
+  onLimit: "wait" | "stop";
+  usageCap: UsageCap;
+  plugins: PluginChoice;
+  brief: boolean;
+  notes: boolean;
+  critic: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1201,8 +1281,17 @@ async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx): Promi
  * `brief`: the project brief if one exists, `""` to ask for one, `null` when briefs are off.
  */
 async function makePlan(
-  architect: Entry, workers: Entry[], skills: Entry[], goal: string, failures: string[], note: string, model: string, ctx: RunCtx,
-  previous = "", brief: string | null = null, notes = "",
+  architect: Entry,
+  workers: Entry[],
+  skills: Entry[],
+  goal: string,
+  failures: string[],
+  note: string,
+  model: string,
+  ctx: RunCtx,
+  previous = "",
+  brief: string | null = null,
+  notes = "",
 ) {
   const base =
     `Goal: ${goal}\n\nAvailable agents:\n${workers.map((a) => `- ${a.name}: ${a.description}`).join("\n")}\n\n` +
@@ -1263,7 +1352,16 @@ function directPlan(goal: string, checks: Record<string, string>, brief: string 
 
 /** Failures compared across rounds: case, spacing and numbers (timings, line counts) ignored. */
 const failureKey = (fs: string[]) =>
-  fs.map((f) => f.toLowerCase().replace(/\d+(\.\d+)?/g, "#").replace(/\s+/g, " ").trim()).sort().join("\n");
+  fs
+    .map((f) =>
+      f
+        .toLowerCase()
+        .replace(/\d+(\.\d+)?/g, "#")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .sort()
+    .join("\n");
 
 type LastRun = { goal: string; status: "running" | "passed" | "failed"; checkpoint?: string; cost: number; state: unknown[] };
 
@@ -1335,7 +1433,12 @@ async function learn(o: Opts) {
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   const checks = loadChecks(cfg);
   writeAgentSettings(cfg, checks, o.plugins);
-  const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 }, timeoutMs: o.agentTimeoutMs, usageCap: o.usageCap, onLimit: o.onLimit };
+  const ctx: RunCtx = {
+    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+    timeoutMs: o.agentTimeoutMs,
+    usageCap: o.usageCap,
+    onLimit: o.onLimit,
+  };
   const old = readBrief();
   const commands = Object.entries(checks).map(([n, c]) => `${n}: ${c}`);
   const prompt =
@@ -1413,7 +1516,10 @@ async function critique(critic: Entry, goal: string, plan: Plan, brief: string |
 /** What a round planned, how each task ended and what changed: the next round's architect builds on it. */
 function previousRound(round: number, plan: Plan, statuses: Map<Task, string>, cp: string): string {
   const tasks = plan.tasks
-    .map((t) => `- [${t.phase}] ${t.agent} -> ${statuses.get(t) ?? "not run"}: ${t.task.replace(/\s+/g, " ").slice(0, 200)}${t.files?.length ? ` (files: ${t.files.join(", ")})` : ""}`)
+    .map(
+      (t) =>
+        `- [${t.phase}] ${t.agent} -> ${statuses.get(t) ?? "not run"}: ${t.task.replace(/\s+/g, " ").slice(0, 200)}${t.files?.length ? ` (files: ${t.files.join(", ")})` : ""}`,
+    )
     .join("\n");
   const diff = cp ? diffSummary(cp) : "";
   return (
@@ -1430,8 +1536,24 @@ let lastGoalCost = 0;
 /** QA's notes for the goal being run, written to notes.md when it ends. */
 let goalNotes: string[] = [];
 async function runGoal(goal: string, o: Opts): Promise<boolean> {
-  emit("goal_start", { goal, maxRounds: o.maxRounds, dryRun: o.dryRun, power: o.power, maxCost: o.maxCost, models: o.models, onLimit: o.onLimit, usageCap: o.usageCap, plugins: o.plugins, critic: o.critic });
-  const ctx: RunCtx = { budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 }, timeoutMs: o.agentTimeoutMs, usageCap: o.usageCap, onLimit: o.onLimit };
+  emit("goal_start", {
+    goal,
+    maxRounds: o.maxRounds,
+    dryRun: o.dryRun,
+    power: o.power,
+    maxCost: o.maxCost,
+    models: o.models,
+    onLimit: o.onLimit,
+    usageCap: o.usageCap,
+    plugins: o.plugins,
+    critic: o.critic,
+  });
+  const ctx: RunCtx = {
+    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+    timeoutMs: o.agentTimeoutMs,
+    usageCap: o.usageCap,
+    onLimit: o.onLimit,
+  };
   const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
   goalNotes = [];
   let cp = "";
@@ -1454,7 +1576,9 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
       emit("usage_limit", { message: e.message, resetAt: e.resetAt });
     }
     emit("goal_end", {
-      passed: false, error: msg(e), cost: round4(ctx.budget.spent),
+      passed: false,
+      error: msg(e),
+      cost: round4(ctx.budget.spent),
       ...(e instanceof UsageLimit ? { usageLimit: true, resetAt: e.resetAt } : {}),
     });
     throw e;
@@ -1484,8 +1608,16 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const checks = loadChecks(cfg);
   writeAgentSettings(cfg, checks, o.plugins);
   if (o.plugins.off || o.plugins.disable.length || !o.plugins.hooks)
-    console.log(`plugins: ${o.plugins.off ? "all off" : o.plugins.disable.length ? `off: ${o.plugins.disable.join(", ")}` : "on"}${o.plugins.hooks ? "" : "; hooks off"}`);
-  console.log(`checks: ${Object.entries(checks).map(([n, c]) => `${n} (${c})`).join(", ") || "none configured"}`);
+    console.log(
+      `plugins: ${o.plugins.off ? "all off" : o.plugins.disable.length ? `off: ${o.plugins.disable.join(", ")}` : "on"}${o.plugins.hooks ? "" : "; hooks off"}`,
+    );
+  console.log(
+    `checks: ${
+      Object.entries(checks)
+        .map(([n, c]) => `${n} (${c})`)
+        .join(", ") || "none configured"
+    }`,
+  );
 
   let power = o.power;
   let models = o.models;
@@ -1505,7 +1637,10 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const direct = o.fast && round === 1 && byName.has("dev");
     console.log(`\n=== round ${round}/${o.maxRounds} (${power}${direct ? ", direct attempt" : ""}) ===`);
     emit("round_start", {
-      round, power, models: effectiveModels(power, models), ...(direct ? { mode: "direct" } : {}),
+      round,
+      power,
+      models: effectiveModels(power, models),
+      ...(direct ? { mode: "direct" } : {}),
       ...(agentPower.size ? { agentPower: Object.fromEntries(agentPower) } : {}),
     });
     let plan: Plan;
@@ -1529,7 +1664,19 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         if (!review.approved) {
           console.warn(`plan critic rejected the plan:\n- ${review.issues.join("\n- ")}`);
           const why = `A reviewer rejected your plan for this round:\n- ${review.issues.join("\n- ")}\nRevise the plan to fix these.`;
-          const again = await makePlan(architect, workers, skills, goal, failures, [note, why].filter(Boolean).join("\n\n"), architectModel, ctx, previous, brief, notes);
+          const again = await makePlan(
+            architect,
+            workers,
+            skills,
+            goal,
+            failures,
+            [note, why].filter(Boolean).join("\n\n"),
+            architectModel,
+            ctx,
+            previous,
+            brief,
+            notes,
+          );
           plan = again.plan;
           planCost += again.cost;
           revised = true;
@@ -1545,7 +1692,10 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
     const idOf = new Map(plan.tasks.map((t, id) => [t, id]));
     const statuses = new Map<Task, string>();
-    const skip = (t: Task) => (statuses.set(t, "SKIPPED"), emit("task_end", { round, id: idOf.get(t)!, agent: t.agent, phase: t.phase, status: "SKIPPED", touched: [] }));
+    const skip = (t: Task) => (
+      statuses.set(t, "SKIPPED"),
+      emit("task_end", { round, id: idOf.get(t)!, agent: t.agent, phase: t.phase, status: "SKIPPED", touched: [] })
+    );
     /** Never throws: a failed task becomes a failure for the next round, and its siblings run to the end. */
     const exec = async (t: Task): Promise<Result> => {
       const id = idOf.get(t)!;
@@ -1592,10 +1742,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
     // Ownership: files changed outside every task's list. Plans without file lists (fast path) are exempt.
     const owned = new Set(plan.tasks.flatMap((t) => t.files ?? []).map(normPath));
-    const unowned =
-      cp && owned.size && !foundationFailed
-        ? changedFiles().filter((f) => !owned.has(normPath(f)) && !changedBefore.has(normPath(f)))
-        : [];
+    const unowned = cp && owned.size && !foundationFailed ? changedFiles().filter((f) => !owned.has(normPath(f)) && !changedBefore.has(normPath(f))) : [];
     if (unowned.length) {
       console.warn(`files changed outside every task's list: ${unowned.join(", ")}`);
       emit("unowned", { round, files: unowned, strict: o.strictFiles });
@@ -1611,7 +1758,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
     const verdicts: Verdict[] = [];
     let checkResults: Check[] = [];
-    if (foundationFailed) verify.forEach(skip); // building on a broken foundation is pointless to verify
+    if (foundationFailed)
+      verify.forEach(skip); // building on a broken foundation is pointless to verify
     else {
       checkResults = runChecks(checks);
       emit("checks", { round, results: checkResults.map(({ name, command, ok, code, ms }) => ({ name, command, ok, code, ms })) });
@@ -1624,11 +1772,26 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         const id = idOf.get(t)!;
         emit("task_start", { round, id, agent: t.agent, phase: t.phase });
         try {
-          const r = await run(byName.get(t.agent)!, modelFor(power, models, "qa", t.agent), `${ctx.repoContext ?? ""}Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`, ctx, true);
+          const r = await run(
+            byName.get(t.agent)!,
+            modelFor(power, models, "qa", t.agent),
+            `${ctx.repoContext ?? ""}Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`,
+            ctx,
+            true,
+          );
           const v = asVerdict(extractJson<Verdict>(r.text));
           if (v.notes) goalNotes.push(...v.notes);
           statuses.set(t, v.passed ? "PASS" : "FAIL");
-          emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: v.passed ? "PASS" : "FAIL", failures: v.failures, touched: [], cost: round4(r.cost) });
+          emit("task_end", {
+            round,
+            id,
+            agent: t.agent,
+            phase: t.phase,
+            status: v.passed ? "PASS" : "FAIL",
+            failures: v.failures,
+            touched: [],
+            cost: round4(r.cost),
+          });
           verdicts.push(v);
         } catch (e) {
           emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: "ERROR", error: msg(e), touched: [] });
@@ -1639,16 +1802,15 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     }
 
     // Exit codes beat opinions: a failed check fails the round whatever QA says.
-    const checkFailures = checkResults
-      .filter((c) => !c.ok)
-      .map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
+    const checkFailures = checkResults.filter((c) => !c.ok).map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
     // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
     const verifiedBy = verify.length ? verdicts.length > 0 && verdicts.every((v) => v.passed) : checkResults.length > 0;
     const passed = !errors.length && !checkFailures.length && verifiedBy && !(o.strictFiles && unowned.length);
     const prevKey = failureKey(failures);
-    const ownershipFailures = o.strictFiles && unowned.length
-      ? [`files changed outside every task's file list: ${unowned.join(", ")}. Give them to a task in the plan, or have their changes reverted.`]
-      : [];
+    const ownershipFailures =
+      o.strictFiles && unowned.length
+        ? [`files changed outside every task's file list: ${unowned.join(", ")}. Give them to a task in the plan, or have their changes reverted.`]
+        : [];
     failures = [...errors, ...checkFailures, ...ownershipFailures, ...verdicts.flatMap((v) => v.failures)];
     const roundCost = round4(ctx.budget.spent - spentBefore);
     const checkSummary = checkResults.map(({ name, ok, code }) => ({ name, ok, code }));
@@ -1657,7 +1819,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     writeLastRun(lr);
 
     emit("round_end", { round, passed, failures, cost: roundCost });
-    if (passed) return console.log("\nQA passed."), true;
+    if (passed) return (console.log("\nQA passed."), true);
     console.log(`QA failed (${failures.length}):\n- ${failures.join("\n- ")}`);
     previous = direct ? "" : previousRound(round, plan, statuses, cp);
 
@@ -1814,9 +1976,10 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       // A usage limit is not the goal's fault: put it back and try again after the reset.
       cur.status = outcome === "limit" ? "pending" : outcome;
       if (outcome === "limit")
-        cur.note = o.onLimit === "stop"
-          ? `usage limit: stopped; resets ${resetAt ? new Date(resetAt).toLocaleString() : "later"}`
-          : `usage limit: retrying after ${new Date(until).toLocaleString()}`;
+        cur.note =
+          o.onLimit === "stop"
+            ? `usage limit: stopped; resets ${resetAt ? new Date(resetAt).toLocaleString() : "later"}`
+            : `usage limit: retrying after ${new Date(until).toLocaleString()}`;
     });
     if (outcome === "limit" && o.onLimit === "stop") {
       console.log(`usage limit reached; goal #${item.id} is pending again. Stopping (--on-limit stop).`);
@@ -1864,8 +2027,22 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const notes = !values["no-notes"] && cfg.notes !== false;
   const critic = !!values.critic || cfg.critic === true;
   return {
-    maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost,
-    fast: !!values.fast, models, onLimit, usageCap, plugins, brief, notes, critic, strictFiles, maxCostTotal,
+    maxRounds,
+    power: power as Power,
+    dryRun: !!values["dry-run"],
+    park: false,
+    agentTimeoutMs: timeout * 60_000,
+    maxCost,
+    fast: !!values.fast,
+    models,
+    onLimit,
+    usageCap,
+    plugins,
+    brief,
+    notes,
+    critic,
+    strictFiles,
+    maxCostTotal,
   };
 }
 
@@ -1933,10 +2110,24 @@ async function main() {
       return loop(o, poll, values["until-empty"]!);
     }
     case "status":
-      return console.log(readQueue().map((i) => `#${i.id} [${i.status}] ${i.goal}`).join("\n") || "queue empty");
+      return console.log(
+        readQueue()
+          .map((i) => `#${i.id} [${i.status}] ${i.goal}`)
+          .join("\n") || "queue empty",
+      );
     case "agents":
-      console.log("agents:\n" + discoverAgents().map((a) => `  ${a.name}${a.builtin ? " (built-in)" : ""}: ${a.description}`).join("\n"));
-      return console.log("skills:\n" + discoverSkills().map((s) => `  ${s.name}: ${s.description}`).join("\n"));
+      console.log(
+        "agents:\n" +
+          discoverAgents()
+            .map((a) => `  ${a.name}${a.builtin ? " (built-in)" : ""}: ${a.description}`)
+            .join("\n"),
+      );
+      return console.log(
+        "skills:\n" +
+          discoverSkills()
+            .map((s) => `  ${s.name}: ${s.description}`)
+            .join("\n"),
+      );
     case "learn": {
       const o = parseOpts(values);
       acquireRunLock("learn");
@@ -1950,8 +2141,7 @@ async function main() {
       const list = listPlugins();
       if (values.details) await pluginTokens(list);
       if (values.json) return console.log(JSON.stringify(list));
-      for (const p of list)
-        console.log(`${p.enabled ? "on " : "off"}  ${p.id}  (${p.scope})${p.tokens !== undefined ? `  ~${p.tokens} tok/call` : ""}`);
+      for (const p of list) console.log(`${p.enabled ? "on " : "off"}  ${p.id}  (${p.scope})${p.tokens !== undefined ? `  ~${p.tokens} tok/call` : ""}`);
       return;
     }
     case "doctor": {
@@ -1976,14 +2166,15 @@ async function main() {
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
 export { validate, extractJson, parseReset, failureKey, badPath, normPath, asVerdict, asReview, TRANSIENT_RE };
 
-if (!process.env.ORCH_NO_MAIN) main().catch((e) => {
-  // Stack traces only on request: most errors here are expected ("dirty tree", "nothing to roll back").
-  if (e instanceof UsageLimit) {
-    // Exit 3 lets callers (the eval runner, scripts) tell "wait and retry" apart from a real failure.
-    console.error(`Stopped: ${e.message}${e.resetAt ? `\nresets at ${when(e.resetAt)}` : ""}`);
-    process.exit(3);
-  }
-  if (e instanceof BudgetExceeded) console.error(`Stopped: ${e.message}`);
-  else console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
-  process.exit(1);
-});
+if (!process.env.ORCH_NO_MAIN)
+  main().catch((e) => {
+    // Stack traces only on request: most errors here are expected ("dirty tree", "nothing to roll back").
+    if (e instanceof UsageLimit) {
+      // Exit 3 lets callers (the eval runner, scripts) tell "wait and retry" apart from a real failure.
+      console.error(`Stopped: ${e.message}${e.resetAt ? `\nresets at ${when(e.resetAt)}` : ""}`);
+      process.exit(3);
+    }
+    if (e instanceof BudgetExceeded) console.error(`Stopped: ${e.message}`);
+    else console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
+    process.exit(1);
+  });

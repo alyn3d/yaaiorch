@@ -20,7 +20,12 @@ export function useOrch() {
   const [order, setOrder] = useState<string[]>([]);
   const [maxParallel, setMaxParallelState] = useState(2);
   const [connected, setConnected] = useState(false);
-  const [global, setGlobal] = useState<Global>({ usageLimit: null, budget: { limit: null, spent: 0, day: "" }, usage: {}, usageCap: { fiveHour: null, week: null } });
+  const [global, setGlobal] = useState<Global>({
+    usageLimit: null,
+    budget: { limit: null, spent: 0, day: "" },
+    usage: {},
+    usageCap: { fiveHour: null, week: null },
+  });
 
   useEffect(
     () =>
@@ -60,7 +65,10 @@ export function useFindings(repo: string, busy: boolean) {
   useEffect(() => {
     if (busy) return;
     let live = true;
-    transport.doctor(repo).then((f) => live && setFindings(f), (e) => live && setFindings([{ name: "doctor", level: "fail", detail: String(e) }]));
+    transport.doctor(repo).then(
+      (f) => live && setFindings(f),
+      (e) => live && setFindings([{ name: "doctor", level: "fail", detail: String(e) }]),
+    );
     return () => {
       live = false;
     };

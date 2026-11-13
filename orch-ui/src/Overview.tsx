@@ -7,7 +7,13 @@ const elapsed = (ms: number) => {
 };
 
 /** One row per repo: what it does now, its goal, round, tasks, cost and queue, with Open and Stop. */
-export function Overview({ sessions, order, now, onOpen, onStop }: {
+export function Overview({
+  sessions,
+  order,
+  now,
+  onOpen,
+  onStop,
+}: {
   sessions: Record<string, Session>;
   order: string[];
   now: number;
@@ -47,12 +53,18 @@ export function Overview({ sessions, order, now, onOpen, onStop }: {
               const pending = s.state.queue.filter((i) => i.status === "pending").length;
               const busy = live || !!s.state.queued;
               // The tab's label repeats the goal; here the goal has its own column, so say what phase it is in.
-              const phase = !live || st.tone === "warn" ? st.label
-                : round?.architect === "running" ? "planning"
-                : active.some((a) => a === "qa") || tasks.some((t) => t.phase === "verify" && t.status === "running") ? "verifying"
-                : active.length ? "building"
-                : round && round.passed === undefined && tasks.length && done === tasks.length ? "checks"
-                : "running";
+              const phase =
+                !live || st.tone === "warn"
+                  ? st.label
+                  : round?.architect === "running"
+                    ? "planning"
+                    : active.some((a) => a === "qa") || tasks.some((t) => t.phase === "verify" && t.status === "running")
+                      ? "verifying"
+                      : active.length
+                        ? "building"
+                        : round && round.passed === undefined && tasks.length && done === tasks.length
+                          ? "checks"
+                          : "running";
               return (
                 <tr key={repo}>
                   <td>
@@ -64,17 +76,27 @@ export function Overview({ sessions, order, now, onOpen, onStop }: {
                     {phase}
                     {live && run && run.status === "running" && <> · {elapsed(now - run.startedAt)}</>}
                   </td>
-                  <td className="goal" title={goal}>{goal || <span className="muted">—</span>}</td>
-                  <td>{round ? `${round.round}/${run!.maxRounds}` : "—"}{round?.mode === "direct" ? " fast" : ""}</td>
+                  <td className="goal" title={goal}>
+                    {goal || <span className="muted">—</span>}
+                  </td>
+                  <td>
+                    {round ? `${round.round}/${run!.maxRounds}` : "—"}
+                    {round?.mode === "direct" ? " fast" : ""}
+                  </td>
                   <td>
                     {tasks.length ? `${done}/${tasks.length}` : "—"}
                     {active.length > 0 && <span className="muted"> ({active.join(", ")})</span>}
                   </td>
-                  <td className="num cost">{cost !== undefined ? usd(cost) : "—"}{run?.maxCost ? <span className="muted"> / {usd(run.maxCost)}</span> : null}</td>
+                  <td className="num cost">
+                    {cost !== undefined ? usd(cost) : "—"}
+                    {run?.maxCost ? <span className="muted"> / {usd(run.maxCost)}</span> : null}
+                  </td>
                   <td className="num">{pending || "—"}</td>
                   <td className="actions">
                     <button onClick={() => onOpen(repo)}>Open</button>
-                    <button className="danger" disabled={!busy} onClick={() => onStop(repo)}>{s.state.queued && !live ? "Cancel" : "Stop"}</button>
+                    <button className="danger" disabled={!busy} onClick={() => onStop(repo)}>
+                      {s.state.queued && !live ? "Cancel" : "Stop"}
+                    </button>
                   </td>
                 </tr>
               );

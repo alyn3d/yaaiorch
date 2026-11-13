@@ -55,7 +55,10 @@ export function modelSpec(s: RunSettings): { spec?: string; error?: string } {
     if (!MODEL.test(m)) return { error: `${ROLE_LABELS[role]}: "${m}" is not a model name` };
     pairs.push(`${role}=${m}`);
   }
-  for (const part of s.agentModels.split(",").map((p) => p.trim()).filter(Boolean)) {
+  for (const part of s.agentModels
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)) {
     const [agent, model, ...rest] = part.split("=").map((x) => x.trim());
     if (!agent || !model || rest.length || !NAME.test(agent) || !MODEL.test(model)) return { error: `agent override "${part}": use agent=model` };
     pairs.push(`${agent}=${model}`);
@@ -104,14 +107,15 @@ export function SettingsPanel({ repo, power, settings, onChange }: { repo: strin
         <label className="check" title="Round 1: one agent does the whole goal, judged by the repo's checks; the full loop runs only if that fails">
           <input type="checkbox" checked={settings.fast} onChange={(e) => onChange({ ...settings, fast: e.target.checked })} /> Fast path
         </label>
-        <label className="check" title="A read-only critic agent reviews each plan before anything is built; a rejected plan goes back to the architect once. One extra call per round (QA's model).">
+        <label
+          className="check"
+          title="A read-only critic agent reviews each plan before anything is built; a rejected plan goes back to the architect once. One extra call per round (QA's model)."
+        >
           <input type="checkbox" checked={settings.critic} onChange={(e) => onChange({ ...settings, critic: e.target.checked })} /> Plan critic
         </label>
       </div>
       <details className="models">
-        <summary>
-          Models {custom ? <span className="badge warn">{custom} custom</span> : <span className="muted">(from the {power} tier)</span>}
-        </summary>
+        <summary>Models {custom ? <span className="badge warn">{custom} custom</span> : <span className="muted">(from the {power} tier)</span>}</summary>
         <datalist id="model-aliases">
           <option value="haiku" />
           <option value="sonnet" />

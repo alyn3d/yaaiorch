@@ -45,8 +45,7 @@ const localOrigin = (origin: string | undefined) => {
     return false;
   }
 };
-const tokenOk = (given: unknown) =>
-  typeof given === "string" && given.length === TOKEN.length && timingSafeEqual(Buffer.from(given), Buffer.from(TOKEN));
+const tokenOk = (given: unknown) => typeof given === "string" && given.length === TOKEN.length && timingSafeEqual(Buffer.from(given), Buffer.from(TOKEN));
 /** Why this request is refused, or null. */
 function refuse(req: http.IncomingMessage, url: URL): string | null {
   if (!localHost(req.headers.host)) return "forbidden host";
@@ -103,7 +102,8 @@ const globalState = () => ({
 /** The first window whose latest reading is at or over its cap and has not reset yet. */
 function overCap(): (Reading & { window: Window }) | null {
   for (const window of ["fiveHour", "week"] as Window[]) {
-    const u = usage[window], c = usageCap[window];
+    const u = usage[window],
+      c = usageCap[window];
     if (u && c !== null && u.pct >= c && u.resetsAt > Date.now()) return { window, ...u };
   }
   return null;
@@ -132,10 +132,7 @@ const keyOf = (repo: string) => (process.platform === "win32" ? resolve(repo).to
 function saveSettings() {
   try {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
-    writeFileSync(
-      SETTINGS_FILE,
-      JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap }, null, 2),
-    );
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap }, null, 2));
   } catch {
     /* not fatal: the list just is not remembered */
   }
@@ -152,7 +149,7 @@ function snapshot(s: Session) {
     running: s.running,
     queued: !!s.pending,
     /** Why a queued start waits: a free slot, the usage limit or the budget. */
-    waitReason: s.pending ? gate() ?? "free slot" : undefined,
+    waitReason: s.pending ? (gate() ?? "free slot") : undefined,
     queue: readJson<Item[]>(join(dir, "queue.json"), []),
     lastRun: readJson<unknown>(join(dir, "last-run.json"), null),
   };
@@ -336,9 +333,21 @@ const pluginFlags = (p?: PluginOpts) => {
   const ids = Array.isArray(p.disable) ? p.disable.filter((x): x is string => typeof x === "string" && PLUGIN_ID.test(x)) : [];
   return [...(p.off ? ["--plugins", "off"] : []), ...(ids.length ? ["--disable-plugins", ids.join(",")] : []), ...(p.hooks === false ? ["--no-hooks"] : [])];
 };
-const flags = (b: { power?: string; maxRounds?: number; dryRun?: boolean; maxCost?: number; models?: string; onLimit?: string; fast?: boolean; critic?: boolean; plugins?: PluginOpts }) => [
-  "--power", b.power ?? "heavy",
-  "--max-rounds", String(b.maxRounds ?? 5),
+const flags = (b: {
+  power?: string;
+  maxRounds?: number;
+  dryRun?: boolean;
+  maxCost?: number;
+  models?: string;
+  onLimit?: string;
+  fast?: boolean;
+  critic?: boolean;
+  plugins?: PluginOpts;
+}) => [
+  "--power",
+  b.power ?? "heavy",
+  "--max-rounds",
+  String(b.maxRounds ?? 5),
   ...(b.dryRun ? ["--dry-run"] : []),
   ...(typeof b.maxCost === "number" && b.maxCost > 0 ? ["--max-cost", String(b.maxCost)] : []),
   ...(typeof b.models === "string" && MODEL_SPEC.test(b.models) ? ["--model", b.models] : []),
@@ -355,15 +364,20 @@ const plugins = (s: Session, fresh: boolean) => {
   const hit = pluginCache.get(key);
   if (hit && !fresh && Date.now() - hit.at < 10 * 60_000) return hit.list;
   const list = new Promise<unknown>((ok, fail) =>
-    execFile(process.execPath, [TSX_CLI, ORCH, "plugins", "--json", "--details"], { cwd: s.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 }, (err, stdout, stderr) => {
-      const line = stdout.split(/\r?\n/).find((l) => l.startsWith("["));
-      try {
-        ok(JSON.parse(line ?? ""));
-      } catch {
-        pluginCache.delete(key);
-        fail(new Error((stderr || err?.message || "could not list plugins").trim().split(/\r?\n/).pop()));
-      }
-    }),
+    execFile(
+      process.execPath,
+      [TSX_CLI, ORCH, "plugins", "--json", "--details"],
+      { cwd: s.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 },
+      (err, stdout, stderr) => {
+        const line = stdout.split(/\r?\n/).find((l) => l.startsWith("["));
+        try {
+          ok(JSON.parse(line ?? ""));
+        } catch {
+          pluginCache.delete(key);
+          fail(new Error((stderr || err?.message || "could not list plugins").trim().split(/\r?\n/).pop()));
+        }
+      },
+    ),
   );
   pluginCache.set(key, { at: Date.now(), list });
   return list;
@@ -404,18 +418,22 @@ const body = (req: http.IncomingMessage) =>
   });
 
 const MIME: Record<string, string> = {
-  ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
-  ".png": "image/png", ".ico": "image/x-icon",
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
 };
 
 // Open the remembered repos, then the ones from the environment.
 const stored = readJson<{
-  repos?: string[]; maxParallel?: number; dailyBudget?: number | null; spent?: { day: string; usd: number };
+  repos?: string[];
+  maxParallel?: number;
+  dailyBudget?: number | null;
+  spent?: { day: string; usd: number };
   usageCap?: Partial<Record<Window, number | null>>;
-}>(
-  SETTINGS_FILE,
-  {},
-);
+}>(SETTINGS_FILE, {});
 if (!process.env.MAX_PARALLEL && stored.maxParallel) maxParallel = Math.max(1, stored.maxParallel);
 if (typeof stored.dailyBudget === "number" && stored.dailyBudget > 0) dailyBudget = stored.dailyBudget;
 if (stored.spent?.day === today() && typeof stored.spent.usd === "number") spent = stored.spent;
@@ -591,9 +609,7 @@ http
       json(500, { error: (e as Error).message });
     }
   })
-  .listen(PORT, "127.0.0.1", () =>
-    console.log(`YAAIORCH ui  ${sessions.size} repo(s), ${maxParallel} at a time\n             http://localhost:${PORT}`),
-  );
+  .listen(PORT, "127.0.0.1", () => console.log(`YAAIORCH ui  ${sessions.size} repo(s), ${maxParallel} at a time\n             http://localhost:${PORT}`));
 
 process.on("exit", () => {
   for (const s of sessions.values()) if (s.child?.pid) killTree(s.child.pid);
