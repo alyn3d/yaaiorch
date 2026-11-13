@@ -579,7 +579,14 @@ struct Extra {
     branch: Option<bool>,
     pr: Option<bool>,
     approve_plan: Option<bool>,
+    /// A GitHub label: loops pull new issues with it in (--intake github:LABEL).
+    intake_label: Option<String>,
     plugins: Option<PluginOpts>,
+}
+
+/// A GitHub label name with safe characters only (orch checks it again).
+fn valid_label(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 50 && s.chars().all(|c| c.is_ascii_alphanumeric() || " _.:/-".contains(c))
 }
 
 /// Agent names, comma-separated, with safe characters only (orch checks them against the agents it finds).
@@ -658,6 +665,9 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if extra.approve_plan.unwrap_or(false) {
         v.push("--approve-plan".into());
+    }
+    if let Some(l) = extra.intake_label.as_deref().filter(|l| valid_label(l)) {
+        v.extend(["--intake".into(), format!("github:{l}")]);
     }
     if let Some(p) = &extra.plugins {
         if p.off.unwrap_or(false) {
@@ -871,8 +881,9 @@ fn run_goal(
     if goal.trim().is_empty() {
         return Err("goal required".into());
     }
-    // One goal: no loop budget.
+    // One goal: no loop budget, nothing to pull in.
     let extra = Extra {
+        intake_label: None,
         max_cost,
         max_cost_total: None,
         models,
@@ -915,6 +926,7 @@ fn run_loop(
     branch: Option<bool>,
     pr: Option<bool>,
     approve_plan: Option<bool>,
+    intake_label: Option<String>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     let extra = Extra {
@@ -930,6 +942,7 @@ fn run_loop(
         branch,
         pr,
         approve_plan,
+        intake_label,
         plugins,
     };
     let mut args = vec!["loop".to_string()];
@@ -951,6 +964,28 @@ fn add_goal(app: AppHandle, repo: String, goal: String) -> Result<(), String> {
         .map_err(|e| format!("{NODE_HINT}: {e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    emit_session(&app, &key);
+    Ok(())
+}
+
+/// `orch intake --github LABEL`: open GitHub issues with the label, each queued once.
+#[tauri::command(async)]
+fn intake_goals(app: AppHandle, repo: String, github: String) -> Result<(), String> {
+    if !valid_label(&github) {
+        return Err("a GitHub label is required".into());
+    }
+    let key = key_of(Path::new(&repo));
+    let out = node_cmd(&app, &repo_of(&app, &key)?, &["intake".into(), "--github".into(), github])?
+        .output()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch intake failed")
+            .to_string());
     }
     emit_session(&app, &key);
     Ok(())
@@ -1313,6 +1348,7 @@ fn main() {
             run_loop,
             add_goal,
             retry_goal,
+            intake_goals,
             agents,
             stop,
             clear_log,
@@ -1383,6 +1419,26 @@ mod tests {
             with_budget(v(&["run", "g", "--usage-cap", "5h=50"]), None, "5h=80"),
             v(&["run", "g", "--usage-cap", "5h=50"])
         );
+    }
+
+    #[test]
+    fn intake_flag() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let tail = |l: &str| {
+            flags(
+                "heavy",
+                1,
+                false,
+                &Extra {
+                    intake_label: Some(l.into()),
+                    ..Default::default()
+                },
+            )[4..]
+                .to_vec()
+        };
+        assert_eq!(tail("orch: ready"), v(&["--intake", "github:orch: ready"]));
+        assert!(tail("a;rm -rf /").is_empty());
+        assert!(tail("").is_empty());
     }
 
     #[test]

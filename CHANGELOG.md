@@ -6,6 +6,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Goals from your backlog**: `orch intake --github LABEL` queues open GitHub issues with that label (via `gh`),
+  `--backlog BACKLOG.md` the unchecked items of a backlog file, each once and without changing your files.
+  `orch loop --intake github:LABEL` keeps pulling new issues in when the queue runs dry, and with `--pr` the pull
+  request closes the issue. In the UI: **Issues label**, **Import issues**, and **Loop (watch)** with the label.
+  Issue text becomes agent instructions, so use a label only people you trust can set. New `intake` event.
 - Eval cases built to need a fix round, `api-patch-contract` and `lib-retry-lint`, on two new fixtures whose house
   rules only the repo's checks enforce; they measure session resume, the critics and escalation.
 - Unit tests for the UI's run view (`reduce.ts`) and the desktop app's project-name check.

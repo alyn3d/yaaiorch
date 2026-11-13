@@ -40,6 +40,9 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
                         SPEC.md, a .gitignore, and the spec split into queued goals (scaffold first) with suggested
                         checks in .orchestrator/config.json; --start runs the loop, else "orch loop --until-empty" there
   orch retry ID          put a failed or blocked goal back in the queue, with the goals it blocked
+  orch intake [--github LABEL] [--backlog FILE]   queue open GitHub issues with that label (via gh) and the
+                        unchecked "- [ ]" items of a backlog file, each once; anyone who can label issues
+                        can direct the agents, so use a label only people you trust can set
   orch approve [--reject "WHY"] [--plan-stdin]   answer a run waiting with --approve-plan: build the plan (edited:
                         a plan as JSON on stdin), or send it back to the architect with your reason
   orch share [--dry-run]  propose what orch learned (brief and lasting notes) as a CLAUDE.md section, committed
@@ -76,6 +79,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   (each goal also gets at most what is left as its --max-cost); also "maxCostTotal" in config
          --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
                   reused across rounds and goals); also "brief": false in config
+         --intake github:LABEL,backlog:FILE   loop: when the queue runs dry, pull new goals in (orch intake);
+                  also "intake" in config
          --retries N   loop: try a failed goal again N times (default 1), one power tier higher each time; after
                   that, goals that build on it are marked blocked ("orch retry ID" runs them again); also "retries"
          --no-coverage   when the queue runs dry after goals from a brief, do not check the brief against the code
@@ -130,6 +135,9 @@ type Item = {
   seconds?: number;
   /** A usage limit cut it short: its work so far is on this branch, and the next attempt starts from it. */
   resumeFrom?: string;
+  /** Where it came from (orch intake): a GitHub issue number, or a BACKLOG.md item's key. */
+  issue?: number;
+  backlog?: string;
 };
 type Entry = { name: string; description: string; builtin?: boolean };
 type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string; session?: string };
@@ -525,6 +533,8 @@ type Config = {
   approvePlan?: boolean;
   coverage?: boolean;
   retries?: number;
+  /** loop --intake: "github:LABEL" and/or "backlog:FILE". */
+  intake?: string | string[];
   /** Installs dependencies (for example "npm install"), run by orch before the checks when a manifest changed. */
   setup?: string;
   /** Files whose change triggers `setup` (default: the usual manifests and lock files). */
@@ -1391,6 +1401,7 @@ function prBody(goal: string, lr: LastRun): string {
   return (
     `${goal}\n\n## What YAAIORCH did\n${lines.join("\n")}\n\n` +
     `QA passed in round ${rounds.length}; agent calls cost $${lr.cost.toFixed(2)} in total.\n\n` +
+    (lr.issue ? `Closes #${lr.issue}\n\n` : "") +
     `Opened by [YAAIORCH](https://github.com/alyn3d/yaaiorch). Review it like any other pull request.\n`
   );
 }
@@ -1625,6 +1636,8 @@ type Opts = {
   coverage: boolean;
   /** loop: how often a failed goal is tried again, one power tier higher each time, before its dependents are blocked. */
   retries: number;
+  /** loop: where to pull goals from when the queue runs dry (orch intake). */
+  intake: IntakeSource[];
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1794,6 +1807,8 @@ type LastRun = {
   branch?: string;
   base?: string;
   pr?: string;
+  /** The GitHub issue the goal came from: its pull request closes it. */
+  issue?: number;
 };
 
 /** First line of brief.md: the commit the brief describes, so a brief can tell when it has gone stale. */
@@ -2454,7 +2469,7 @@ const writeLastRun = (lr: LastRun) => writeFileAtomic(LAST_RUN, JSON.stringify(l
 let lastGoalCost = 0;
 /** QA's notes for the goal being run, written to notes.md when it ends. */
 let goalNotes: string[] = [];
-async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resumeFrom?: string): Promise<boolean> {
+async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resumeFrom?: string, issue?: number): Promise<boolean> {
   emit("goal_start", {
     goal,
     maxRounds: o.maxRounds,
@@ -2476,7 +2491,7 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resum
     usageCap: o.usageCap,
     onLimit: o.onLimit,
   };
-  const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
+  const lr: LastRun = { goal, status: "running", cost: 0, state: [], ...(issue ? { issue } : {}) };
   goalNotes = [];
   let cp = "";
   let gb: GoalBranch | undefined;
@@ -2936,6 +2951,94 @@ async function waitForReset(e: UsageLimit) {
   while (Date.now() < until) await sleep(Math.min(5000, until - Date.now()));
 }
 
+// ---------- orch intake: goals from GitHub issues with a label, or from a backlog file ----------
+type IntakeSource = { kind: "github"; label: string } | { kind: "backlog"; file: string };
+
+/** "github:LABEL,backlog:FILE" (or a list of them) into sources; a bad one is an error. */
+function parseIntake(v: unknown): IntakeSource[] {
+  const parts = (Array.isArray(v) ? v : v === undefined || v === "" ? [] : [v]).flatMap((x) => String(x).split(","));
+  return parts
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x): IntakeSource => {
+      const m = /^(github|backlog):(.+)$/.exec(x);
+      if (!m) throw new Error(`--intake: "${x}" is not github:LABEL or backlog:FILE`);
+      if (m[1] === "github") {
+        if (!/^[\w .:/-]{1,50}$/.test(m[2])) throw new Error(`--intake: "${m[2]}" is not a label name`);
+        return { kind: "github", label: m[2] };
+      }
+      return { kind: "backlog", file: m[2] };
+    });
+}
+
+/** Open issues with the label, oldest first (gh, in this repo). */
+function githubIssues(label: string): { number: number; title: string; body: string }[] {
+  const gh = resolveCommand(process.env.GH_BIN ?? "gh");
+  if (gh.missing) throw new Error("gh (GitHub CLI) was not found; install it and run gh auth login to read issues");
+  const r = spawnSync(gh.file, [...gh.pre, "issue", "list", "--label", label, "--state", "open", "--limit", "100", "--json", "number,title,body"], {
+    encoding: "utf8",
+    shell: gh.shell,
+    windowsHide: true,
+    timeout: 60_000,
+  });
+  if (r.status !== 0) throw new Error(`gh issue list failed: ${(r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 300)}`);
+  const list = JSON.parse(r.stdout || "[]") as { number?: unknown; title?: unknown; body?: unknown }[];
+  return list
+    .filter((i) => Number.isInteger(i.number) && typeof i.title === "string")
+    .map((i) => ({ number: i.number as number, title: (i.title as string).trim(), body: typeof i.body === "string" ? i.body.trim() : "" }))
+    .sort((a, b) => a.number - b.number);
+}
+
+/** Unchecked "- [ ] ..." items of a markdown file, with their indented lines; the key is a hash of the text. */
+function backlogItems(file: string): { key: string; text: string }[] {
+  if (!existsSync(file)) throw new Error(`backlog file ${file} not found`);
+  const out: { key: string; text: string }[] = [];
+  let cur: string[] | null = null;
+  const flush = () => {
+    if (cur?.length) {
+      const text = cur.join("\n").trim();
+      out.push({ key: createHash("sha256").update(text).digest("hex").slice(0, 16), text });
+    }
+    cur = null;
+  };
+  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+    const m = /^[-*]\s+\[ \]\s+(.*)$/.exec(line);
+    if (m) {
+      flush();
+      cur = [m[1]];
+    } else if (cur && /^\s+\S/.test(line) && !/^\s*[-*]\s+\[[ xX]\]/.test(line)) cur.push(line.trim());
+    else flush();
+  }
+  flush();
+  return out;
+}
+
+/** Queue what the sources have that the queue has not seen (any status), oldest first. Returns the new ids. */
+function intake(sources: IntakeSource[]): number[] {
+  const added: number[] = [];
+  for (const src of sources) {
+    const found =
+      src.kind === "github"
+        ? githubIssues(src.label).map((i) => ({ goal: `${i.title}${i.body ? `\n\n${i.body.slice(0, 4000)}` : ""}`, issue: i.number, backlog: undefined }))
+        : backlogItems(src.file).map((b) => ({ goal: b.text.slice(0, 4000), issue: undefined, backlog: b.key }));
+    const ids = updateQueue((q) => {
+      const made: number[] = [];
+      for (const f of found) {
+        if (q.some((i) => (f.issue && i.issue === f.issue) || (f.backlog && i.backlog === f.backlog))) continue;
+        const id = Math.max(0, ...q.map((i) => i.id)) + 1;
+        q.push({ id, goal: f.goal, status: "pending", ...(f.issue ? { issue: f.issue } : {}), ...(f.backlog ? { backlog: f.backlog } : {}) });
+        made.push(id);
+      }
+      return made;
+    });
+    const where = src.kind === "github" ? `GitHub issues labelled "${src.label}"` : src.file;
+    console.log(ids.length ? `queued ${ids.length} goal(s) from ${where}: ${ids.map((n) => `#${n}`).join(", ")}` : `nothing new in ${where}`);
+    if (ids.length) emit("intake", { source: src.kind === "github" ? `github:${src.label}` : `backlog:${src.file}`, ids });
+    added.push(...ids);
+  }
+  return added;
+}
+
 /** The first pending goal whose goals-it-needs are all done (a goal never waits on a later one). */
 function nextRunnable(q: Item[]): Item | undefined {
   const status = new Map(q.map((i) => [i.id, i.status]));
@@ -3032,6 +3135,13 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       emit("blocked", { id: b.id, goal: b.goal, note: b.note });
     }
     if (!item) {
+      if (o.intake.length) {
+        try {
+          if (intake(o.intake).length) continue;
+        } catch (e) {
+          console.warn(`intake failed (${msg(e)}); trying again later`);
+        }
+      }
       if (o.coverage) {
         const c = await coverageCheck(o);
         spentTotal += c.cost;
@@ -3060,7 +3170,7 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       };
       lastGoalCost = 0;
       try {
-        outcome = (await runGoal(item.goal, goalOpts, item.id, item.brief, item.resumeFrom)) ? "done" : "failed";
+        outcome = (await runGoal(item.goal, goalOpts, item.id, item.brief, item.resumeFrom, item.issue)) ? "done" : "failed";
       } finally {
         spentTotal += lastGoalCost;
       }
@@ -3172,6 +3282,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const branch = pr || !!values.branch || cfg.branch === true;
   const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
   const coverage = !values["no-coverage"] && cfg.coverage !== false;
+  const intake = parseIntake(values.intake ?? cfg.intake);
   const retries = Number(values.retries ?? cfg.retries ?? 1);
   if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
   return {
@@ -3197,6 +3308,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     approvePlan,
     coverage,
     retries,
+    intake,
     strictFiles,
     maxCostTotal,
   };
@@ -3239,6 +3351,9 @@ async function main() {
       start: { type: "boolean", default: false },
       "no-coverage": { type: "boolean", default: false },
       retries: { type: "string" },
+      intake: { type: "string" },
+      github: { type: "string" },
+      backlog: { type: "string" },
       setup: { type: "string" },
       pr: { type: "boolean", default: false },
       review: { type: "boolean", default: false },
@@ -3315,6 +3430,16 @@ async function main() {
     }
     case "approve":
       return approve(values);
+    case "intake": {
+      const sources = [
+        ...(values.github ? parseIntake(`github:${values.github}`) : []),
+        ...(values.backlog ? parseIntake(`backlog:${values.backlog}`) : []),
+        ...parseIntake(values.intake),
+      ];
+      if (!sources.length) throw new Error("usage: orch intake --github LABEL and/or --backlog FILE");
+      intake(sources);
+      return;
+    }
     case "retry": {
       const id = Number(rest[0]);
       if (!Number.isInteger(id)) throw new Error("usage: orch retry ID");

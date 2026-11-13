@@ -3,6 +3,8 @@
 //
 //   FAKE_GH_LOG=<file>   append the arguments (one JSON line) and the body read from stdin
 //   FAKE_GH_FAIL=1       exit 1 with an error, like gh without a login
+//   FAKE_GH_ISSUES=<json>  what `gh issue list` returns: [{number, title, body, labels?}] (labels: only listed
+//                        for those labels; without it, for any label)
 import { appendFileSync, readFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
@@ -11,6 +13,14 @@ if (process.env.FAKE_GH_LOG) appendFileSync(process.env.FAKE_GH_LOG, JSON.string
 if (process.env.FAKE_GH_FAIL) {
   process.stderr.write("To get started with GitHub CLI, please run:  gh auth login\n");
   process.exit(1);
+}
+// `gh issue list --label L --json ...`: the issues in FAKE_GH_ISSUES (JSON) that carry the label.
+if (args[0] === "issue" && args[1] === "list") {
+  const label = args[args.indexOf("--label") + 1];
+  const issues = JSON.parse(process.env.FAKE_GH_ISSUES ?? "[]").filter((i) => !i.labels || i.labels.includes(label));
+  for (const i of issues) delete i.labels;
+  console.log(JSON.stringify(issues));
+  process.exit(0);
 }
 if (args[0] === "pr" && args[1] === "create") {
   const head = args[args.indexOf("--head") + 1];

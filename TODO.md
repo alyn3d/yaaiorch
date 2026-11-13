@@ -102,8 +102,9 @@ Each item should show its effect in the evals before it becomes the default.
 
 - [x] **Branch and pull request per goal**: run each goal on `orch/<id>-<slug>`, finish with
   `gh pr create`, never touch the main branch (`--branch`, `--pr`).
-- [ ] **Backlog intake**: read goals from `BACKLOG.md` or GitHub issues with a label; priority and
-  `dependsOn` on queue items.
+- [x] **Backlog intake**: goals from GitHub issues with a label (`orch intake --github`, `loop --intake`, **Import
+  issues**) or `BACKLOG.md`; a PR closes its issue. `dependsOn` came with big briefs. Still open: priority, and
+  commenting on the issue when its goal starts, passes or fails.
 - [x] **Queue lifecycle**: retry policy (`--retries`, a tier up), a `blocked` status for goals that need a failed
   one, dependencies between goals of a brief, `orch retry` / **Retry**, per-item power on retry. Still open:
   per-item max rounds set by hand.

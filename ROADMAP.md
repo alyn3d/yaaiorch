@@ -79,7 +79,7 @@ Still open, moved to the next release:
 From "run this goal" to "work through this backlog".
 
 - A branch and a pull request per goal; humans review PRs, not runs (done: `--branch`, `--pr`).
-- Goals from `BACKLOG.md` or labelled GitHub issues, with priorities and dependencies.
+- Goals from `BACKLOG.md` or labelled GitHub issues, with dependencies (done; priorities still open).
 - Queue lifecycle (retry policy, `blocked` goals), an optional plan approval gate (done), notifications (done).
 - Worktrees per build task (or per goal) for real isolation between parallel agents, and optional
   sandboxed runs (container or VM) for repos you do not fully trust the agents with.

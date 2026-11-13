@@ -21,6 +21,22 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
   const [maxCost, setMaxCost] = useState("");
   /** The queue's budget: all goals of a loop together (--max-cost-total). */
   const [queueBudget, setQueueBudget] = useState("");
+  /** A GitHub label to import issues with; Loop (watch) keeps pulling new ones in. */
+  const [label, setLabel] = useState(() => {
+    try {
+      return localStorage.getItem(`yaaiorch.intake:${repo}`) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const saveLabel = (v: string) => {
+    setLabel(v);
+    try {
+      localStorage.setItem(`yaaiorch.intake:${repo}`, v);
+    } catch {
+      /* storage blocked */
+    }
+  };
   const [dryRun, setDryRun] = useState(false);
   const [confirmRollback, setConfirmRollback] = useState(false);
   const [error, setError] = useState("");
@@ -71,6 +87,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
   const badSettings = !!models.error;
   const total = Number(queueBudget);
   const loopOpts = { ...opts, maxCostTotal: total > 0 ? total : undefined };
+  const labelOk = /^[\w .:/-]{1,50}$/.test(label.trim());
   const progress = briefProgress(state.queue);
   const rounds = state.lastRun?.state ?? [];
   // last-run.json names the checkpoint only while that branch exists, so this survives restarts.
@@ -199,7 +216,18 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           >
             Process queue
           </button>
-          <button disabled={busy || dryRun || badSettings} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", loopOpts)}>
+          <label title="Open GitHub issues with this label become goals (needs gh, logged in). Anyone who can set the label can direct the agents, so use one only people you trust can set. Loop (watch) keeps pulling new ones in.">
+            Issues label
+            <input placeholder="e.g. orch" value={label} onChange={(e) => saveLabel(e.target.value)} />
+          </label>
+          <button disabled={!labelOk} title="Queue the open issues with this label (each once)" onClick={() => call("intake", { github: label.trim() })}>
+            Import issues
+          </button>
+          <button
+            disabled={busy || dryRun || badSettings}
+            title={dryRun ? "Untick Plan only to process the queue" : labelOk ? `Keeps running, and pulls new issues labelled "${label.trim()}" in` : ""}
+            onClick={() => call("loop", { ...loopOpts, intakeLabel: labelOk ? label.trim() : undefined })}
+          >
             Loop (watch)
           </button>
         </div>
@@ -230,6 +258,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
                 <span>
                   #{i.id} {i.goal}
                   {i.after?.length ? <span className="muted"> (after {i.after.map((d) => `#${d}`).join(", ")})</span> : null}
+                  {i.issue ? <span className="muted"> · issue #{i.issue}</span> : null}
                 </span>
                 {i.note && <span className="note">{i.note}</span>}
                 {(i.status === "failed" || i.status === "blocked") && (

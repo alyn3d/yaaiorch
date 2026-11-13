@@ -992,6 +992,80 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     }
   });
 
+  test("orch intake: GitHub issues with a label and unchecked backlog items are queued once each", () => {
+    const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+    const dir = repo();
+    const issues = JSON.stringify([
+      { number: 5, title: "Add export", body: "As CSV.", labels: ["orch"] },
+      { number: 3, title: "Fix the crash", body: "", labels: ["orch"] },
+      { number: 4, title: "Not for orch", body: "", labels: ["question"] },
+    ]);
+    const env = { GH_BIN: FAKE_GH, FAKE_GH_ISSUES: issues, FAKE_GH_LOG: `${dir}.gh.log` };
+    const r = orch(dir, ["intake", "--github", "orch"], env);
+    assert.equal(r.code, 0, r.out);
+    const q = () => JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    assert.deepEqual(
+      q().map((i) => [i.id, i.issue, i.goal]),
+      [
+        [1, 3, "Fix the crash"],
+        [2, 5, "Add export\n\nAs CSV."],
+      ],
+      "oldest issue first; only the label's",
+    );
+    const call = JSON.parse(readFileSync(`${dir}.gh.log`, "utf8").trim().split("\n")[0]);
+    assert.deepEqual(call.args.slice(0, 6), ["issue", "list", "--label", "orch", "--state", "open"]);
+    assert.match(orch(dir, ["intake", "--github", "orch"], env).out, /nothing new/, "never twice, whatever their status");
+
+    writeFileSync(join(dir, "BACKLOG.md"), "# Backlog\n\n- [ ] Add dark mode\n  to the settings page\n- [x] Old done thing\n- [ ] Speed up search\n\nNotes.\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "backlog");
+    assert.equal(orch(dir, ["intake", "--backlog", "BACKLOG.md"]).code, 0);
+    assert.deepEqual(
+      q()
+        .slice(2)
+        .map((i) => [i.id, i.goal, typeof i.backlog]),
+      [
+        [3, "Add dark mode\nto the settings page", "string"],
+        [4, "Speed up search", "string"],
+      ],
+    );
+    assert.match(orch(dir, ["intake", "--backlog", "BACKLOG.md"]).out, /nothing new in BACKLOG\.md/);
+    assert.equal(readFileSync(join(dir, "BACKLOG.md"), "utf8").includes("- [ ] Add dark mode"), true, "the file is not changed");
+
+    assert.match(orch(dir, ["intake"]).out, /usage: orch intake/);
+    assert.match(orch(dir, ["intake", "--github", "orch"], { GH_BIN: join(dir, "no-gh") }).out, /gh \(GitHub CLI\) was not found/);
+    assert.match(orch(dir, ["loop", "--intake", "jira:x"]).out, /is not github:LABEL or backlog:FILE/);
+  });
+
+  test("loop --intake pulls new issues in when the queue runs dry; with --pr the PR closes the issue", () => {
+    const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+    const dir = repo();
+    const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
+    dirs.push(origin);
+    git(origin, "init", "-q", "--bare");
+    git(dir, "remote", "add", "origin", origin);
+    const ghLog = `${dir}.gh.log`;
+    const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--no-coverage", "--intake", "github:orch", "--pr"], {
+      FAKE_QA: "pass",
+      GH_BIN: FAKE_GH,
+      FAKE_GH_LOG: ghLog,
+      FAKE_GH_ISSUES: JSON.stringify([{ number: 12, title: "Add export", body: "As CSV." }]),
+    });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("intake").map((e) => e.ids),
+      [[1]],
+    );
+    assert.equal(r.last("goal_end").passed, true);
+    const create = readFileSync(ghLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .find((c) => c.args[0] === "pr");
+    assert.match(create.body, /Closes #12/);
+    assert.equal(r.ev("goal_start").length, 1, "the issue is not picked up again");
+  });
+
   test("--max-cost-total: the loop stops before the next goal once its budget is spent", () => {
     const dir = repo();
     for (const g of ["one", "two", "three"]) orch(dir, ["add", g]);

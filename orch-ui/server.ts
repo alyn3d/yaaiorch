@@ -339,6 +339,8 @@ const pluginFlags = (p?: PluginOpts) => {
   const ids = Array.isArray(p.disable) ? p.disable.filter((x): x is string => typeof x === "string" && PLUGIN_ID.test(x)) : [];
   return [...(p.off ? ["--plugins", "off"] : []), ...(ids.length ? ["--disable-plugins", ids.join(",")] : []), ...(p.hooks === false ? ["--no-hooks"] : [])];
 };
+/** A GitHub label name with safe characters only (orch checks it again). */
+const LABEL = /^[\w .:/-]{1,50}$/;
 /** Agent names, comma-separated (orch checks them against the agents it finds). */
 const REVIEWERS = /^[A-Za-z0-9][A-Za-z0-9._:-]*(,[A-Za-z0-9][A-Za-z0-9._:-]*)*$/;
 const flags = (b: {
@@ -358,6 +360,8 @@ const flags = (b: {
   branch?: boolean;
   pr?: boolean;
   approvePlan?: boolean;
+  /** A GitHub label: loops pull new issues with it in (--intake github:LABEL). */
+  intakeLabel?: string;
   plugins?: PluginOpts;
 }) => [
   "--power",
@@ -377,6 +381,7 @@ const flags = (b: {
   ...(b.branch ? ["--branch"] : []),
   ...(b.pr ? ["--pr"] : []),
   ...(b.approvePlan ? ["--approve-plan"] : []),
+  ...(typeof b.intakeLabel === "string" && LABEL.test(b.intakeLabel) ? ["--intake", `github:${b.intakeLabel}`] : []),
   ...pluginFlags(b.plugins),
 ];
 
@@ -625,6 +630,20 @@ http
         if (url.pathname === "/api/run") {
           if (!b.goal?.trim()) return json(400, { error: "goal required" });
           requestStart(s, ["run", ...flags(b), b.goal], `run: ${b.goal.slice(0, 60)}`);
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/intake") {
+          // `orch intake --github LABEL`: open issues with the label, each queued once.
+          if (typeof b.github !== "string" || !LABEL.test(b.github)) return json(400, { error: "a GitHub label is required" });
+          await new Promise<void>((ok, fail) =>
+            execFile(
+              process.execPath,
+              [TSX_CLI, ORCH, "intake", "--github", b.github],
+              { cwd: s.repo, encoding: "utf8", windowsHide: true },
+              (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
+            ),
+          );
+          sendSession(s);
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/retry") {
