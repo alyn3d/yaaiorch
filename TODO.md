@@ -132,6 +132,13 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Multi-round eval cases**: `api-patch-contract`, `lib-retry-lint` (house rules only the checks enforce).
 - [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
 
+## Issue to merged PR
+
+- [x] **Fix the PR's CI**: wait for `gh pr checks`, run fix goals with the failing logs on the PR branch, push.
+- [x] **Talk on the issue** (start, done, failed, blocked) and **priority labels**.
+- [ ] A GitHub Action that runs orch on a labelled issue in CI, so no local machine is needed.
+- [ ] Optional auto-merge once CI and a human review pass.
+
 ## Safety
 
 - [x] **Protected paths** (`protect`, default `.github/workflows/`): rejected in plans, reverted if changed anyway.

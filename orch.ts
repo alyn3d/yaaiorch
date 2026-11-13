@@ -86,6 +86,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   .github/workflows/; also "protect" in config ([] for none)
          --no-secret-scan   do not check the changes for keys, tokens, private keys and .env files before each commit
                   (by default a finding blocks the commit and fails the round); also "secretScan": false
+         --ci-fixes N   with --pr: wait for the pull request's CI checks; when one fails, run up to N fix goals on
+                  its branch (default 2; 0 only reports it)  --no-ci-watch   do not wait; also "ciFixes", "ciWatch"
          --no-issue-comments   loop: do not comment on the GitHub issue a goal came from (by default: when it starts,
                   is done, fails or is blocked); also "issueComments": false. Labels p1-p9 or priority: high|low
                   order the goals (p1 first)
@@ -549,6 +551,9 @@ type Config = {
   protect?: string[];
   secretScan?: boolean;
   issueComments?: boolean;
+  /** --pr: fix goals for failing CI checks (default 2; 0 only reports them); ciWatch false: do not wait for CI. */
+  ciFixes?: number;
+  ciWatch?: boolean;
   /** Installs dependencies (for example "npm install"), run by orch before the checks when a manifest changed. */
   setup?: string;
   /** Files whose change triggers `setup` (default: the usual manifests and lock files). */
@@ -1596,6 +1601,130 @@ function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: strin
   return url;
 }
 
+// ---------- --pr: wait for the pull request's CI, and fix it when it fails ----------
+type CiResult = { state: "pass" | "fail" | "none" | "timeout"; failed: { name: string; link?: string }[] };
+
+/** gh pr checks, until nothing is pending (or the time is up). No checks at all after a while: "none". */
+async function waitForChecks(pr: string): Promise<CiResult> {
+  const gh = resolveCommand(process.env.GH_BIN ?? "gh");
+  if (gh.missing) return { state: "none", failed: [] };
+  const poll = Number(process.env.ORCH_CI_POLL_MS ?? 30_000);
+  const deadline = Date.now() + Number(process.env.ORCH_CI_TIMEOUT_MS ?? 30 * 60_000);
+  const noneAfter = Date.now() + Number(process.env.ORCH_CI_NONE_MS ?? 120_000);
+  for (;;) {
+    // gh exits non-zero while checks are pending or failing; the JSON is what counts.
+    const r = spawnSync(gh.file, [...gh.pre, "pr", "checks", pr, "--json", "name,bucket,link"], {
+      encoding: "utf8",
+      shell: gh.shell,
+      windowsHide: true,
+      timeout: 60_000,
+    });
+    let checks: { name?: string; bucket?: string; link?: string }[] | null = null;
+    try {
+      checks = JSON.parse(r.stdout || "null");
+    } catch {
+      /* "no checks reported" is plain text */
+    }
+    if (Array.isArray(checks) && checks.length) {
+      const pending = checks.some((c) => c.bucket === "pending");
+      const failed = checks.filter((c) => c.bucket === "fail").map((c) => ({ name: String(c.name ?? "check"), link: c.link }));
+      if (!pending) return { state: failed.length ? "fail" : "pass", failed };
+    } else if (Date.now() > noneAfter) return { state: "none", failed: [] };
+    if (Date.now() > deadline) return { state: "timeout", failed: [] };
+    await sleep(poll);
+  }
+}
+
+/** The failing part of a GitHub Actions job's log (gh run view --log-failed), else the link. */
+function checkLog(c: { name: string; link?: string }): string {
+  const m = /\/actions\/runs\/(\d+)\/job\/(\d+)/.exec(c.link ?? "");
+  if (m) {
+    const gh = resolveCommand(process.env.GH_BIN ?? "gh");
+    const r = gh.missing
+      ? null
+      : spawnSync(gh.file, [...gh.pre, "run", "view", m[1], "--job", m[2], "--log-failed"], {
+          encoding: "utf8",
+          shell: gh.shell,
+          windowsHide: true,
+          timeout: 120_000,
+        });
+    const log = (r?.stdout ?? "").trim();
+    if (log) return `### ${c.name}\n${log.slice(-4000)}`;
+  }
+  return `### ${c.name}\n(no log available${c.link ? `; see ${c.link}` : ""})`;
+}
+
+/**
+ * After a passed goal opened or updated its pull request: wait for its CI, and while checks fail (and fixes are
+ * left), run a fix goal on the PR's branch with the failing logs, push, and wait again. Records the end state in
+ * `lr.ci`. Returns what the fixes cost. Never throws for CI trouble.
+ */
+async function watchPullRequest(gb: GoalBranch, goal: string, o: Opts, lr: LastRun): Promise<number> {
+  let cost = 0;
+  for (let attempt = 0; ; attempt++) {
+    console.log(`waiting for the CI checks of ${lr.pr}...`);
+    const ci = await waitForChecks(lr.pr!);
+    lr.ci = ci.state;
+    emit("ci", { pr: lr.pr, state: ci.state, attempt, failed: ci.failed.map((c) => c.name) });
+    console.log(`CI: ${ci.state}${ci.failed.length ? ` (${ci.failed.map((c) => c.name).join(", ")})` : ""}`);
+    if (ci.state !== "fail" || attempt >= o.ciFixes) return cost;
+    const logs = ci.failed.map(checkLog).join("\n\n");
+    const fixGoal =
+      `${goal}\n\nThe work for this goal is done, but its pull request (${lr.pr}) fails its CI checks. Find out why and fix it ` +
+      `in the code or tests. Do not weaken, skip or delete checks or tests to make them pass.\n\nFailing checks:\n${logs}`;
+    try {
+      git("switch", "-q", gb.branch);
+    } catch (e) {
+      console.warn(`could not switch to ${gb.branch} to fix CI (${msg(e)})`);
+      return cost;
+    }
+    const fixOpts: Opts = { ...o, approvePlan: false, maxRounds: Math.min(o.maxRounds, 3) };
+    const ctx: RunCtx = {
+      budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+      timeoutMs: o.agentTimeoutMs,
+      usageCap: o.usageCap,
+      onLimit: o.onLimit,
+    };
+    const fixLr: LastRun = { goal: fixGoal, status: "running", cost: 0, state: [] };
+    let cp = "";
+    let fixed = false;
+    emit("goal_start", { goal: `Fix CI of ${lr.pr}`, maxRounds: fixOpts.maxRounds, dryRun: false, power: o.power, maxCost: o.maxCost, ci: true });
+    try {
+      cp = prepareGit();
+      fixed = await runGoalInner(fixGoal, fixOpts, cp, ctx, fixLr, null, `fix CI of ${short(goal)}`);
+      emit("goal_end", { passed: fixed, cost: round4(ctx.budget.spent) });
+    } catch (e) {
+      emit("goal_end", { passed: false, error: msg(e), cost: round4(ctx.budget.spent) });
+      if (isFatal(e)) console.warn(`CI fix stopped: ${msg(e)}`);
+    } finally {
+      cost += ctx.budget.spent;
+      // Keep what the fix committed if it passed, else drop it: the branch stays as the PR had it.
+      try {
+        if (fixed) tryCommit(`orch: fix CI of ${short(goal)}`);
+        else if (cp) moveWorkAside(cp, "failed", `orch: CI fix of ${short(goal)} (unfinished)`);
+        if (cp && branchExists(cp)) git("branch", "-D", cp);
+        git("switch", "-q", gb.base);
+      } catch (e) {
+        console.warn(`could not clean up after the CI fix (${msg(e)}); you may still be on ${gb.branch}`);
+      }
+    }
+    if (!fixed) {
+      console.warn("the CI fix did not pass its own checks and QA; leaving the pull request as it is");
+      return cost;
+    }
+    try {
+      execFileSync("git", ["push", "-q", "origin", gb.branch], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        timeout: 120_000,
+      });
+    } catch (e) {
+      console.warn(`could not push the CI fix (${msg(e)})`);
+      return cost;
+    }
+  }
+}
+
 /** Where the last interrupted goal's work was put (finishGit / finishGoalBranch), for its next attempt. */
 let lastParked: string | undefined;
 
@@ -1762,6 +1891,8 @@ type Opts = {
   secretScan: boolean;
   /** Comment on the GitHub issue a goal came from (start, done, failed, blocked). */
   issueComments: boolean;
+  /** --pr: wait for the pull request's CI checks, and how many fix goals to run when they fail (-1: do not wait). */
+  ciFixes: number;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1933,6 +2064,8 @@ type LastRun = {
   pr?: string;
   /** The GitHub issue the goal came from: its pull request closes it. */
   issue?: number;
+  /** --pr: how the pull request's CI checks ended (pass, fail, none, timeout) after any fixes. */
+  ci?: string;
 };
 
 /** First line of brief.md: the commit the brief describes, so a brief can tell when it has gone stale. */
@@ -2671,10 +2804,15 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resum
       lr.checkpoint = cp && branchExists(cp) ? cp : undefined;
       writeLastRun(lr);
     }
+    // --pr: the pull request is open (or updated); see its CI through, fixing it if it fails.
+    if (passed && gb && o.pr && lr.pr && o.ciFixes >= 0 && !o.dryRun) {
+      lastGoalCost += await watchPullRequest(gb, goal, o, lr);
+      writeLastRun(lr);
+    }
   }
 }
 
-async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: LastRun, resumed: string[] | null = null): Promise<boolean> {
+async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: LastRun, resumed: string[] | null = null, title?: string): Promise<boolean> {
   PROTECT = o.protect;
   SECRET_SCAN = o.secretScan;
   const roster = discoverAgents();
@@ -2914,7 +3052,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       console.warn(`secrets in the changes, not committed: ${secrets.map((x) => `${x.what} in ${x.file}`).join(", ")}`);
       emit("secrets", { round, found: secrets });
     }
-    const committed = cp && !secrets.length ? tryCommit(`orch: ${short(goal)} (round ${round})`) : null;
+    const committed = cp && !secrets.length ? tryCommit(`orch: ${title ?? short(goal)} (round ${round})`) : null;
     const progressed = cp ? !!committed || !!dirtyFiles() : results.some((r) => r.touched.length > 0);
     // Budget or usage limit: siblings have finished and the work is committed; end the goal.
     const fatal = results.find((r) => r.fatal)?.fatal;
@@ -3449,7 +3587,8 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       commitIssueNote(
         final,
         final.status === "done"
-          ? `Done${last?.pr ? `: pull request ${last.pr}` : last?.branch ? ` on branch \`${last.branch}\`` : ""}.`
+          ? `Done${last?.pr ? `: pull request ${last.pr}` : last?.branch ? ` on branch \`${last.branch}\`` : ""}.` +
+              (last?.ci === "fail" ? " Its CI checks still fail, though; it needs a look." : last?.ci === "pass" ? " Its CI checks pass." : "")
           : `Could not finish this${final.attempts ? ` after ${final.attempts + 1} attempts` : ""}.` +
               (fails.length ? `\n\nWhat was still wrong:\n${fails.map((f) => `- ${f.replace(/\s+/g, " ").slice(0, 300)}`).join("\n")}` : "") +
               `\n\nAfter a fix, put it back in the queue with \`orch retry ${final.id}\` (or Retry in the UI).`,
@@ -3532,6 +3671,10 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
         : [".github/workflows/"];
   const secretScan = !values["no-secret-scan"] && cfg.secretScan !== false;
   const issueComments = !values["no-issue-comments"] && cfg.issueComments !== false;
+  const ciFixesRaw = Number(values["ci-fixes"] ?? cfg.ciFixes ?? 2);
+  if (!Number.isInteger(ciFixesRaw) || ciFixesRaw < 0 || ciFixesRaw > 5)
+    throw new Error(`--ci-fixes must be 0 to 5, got "${values["ci-fixes"] ?? cfg.ciFixes}"`);
+  const ciFixes = values["no-ci-watch"] || cfg.ciWatch === false ? -1 : ciFixesRaw;
   const retries = Number(values.retries ?? cfg.retries ?? 1);
   if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
   return {
@@ -3561,6 +3704,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     protect,
     secretScan,
     issueComments,
+    ciFixes,
     strictFiles,
     maxCostTotal,
   };
@@ -3607,6 +3751,8 @@ async function main() {
       protect: { type: "string" },
       "no-secret-scan": { type: "boolean", default: false },
       "no-issue-comments": { type: "boolean", default: false },
+      "ci-fixes": { type: "string" },
+      "no-ci-watch": { type: "boolean", default: false },
       github: { type: "string" },
       backlog: { type: "string" },
       setup: { type: "string" },

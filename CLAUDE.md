@@ -21,7 +21,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, review, split_proposal, coverage, retry, blocked, queue_changed, resumed, intake, protected, secrets, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
+architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, review, split_proposal, coverage, retry, blocked, queue_changed, resumed, intake, protected, secrets, ci, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
 in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
 process exits without `goal_end`.
 
@@ -33,7 +33,7 @@ process exits without `goal_end`.
 - `npm run build`: typecheck + Vite build
 - `npm run lint` (ESLint, whole repo, config `orch-ui/eslint.config.mjs`), `npm run format` / `format:check` (Prettier, printWidth 160, `.prettierignore` at the root: code only, never eval fixtures). CI fails on either.
 - Rust: `cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings` (`rustfmt.toml`: max_width 160)
-- `npm test`: 71 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers, `claude-bin.ts` and the UI's `reduce.ts`, `progress.ts`, `notifyText.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 72 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers, `claude-bin.ts` and the UI's `reduce.ts`, `progress.ts`, `notifyText.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
@@ -47,6 +47,7 @@ process exits without `goal_end`.
 - Notifications: `orch-ui/src/notifyText.ts` (pure, unit-tested) picks the events, `notify.ts` sends them (Tauri `tauri-plugin-notification`, capability `notification:default`, or the browser Notification API); called from `useOrch.ts` for live events only.
 - Big briefs: `orch split` (`splitBrief` / `acceptSplit`, `--propose`, `--accept` from stdin, `--start`) and `orch new` share one splitter; the brief lives in `.orchestrator/spec.md` (read by every architect via `specForPrompt`), queue items from it carry `fromSpec`, and `coverageCheck` runs when the loop's queue is empty (two passes per brief, `.orchestrator/spec-state.json`). UI: `Brief.tsx`, the proposal comes from a `split_proposal` event without `queued` (`Session.proposal`). **+ New project** (`NewProject.tsx`) calls the backends' `new_project` / `/api/new-project`: they create `<parent>/<name>` (a plain name), open it as a repo and start `orch new .` there with the spec in a temp file.
 - Safety: `protect` (default `.github/workflows/`, `protectedBy` in `validate` and before the commit, `revertPaths`) and `scanSecrets` (added lines, new files, `.env`; `commitAll` refuses unless parking). Never log a secret's value.
+- PR CI: `watchPullRequest` (after `finishGoalBranch` in `runGoal`'s finally) waits on `gh pr checks`, runs fix goals (`runGoalInner` with a `title`) on the PR branch and pushes; fake `gh pr checks` follows `FAKE_GH_CHECKS`.
 - Issues: `priorityOf` (labels → `priority`, `nextRunnable` picks the lowest), `commentIssue` on start / done / failed / blocked (`ISSUE_COMMENTS`). Never write "#N" for a queue goal in a comment.
 - Intake: `orch intake` / `loop --intake` (`githubIssues` via gh, `backlogItems` from `- [ ]` lines), queue items keep `issue` / `backlog` so nothing is queued twice; a PR from an issue says `Closes #N`. Fake `gh issue list` reads `FAKE_GH_ISSUES`.
 - Interrupted goals resume from their parked work: `lastParked` (set by `finishGit` / `finishGoalBranch`), queue item `resumeFrom`, `applyParked` after the checkpoint, and a note to the architect.

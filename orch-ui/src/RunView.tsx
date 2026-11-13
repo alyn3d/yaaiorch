@@ -199,6 +199,18 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
         </p>
       )}
       {run.pr?.error && <p className="note">No pull request: {run.pr.error}</p>}
+      {run.ci && (
+        <p className={run.ci.state === "pass" ? "muted" : "note"} title="The pull request's CI checks on GitHub">
+          CI:{" "}
+          {run.ci.state === "pass"
+            ? "checks pass"
+            : run.ci.state === "fail"
+              ? `failing (${run.ci.failed.join(", ")})`
+              : run.ci.state === "none"
+                ? "no checks reported"
+                : "still running when orch stopped waiting"}
+        </p>
+      )}
       {run.rounds.map((r) => (
         <div key={r.round} className="round">
           <div className="row">

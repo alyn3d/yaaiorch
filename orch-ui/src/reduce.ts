@@ -124,6 +124,8 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       return run && { ...run, branch: { name: ev.branch, base: ev.base } };
     case "pr":
       return run && { ...run, pr: { url: ev.url, error: ev.error } };
+    case "ci":
+      return run && { ...run, ci: { state: ev.state, failed: ev.failed ?? [] } };
     case "review":
       return (
         run &&

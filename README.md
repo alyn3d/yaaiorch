@@ -235,7 +235,10 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   settings, `--branch` / `--pr`): each goal runs on its own `orch/<id>-<slug>` branch and orch switches back
   afterwards, so your branch is never changed. With `--pr`, a passed goal's branch is pushed to `origin` and
   a pull request is opened with the GitHub CLI (`gh`, logged in); you review PRs, not runs. A missing `gh` or
-  remote is reported, and the branch stays for you.
+  remote is reported, and the branch stays for you. orch then waits for the pull request's CI checks; when one
+  fails, it reads the failing job's log and runs a fix goal on the PR branch (up to `--ci-fixes N`, default 2;
+  your workflows stay protected, so it fixes the code, not the checks), pushes, and waits again.
+  `--no-ci-watch` skips the wait.
 - **Tidy notes and share them.** When `notes.md` grows past 5,000 characters, one cheap call merges and prunes
   it. `orch share` (**Share to CLAUDE.md**) turns the brief and lasting lessons into a section of the repo's
   `CLAUDE.md`, committed on an `orchestrator/claude-md-*` branch for you to review and merge, so teammates and

@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **orch sees its pull requests through CI**: with `--pr`, orch waits for the pull request's checks; when one
+  fails, it runs a fix goal on the PR branch with the failing job's log (up to `--ci-fixes N`, default 2; it may
+  not touch the workflows), pushes and waits again. The run panel and the issue comment show the CI result.
+  `--no-ci-watch` to skip it. New `ci` event.
 - **Issues hear back, and priorities count**: a goal from a GitHub issue comments on it when it starts, is done
   (with the pull request), fails for good (with what was still wrong) or is blocked; `--no-issue-comments` to
   stay quiet. Labels `p1`-`p9` or `priority: high|low` (and `(p1)` in a backlog item) decide which runnable goal

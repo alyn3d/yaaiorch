@@ -787,10 +787,12 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(branches(dir, "orchestrator/failed-*").length, 1);
     assert.deepEqual(branches(dir, "orchestrator/checkpoint-*"), []);
     // One pull request, opened after A and updated after B.
+    // (gh is also asked for the PR's CI checks after each goal; only one pull request is created.)
     const calls = readFileSync(ghLog, "utf8")
       .trim()
       .split("\n")
-      .map((l) => JSON.parse(l));
+      .map((l) => JSON.parse(l))
+      .filter((c) => c.args[0] === "pr" && c.args[1] === "create");
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0].args.slice(0, 6), ["pr", "create", "--base", "main", "--head", shared[0]]);
     assert.equal(calls[0].args[7], "Build the brief");
@@ -1174,6 +1176,72 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     });
     assert.equal(q2.code, 0, q2.out);
     assert.ok(!readFileSync(`${quiet}.gh.log`, "utf8").includes('"comment"'));
+  });
+
+  test("--pr watches the pull request's CI; a failing check gets a fix goal on the PR branch, pushed, then CI passes", () => {
+    const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+    const setup = () => {
+      const dir = repo();
+      const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
+      dirs.push(origin);
+      git(origin, "init", "-q", "--bare");
+      git(dir, "remote", "add", "origin", origin);
+      return { dir, origin };
+    };
+    const env = (dir, checks) => ({
+      FAKE_QA: "pass",
+      GH_BIN: FAKE_GH,
+      FAKE_GH_LOG: `${dir}.gh.log`,
+      FAKE_GH_CHECKS: checks,
+      ORCH_CI_POLL_MS: "20",
+      ORCH_CI_NONE_MS: "200",
+    });
+
+    const { dir, origin } = setup();
+    const main = git(dir, "rev-parse", "main");
+    const r = orch(dir, ["run", "Add export", "--max-rounds", "1", "--pr"], env(dir, "pending,fail,pass"));
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("ci").map((e) => [e.state, e.attempt, e.failed]),
+      [
+        ["fail", 0, ["test"]],
+        ["pass", 1, []],
+      ],
+    );
+    assert.deepEqual(
+      r.ev("goal_start").map((e) => e.goal),
+      ["Add export", `Fix CI of ${r.last("pr").url}`],
+    );
+    assert.ok(r.calls.includes("architect: ci fix with log"), "the fix goal gets the failing log");
+    const branch = r.last("goal_branch").branch;
+    assert.equal(git(origin, "rev-parse", branch), git(dir, "rev-parse", branch), "the fix was pushed to the PR branch");
+    assert.equal(git(dir, "log", "-1", "--format=%s", branch), "orch: fix CI of Add export (round 1)", "the fix round's commit is on top");
+    assert.equal(Number(git(dir, "rev-list", "--count", `main..${branch}`)), 2);
+    assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+    assert.equal(git(dir, "rev-parse", "main"), main);
+    assert.equal(lastRun(dir).ci, "pass");
+    assert.deepEqual(branches(dir, "orchestrator/checkpoint-*"), []);
+
+    // --ci-fixes 0 only reports; --no-ci-watch does not wait at all.
+    const a = setup();
+    const only = orch(a.dir, ["run", "x", "--max-rounds", "1", "--pr", "--ci-fixes", "0"], env(a.dir, "fail"));
+    assert.equal(only.code, 0, only.out);
+    assert.deepEqual(
+      only.ev("ci").map((e) => e.state),
+      ["fail"],
+    );
+    assert.equal(only.ev("goal_start").length, 1);
+    assert.equal(lastRun(a.dir).ci, "fail");
+    const b = setup();
+    const none = orch(b.dir, ["run", "x", "--max-rounds", "1", "--pr", "--no-ci-watch"], env(b.dir, "fail"));
+    assert.equal(none.ev("ci").length, 0);
+    const c = setup();
+    assert.deepEqual(
+      orch(c.dir, ["run", "x", "--max-rounds", "1", "--pr"], env(c.dir, "none"))
+        .ev("ci")
+        .map((e) => e.state),
+      ["none"],
+    );
   });
 
   test("--max-cost-total: the loop stops before the next goal once its budget is spent", () => {
