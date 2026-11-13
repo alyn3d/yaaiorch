@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import type { Proposal } from "./useOrch";
 
+/** A goal being edited: `key` stays the same through edits and moves; `after` holds the keys of goals it needs. */
+type Draft = { key: number; goal: string; after: number[] };
+let nextKey = 1;
+
 const draftKey = (repo: string) => `yaaiorch.brief:${repo}`;
 const loadDraft = (repo: string) => {
   try {
@@ -30,14 +34,16 @@ export function BriefBox({
   opts: Record<string, unknown>;
 }) {
   const [brief, setBrief] = useState(() => loadDraft(repo));
-  const [goals, setGoals] = useState<string[]>([]);
+  const [goals, setGoals] = useState<Draft[]>([]);
   const [shownAt, setShownAt] = useState<number | null>(null);
   const [working, setWorking] = useState(false);
 
   // A new proposal from the architect replaces the list being edited.
   useEffect(() => {
     if (proposal && proposal.at !== shownAt) {
-      setGoals(proposal.goals);
+      const keys = proposal.goals.map(() => nextKey++);
+      // `after` from orch: 1-based positions of the goals each one needs.
+      setGoals(proposal.goals.map((goal, i) => ({ key: keys[i], goal, after: (proposal.after?.[i] ?? []).map((p) => keys[p - 1]).filter(Boolean) })));
       setShownAt(proposal.at);
     }
   }, [proposal, shownAt]);
@@ -50,7 +56,13 @@ export function BriefBox({
       /* storage blocked: the draft lives until reload */
     }
   };
-  const edit = (i: number, text: string) => setGoals(goals.map((g, j) => (j === i ? text : g)));
+  const edit = (i: number, text: string) => setGoals(goals.map((g, j) => (j === i ? { ...g, goal: text } : g)));
+  const remove = (i: number) => {
+    const gone = goals[i].key;
+    setGoals(goals.filter((_, j) => j !== i).map((g) => ({ ...g, after: g.after.filter((k) => k !== gone) })));
+  };
+  /** Positions (1-based) of the goals `g` needs that come before it in the list as it is now. */
+  const needsOf = (g: Draft, list: Draft[]) => g.after.map((k) => list.findIndex((x) => x.key === k) + 1).filter((p) => p > 0 && p < list.indexOf(g) + 1);
   const move = (i: number, by: number) => {
     const j = i + by;
     if (j < 0 || j >= goals.length) return;
@@ -58,7 +70,8 @@ export function BriefBox({
     [next[i], next[j]] = [next[j], next[i]];
     setGoals(next);
   };
-  const clean = goals.map((g) => g.trim()).filter(Boolean);
+  const kept = goals.filter((g) => g.goal.trim());
+  const clean = kept.map((g) => ({ goal: g.goal.trim(), after: needsOf(g, kept) }));
   const queue = async (start: boolean) => {
     setWorking(true);
     const ok = await call("split-accept", { brief, goals: clean });
@@ -91,9 +104,16 @@ export function BriefBox({
         <div className="proposal">
           <ol>
             {goals.map((g, i) => (
-              <li key={i}>
+              <li key={g.key}>
                 <span className="num">{i + 1}.</span>
-                <textarea rows={2} value={g} onChange={(e) => edit(i, e.target.value)} />
+                <span className="goal">
+                  <textarea rows={2} value={g.goal} onChange={(e) => edit(i, e.target.value)} />
+                  {needsOf(g, goals).length > 0 && (
+                    <span className="muted" title="Not run if one of these fails">
+                      after {needsOf(g, goals).join(", ")}
+                    </span>
+                  )}
+                </span>
                 <span className="moves">
                   <button title="Earlier" disabled={i === 0} onClick={() => move(i, -1)}>
                     ↑
@@ -101,7 +121,7 @@ export function BriefBox({
                   <button title="Later" disabled={i === goals.length - 1} onClick={() => move(i, 1)}>
                     ↓
                   </button>
-                  <button title="Remove" onClick={() => setGoals(goals.filter((_, j) => j !== i))}>
+                  <button title="Remove" onClick={() => remove(i)}>
                     ✕
                   </button>
                 </span>
@@ -109,7 +129,7 @@ export function BriefBox({
             ))}
           </ol>
           <div className="row">
-            <button onClick={() => setGoals([...goals, ""])}>+ Add goal</button>
+            <button onClick={() => setGoals([...goals, { key: nextKey++, goal: "", after: goals.map((g) => g.key) }])}>+ Add goal</button>
             <button onClick={() => setGoals([])}>Discard</button>
             <span className="spacer" />
             <button disabled={working || !clean.length} onClick={() => queue(false)}>

@@ -619,6 +619,17 @@ http
           requestStart(s, ["run", ...flags(b), b.goal], `run: ${b.goal.slice(0, 60)}`);
           return json(200, { ok: true });
         }
+        if (url.pathname === "/api/retry") {
+          const id = Number(b.id);
+          if (!Number.isInteger(id)) return json(400, { error: "goal id required" });
+          await new Promise<void>((ok, fail) =>
+            execFile(process.execPath, [TSX_CLI, ORCH, "retry", String(id)], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+              err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+            ),
+          );
+          sendSession(s);
+          return json(200, { ok: true });
+        }
         if (url.pathname === "/api/add") {
           if (!b.goal?.trim()) return json(400, { error: "goal required" });
           await addGoal(s, b.goal);

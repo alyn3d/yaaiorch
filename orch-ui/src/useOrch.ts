@@ -7,13 +7,16 @@ import { notificationFor } from "./notifyText";
 import { baseName } from "./repoStatus";
 
 /** The architect's split of a big brief (`split_proposal`), waiting to be edited and queued. */
-export type Proposal = { goals: string[]; at: number };
+/** `after[i]`: 1-based positions of the earlier goals goal i needs. */
+export type Proposal = { goals: string[]; after?: number[][]; at: number };
 /** Everything the UI knows about one repo. */
 export type Session = { state: State; log: string[]; run: RunView | null; proposal?: Proposal };
 
 /** Only a proposal still to be edited and queued: `orch new` and a plain `orch split` queue theirs at once (`queued`). */
 const proposalOf = (e: OrchEvent): Proposal | undefined =>
-  e.type === "split_proposal" && !e.queued && Array.isArray(e.goals) ? { goals: e.goals.filter((g: unknown) => typeof g === "string"), at: e.t } : undefined;
+  e.type === "split_proposal" && !e.queued && Array.isArray(e.goals)
+    ? { goals: e.goals.filter((g: unknown) => typeof g === "string"), after: Array.isArray(e.after) ? e.after : undefined, at: e.t }
+    : undefined;
 
 const stopped = (): OrchEvent => ({ type: "stopped", t: Date.now() });
 const MAX_LOG = 5000;

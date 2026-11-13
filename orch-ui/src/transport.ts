@@ -162,6 +162,7 @@ const COMMANDS: Record<string, string> = {
   learn: "learn_repo",
   share: "share_repo",
   approve: "approve_plan",
+  retry: "retry_goal",
   split: "split_brief",
   "split-accept": "accept_split",
   "stop-after": "stop_after",

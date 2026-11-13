@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Goals that build on each other**: a split brief says which earlier goals each goal needs. A failed goal is
+  tried again one power tier higher (`--retries N`, default 1); if it still fails, the goals that need it are
+  marked **blocked** and skipped, independent ones go on, and you get a notification. **Retry** (`orch retry ID`)
+  puts it back with what it blocked. New `retry` and `blocked` events; the queue shows each goal's dependencies.
 - **Big briefs**: `orch split "<brief>"` (or `--brief-file`, `--start`) and a **Big brief** box per repo: the
   architect splits a long brief into goals in build order, you edit the list and queue it, or queue it and start
   the loop. The brief is kept in `.orchestrator/spec.md` and read by every goal's architect, and when the queue
@@ -59,6 +63,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   quoting rules from every agent call (a `CLAUDE_BIN` path with `&`, `%` or `^` works) and Node's `DEP0190`
   warning. The current directory is no longer searched, so a target repo cannot plant a `claude.cmd`.
   A shim orch cannot read still goes through cmd.exe, and `orch doctor` says so.
+
+### Fixed
+- `--branch` with a brief: each goal branched from the starting branch, so later goals never saw the earlier
+  goals' work. A brief's goals now share one branch, `orch/brief-<id>`; a failed goal is parked instead of
+  staying under the next ones, and `--pr` opens one pull request for the brief that grows with each goal.
 
 ## [0.3.0] - 2026-11-13
 

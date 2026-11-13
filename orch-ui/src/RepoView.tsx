@@ -196,11 +196,20 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           <ul className="queue">
             {state.queue.map((i) => (
               <li key={i.id}>
-                <span className={`badge ${i.status}`}>{i.status}</span>
+                <span className={`badge ${i.status === "blocked" ? "warn" : i.status}`}>{i.status}</span>
                 <span>
                   #{i.id} {i.goal}
+                  {i.after?.length ? <span className="muted"> (after {i.after.map((d) => `#${d}`).join(", ")})</span> : null}
                 </span>
                 {i.note && <span className="note">{i.note}</span>}
+                {(i.status === "failed" || i.status === "blocked") && (
+                  <button
+                    title="Put it back in the queue, with the goals it blocked (after you fixed what stopped it)"
+                    onClick={() => call("retry", { id: i.id })}
+                  >
+                    Retry
+                  </button>
+                )}
               </li>
             ))}
           </ul>

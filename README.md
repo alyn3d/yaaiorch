@@ -181,6 +181,14 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   `.orchestrator/spec.md`, and every goal's architect reads it, so each goal fits the rest. When the queue runs
   dry, a coverage check compares the brief with the code and queues what is still missing (at most twice per
   brief; `--no-coverage` or `"coverage": false` to skip it).
+- **Goals that build on each other.** The split says which earlier goals each one needs (shown as "after 1, 3";
+  unsaid means all earlier ones). A failed goal is tried again one power tier higher (`--retries N`, default 1;
+  not after the budget ran out); if it still fails, the goals that need it are marked **blocked** and skipped
+  while independent ones go on, with a notification. **Retry** on a failed or blocked goal (`orch retry ID`)
+  puts it back with what it blocked. With **Branch per goal**, a brief's goals share one branch,
+  `orch/brief-<id>`, so each builds on the ones before; a failed goal's work is parked on
+  `orchestrator/failed-*` instead of staying under the next goals, and with **Open pull request** the brief gets
+  one pull request that grows with each goal.
 - **New projects** (**+ New project** next to the repo tabs, or `orch new DIR "<spec>"` / `--spec-file SPEC.md`;
   `--start` runs the loop right away). In the UI you pick the parent folder and a name, paste the spec, optionally
   a setup command and a budget, and tick **Start building right away** if you want; the project opens in its own tab.

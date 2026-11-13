@@ -26,6 +26,8 @@
 //   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
 //   FAKE_TIDY=bad            the notes tidy call returns no usable notes
 //   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
+//   FAKE_SPLIT=deps          orch split returns A, B (needs A) and C (needs nothing)
+//   FAKE_QA_FAIL_GOAL=<text> QA fails every round of a goal whose text contains this
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
 //   FAKE_BAD_PLAN_ONCE=1     the first plan is not JSON
@@ -164,7 +166,15 @@ if (prompt.includes("Review this change")) {
     JSON.stringify(
       fresh
         ? { goals: ["Set up the project", "Add the first feature"], checks: { test: 'node -e "process.exit(0)"', "bad name!": "x" } }
-        : { goals: ["[A] Build part A", "[B] Build part B", 42, ""] },
+        : env.FAKE_SPLIT === "deps"
+          ? {
+              goals: [
+                { goal: "[A] Build part A", after: [] },
+                { goal: "[B] Build part B on A", after: [1] },
+                { goal: "[C] Build part C alone", after: [] },
+              ],
+            }
+          : { goals: [{ goal: "[A] Build part A", after: [] }, "[B] Build part B", 42, ""] },
     ),
   );
 } else if (prompt.includes("that is not done yet")) {
@@ -230,6 +240,13 @@ if (prompt.includes("Review this change")) {
   if (prompt.includes("## Project brief")) log("qa: got brief");
   if (prompt.includes("outside every task's file list")) log("qa: told about files outside the plan");
   log(`qa: sawNewFiles=${sawNew}`);
+  // FAKE_QA_FAIL_GOAL=<text>: fail every verdict for a goal whose text contains it.
+  const goalLine = /^Goal: (.*)$/m.exec(prompt)?.[1] ?? "";
+  if (env.FAKE_QA_FAIL_GOAL && goalLine.includes(env.FAKE_QA_FAIL_GOAL)) {
+    log(`qa: failing goal ${goalLine}`);
+    reply('{"passed": false, "failures": ["fake failure for this goal"]}');
+    process.exit(0);
+  }
   const failOnce = mode === "fail-once" && !existsSync(".orchestrator/fake-qa-failed");
   if (failOnce) writeFileSync(".orchestrator/fake-qa-failed", "1");
   if (mode === "fail" || failOnce) reply('{"passed": false, "failures": ["fake failure"]}');

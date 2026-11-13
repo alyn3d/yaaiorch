@@ -104,8 +104,9 @@ Each item should show its effect in the evals before it becomes the default.
   `gh pr create`, never touch the main branch (`--branch`, `--pr`).
 - [ ] **Backlog intake**: read goals from `BACKLOG.md` or GitHub issues with a label; priority and
   `dependsOn` on queue items.
-- [ ] **Queue lifecycle**: show the running goal, retry policy, a `blocked` status for goals that need a
-  human, per-item power and max rounds.
+- [x] **Queue lifecycle**: retry policy (`--retries`, a tier up), a `blocked` status for goals that need a failed
+  one, dependencies between goals of a brief, `orch retry` / **Retry**, per-item power on retry. Still open:
+  per-item max rounds set by hand.
 - [x] **Plan approval gate**: optional pause after planning so a human can approve or edit the plan
   (`--approve-plan`, `orch approve`, the run panel).
 - [ ] **Worktree per build task** so parallel agents cannot break each other's test runs (Conductor,

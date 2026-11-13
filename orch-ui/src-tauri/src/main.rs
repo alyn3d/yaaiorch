@@ -930,6 +930,25 @@ fn add_goal(app: AppHandle, repo: String, goal: String) -> Result<(), String> {
     Ok(())
 }
 
+/// `orch retry ID`: a failed or blocked goal, and the goals it blocked, back in the queue.
+#[tauri::command]
+fn retry_goal(app: AppHandle, repo: String, id: u64) -> Result<(), String> {
+    let key = key_of(Path::new(&repo));
+    let out = node_cmd(&app, &repo_of(&app, &key)?, &["retry".into(), id.to_string()])?
+        .output()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch retry failed")
+            .to_string());
+    }
+    emit_session(&app, &key);
+    Ok(())
+}
+
 #[tauri::command(async)]
 fn agents(app: AppHandle, repo: String) -> Result<String, String> {
     let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
@@ -1266,6 +1285,7 @@ fn main() {
             run_goal,
             run_loop,
             add_goal,
+            retry_goal,
             agents,
             stop,
             clear_log,

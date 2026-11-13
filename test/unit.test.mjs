@@ -213,6 +213,10 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
     assert.equal(n("shop", "g", { type: "approval_wait", summary: "two tasks" }).title, "shop: plan waiting for you");
     assert.match(n("shop", "g", { type: "waiting", reason: "usage_limit", until: Date.now() + 60_000 }).title, /usage limit/);
     assert.match(n("shop", "g", { type: "waiting", reason: "usage_cap", until: Date.now() }).title, /usage cap/);
+    assert.deepEqual(n("shop", "g", { type: "blocked", id: 4, note: "needs #2, which failed" }), {
+      title: "shop: goal #4 is blocked",
+      body: "needs #2, which failed",
+    });
   });
   test("nothing for routine events or a goal cut short by the usage limit", () => {
     for (const e of [{ type: "task_end" }, { type: "plan" }, { type: "goal_end", passed: false, usageLimit: true }, { type: "loop_stop", reason: "requested" }])

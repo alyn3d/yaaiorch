@@ -19,6 +19,8 @@ export function notificationFor(repo: string, goal: string | undefined, e: Ev): 
         ? { title: `${repo}: paused at your usage cap`, body: `Continues after ${until}.` }
         : { title: `${repo}: Claude usage limit reached`, body: `Waiting until ${until}, then it carries on.` };
     }
+    case "blocked":
+      return { title: `${repo}: goal #${e.id} is blocked`, body: typeof e.note === "string" ? e.note : "A goal it needs failed." };
     case "loop_stop":
       return e.reason === "budget" ? { title: `${repo}: queue stopped`, body: "The loop budget is used up." } : null;
     default:

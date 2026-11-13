@@ -669,6 +669,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.deepEqual(prop.last("split_proposal").goals, ["[A] Build part A", "[B] Build part B"], "junk entries dropped");
     assert.equal(prop.last("split_proposal").cost, 0.05);
     assert.equal(prop.last("split_proposal").queued, false, "a UI may offer to queue it");
+    assert.deepEqual(prop.last("split_proposal").after, [[], [1]], "B said nothing: it needs every earlier goal");
     assert.ok(!existsSync(join(dir, ".orchestrator", "queue.json")), "nothing queued");
 
     // The UI's path: edited goals and the brief on stdin.
@@ -697,6 +698,108 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(f.last("split_proposal").queued, true, "already queued: a UI must not offer it again");
     assert.ok(!existsSync(file));
     assert.equal(JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8")).length, 4);
+  });
+
+  test("brief goals with dependencies: a failed goal is retried a tier up, then blocks the goals that need it; others go on", () => {
+    const dir = repo();
+    const r = orch(dir, ["split", "--start", "--max-rounds", "1", "--no-coverage", "brief"], {
+      FAKE_QA: "pass",
+      FAKE_SPLIT: "deps",
+      FAKE_QA_FAIL_GOAL: "part A",
+    });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("queue_item").map((e) => e.goal),
+      ["[A] Build part A", "[A] Build part A", "[C] Build part C alone"],
+      "A, A again, then C; B never runs",
+    );
+    assert.deepEqual(
+      r.ev("goal_start").map((e) => e.power),
+      ["heavy", "max", "heavy"],
+      "the retry runs a tier higher",
+    );
+    assert.deepEqual(
+      r.ev("retry").map((e) => [e.id, e.attempt, e.power]),
+      [[1, 1, "max"]],
+    );
+    assert.deepEqual(
+      r.ev("blocked").map((e) => e.id),
+      [2],
+    );
+    assert.match(r.last("blocked").note, /needs #1, which failed; run "orch retry 1"/);
+    const q = () => JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    assert.deepEqual(
+      q().map((i) => [i.id, i.status, i.after]),
+      [
+        [1, "failed", []],
+        [2, "blocked", [1]],
+        [3, "done", []],
+      ],
+    );
+    assert.match(orch(dir, ["status"]).out, /#2 \[blocked\] \[B\] Build part B on A \(after #1\)/);
+
+    // After a fix: retry puts the goal and what it blocked back, with a fresh retry budget.
+    assert.match(orch(dir, ["retry", "3"]).out, /only a failed or blocked goal/);
+    assert.equal(orch(dir, ["retry", "1"]).code, 0);
+    assert.deepEqual(
+      q().map((i) => [i.id, i.status, i.attempts]),
+      [
+        [1, "pending", undefined],
+        [2, "pending", undefined],
+        [3, "done", undefined],
+      ],
+    );
+    const again = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--no-coverage"], { FAKE_QA: "pass" });
+    assert.deepEqual(
+      again.ev("queue_item").map((e) => e.id),
+      [1, 2],
+      "B waits for A, then runs",
+    );
+  });
+
+  test("--branch with a brief: its goals share one branch and build on each other; a failed one is parked; one PR", () => {
+    const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+    const dir = repo();
+    const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
+    dirs.push(origin);
+    git(origin, "init", "-q", "--bare");
+    git(dir, "remote", "add", "origin", origin);
+    const main = git(dir, "rev-parse", "main");
+    const ghLog = `${dir}.gh.log`;
+    const r = orch(dir, ["split", "--start", "--max-rounds", "1", "--no-coverage", "--retries", "0", "--pr", "Build the brief"], {
+      FAKE_QA: "pass",
+      FAKE_SPLIT: "deps",
+      FAKE_QA_FAIL_GOAL: "part C",
+      GH_BIN: FAKE_GH,
+      FAKE_GH_LOG: ghLog,
+    });
+    assert.equal(r.code, 0, r.out);
+    const shared = r.ev("goal_branch").map((e) => e.branch);
+    assert.equal(new Set(shared).size, 1, "one branch for the whole brief");
+    assert.match(shared[0], /^orch\/brief-[0-9a-z]+-build-the-brief$/);
+    assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+    assert.equal(git(dir, "rev-parse", "main"), main, "main unchanged");
+    // B is built on top of A on the shared branch; C failed and was parked, not left under later work.
+    assert.deepEqual(git(dir, "log", "--format=%s", `main..${shared[0]}`).split("\n"), [
+      "orch: [B] Build part B on A (round 1)",
+      "orch: [A] Build part A (round 1)",
+    ]);
+    assert.equal(branches(dir, "orchestrator/failed-*").length, 1);
+    assert.deepEqual(branches(dir, "orchestrator/checkpoint-*"), []);
+    // One pull request, opened after A and updated after B.
+    const calls = readFileSync(ghLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args.slice(0, 6), ["pr", "create", "--base", "main", "--head", shared[0]]);
+    assert.equal(calls[0].args[7], "Build the brief");
+    assert.match(calls[0].body, /^Build the brief\n/);
+    assert.deepEqual(
+      r.ev("pr").map((e) => !!e.updated),
+      [false, true],
+    );
+    assert.equal(git(origin, "rev-parse", shared[0]), git(dir, "rev-parse", shared[0]), "the update was pushed");
   });
 
   test("orch split --start builds the goals, then a coverage check queues what is missing (at most twice)", () => {
@@ -1008,7 +1111,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const base = git(dir, "rev-parse", "HEAD");
     orch(dir, ["add", "goal one"]);
     orch(dir, ["add", "goal two"]);
-    const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1"], { FAKE_QA: "fail" });
+    const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--retries", "0"], { FAKE_QA: "fail" });
     assert.equal(r.code, 0, r.out);
     assert.match(orch(dir, ["status"]).out, /#1 \[failed\] goal one[\s\S]*#2 \[failed\] goal two/);
     assert.equal(branches(dir, "orchestrator/failed-*").length, 2);

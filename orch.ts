@@ -39,6 +39,7 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch new DIR "<spec>" [--spec-file FILE] [--setup CMD] [--start]   start a project in a new or empty folder: git,
                         SPEC.md, a .gitignore, and the spec split into queued goals (scaffold first) with suggested
                         checks in .orchestrator/config.json; --start runs the loop, else "orch loop --until-empty" there
+  orch retry ID          put a failed or blocked goal back in the queue, with the goals it blocked
   orch approve [--reject "WHY"] [--plan-stdin]   answer a run waiting with --approve-plan: build the plan (edited:
                         a plan as JSON on stdin), or send it back to the architect with your reason
   orch share [--dry-run]  propose what orch learned (brief and lasting notes) as a CLAUDE.md section, committed
@@ -75,6 +76,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   (each goal also gets at most what is left as its --max-cost); also "maxCostTotal" in config
          --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
                   reused across rounds and goals); also "brief": false in config
+         --retries N   loop: try a failed goal again N times (default 1), one power tier higher each time; after
+                  that, goals that build on it are marked blocked ("orch retry ID" runs them again); also "retries"
          --no-coverage   when the queue runs dry after goals from a brief, do not check the brief against the code
                   and queue what is missing (at most twice per brief); also "coverage": false in config
          --approve-plan   after planning, wait until you approve the plan ("orch approve", or the UI), edit it or
@@ -108,7 +111,21 @@ type Verdict = { passed: boolean; failures: string[]; notes?: string[] };
 /** The plan critic's answer. */
 type Review = { approved: boolean; issues: string[] };
 /** `note` says why a pending goal is waiting (for example a usage-limit reset). */
-type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed"; note?: string; fromSpec?: boolean };
+type Item = {
+  id: number;
+  goal: string;
+  /** blocked: a goal it builds on failed; it waits for "orch retry" (of that goal, or of this one). */
+  status: "pending" | "running" | "done" | "failed" | "blocked";
+  note?: string;
+  fromSpec?: boolean;
+  /** Ids of the goals this one builds on: it runs only after they are done. */
+  after?: number[];
+  /** The brief it came from (a shared branch with --branch). */
+  brief?: string;
+  /** Times it was retried after failing, and the tier it runs at then. */
+  attempts?: number;
+  power?: Power;
+};
 type Entry = { name: string; description: string; builtin?: boolean };
 type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string; session?: string };
 
@@ -502,6 +519,7 @@ type Config = {
   pr?: boolean;
   approvePlan?: boolean;
   coverage?: boolean;
+  retries?: number;
   /** Installs dependencies (for example "npm install"), run by orch before the checks when a manifest changed. */
   setup?: string;
   /** Files whose change triggers `setup` (default: the usual manifests and lock files). */
@@ -1132,8 +1150,8 @@ const branchExists = (b: string) => {
 };
 const dirtyFiles = () => git("status", "--porcelain", "--", ".", NOT_STATE);
 
-/** Refuse a dirty tree, then create the rollback branch. Returns "" outside git. */
-function prepareGit(): string {
+/** Refuse a dirty tree, then (after `onClean`, which may switch branches) create the rollback branch. Returns "" outside git. */
+function prepareGit(onClean?: () => void): string {
   if (!isGitRepo()) {
     console.warn("warning: not a git repo; no checkpoint, no commits, no diff checks");
     return "";
@@ -1141,6 +1159,7 @@ function prepareGit(): string {
   if (!hasCommits()) throw new Error("the git repo has no commits yet; make an initial commit first");
   const dirty = dirtyFiles();
   if (dirty) throw new Error(`working tree has uncommitted changes; commit or stash them first, or run "orch rollback" after a stopped run:\n${dirty}`);
+  onClean?.();
   const cp = `${BRANCH_PREFIX}checkpoint-${Date.now()}`;
   git("branch", cp);
   console.log(`checkpoint: ${cp} (roll back with: orch rollback)`);
@@ -1281,7 +1300,8 @@ function rollback(branch?: string) {
 }
 
 // ---------- --branch / --pr: a branch per goal, and a pull request when it passes ----------
-type GoalBranch = { branch: string; base: string };
+/** `shared`: the branch of a whole brief, which its goals build up one after another. */
+type GoalBranch = { branch: string; base: string; shared?: boolean };
 
 /** orch/<id>-<slug>: the queue id (or a time stamp for `orch run`) and the goal's first words. */
 function goalBranchName(goal: string, id?: number): string {
@@ -1298,19 +1318,25 @@ function goalBranchName(goal: string, id?: number): string {
   return n === 1 ? name : `${name}-${n}`;
 }
 
-/** Switch to a new branch for the goal, starting at the current commit. Needs a branch, not a detached HEAD. */
-function startGoalBranch(goal: string, id?: number): GoalBranch {
+/**
+ * Switch to the goal's branch: a new one from the current commit, or, for a goal from a brief, the brief's shared
+ * branch orch/brief-<id> (created on its first goal), so each goal builds on the ones before. Needs a branch, not a
+ * detached HEAD.
+ */
+function startGoalBranch(goal: string, id?: number, brief?: string): GoalBranch {
   let base: string;
   try {
     base = git("symbolic-ref", "--quiet", "--short", "HEAD");
   } catch {
     throw new Error("--branch needs a checked-out branch to start from (HEAD is detached)");
   }
-  const branch = goalBranchName(goal, id);
-  git("switch", "-q", "-c", branch);
+  const shared = brief ? `orch/brief-${brief}` : undefined;
+  const branch = shared ?? goalBranchName(goal, id);
+  if (shared && branchExists(shared)) git("switch", "-q", shared);
+  else git("switch", "-q", "-c", branch);
   console.log(`goal branch: ${branch} (from ${base}, which this goal does not change)`);
-  emit("goal_branch", { branch, base });
-  return { branch, base };
+  emit("goal_branch", { branch, base, ...(shared ? { shared: true } : {}) });
+  return { branch, base, shared: !!shared };
 }
 
 /**
@@ -1320,7 +1346,11 @@ function startGoalBranch(goal: string, id?: number): GoalBranch {
  */
 function finishGoalBranch(cp: string, gb: GoalBranch, goal: string, passed: boolean, o: Opts, lr: LastRun) {
   try {
-    tryCommit(`orch: ${short(goal)} (unfinished)`);
+    // On a brief's shared branch a failed goal must not stay under the next goals: park it, reset to the checkpoint.
+    if (gb.shared && !passed) {
+      const saved = moveWorkAside(cp, "failed", `orch: ${short(goal)} (unfinished)`);
+      if (saved) console.log(`goal failed; its work is on branch ${saved}, and ${gb.branch} is back where the goal started`);
+    } else tryCommit(`orch: ${short(goal)} (unfinished)`);
     const left = dirtyFiles();
     if (left) {
       console.warn(`warning: the goal's work is not fully committed, so orch stays on ${gb.branch} and keeps ${cp}:\n${left}`);
@@ -1335,7 +1365,7 @@ function finishGoalBranch(cp: string, gb: GoalBranch, goal: string, passed: bool
       return;
     }
     console.log(`back on ${gb.base} (unchanged); the goal's work is on branch ${gb.branch}`);
-    if (passed && o.pr) lr.pr = openPullRequest(gb, goal, lr);
+    if (passed && o.pr) lr.pr = gb.shared ? briefPullRequest(gb, lr) : openPullRequest(gb, goal, lr);
   } catch (e) {
     console.warn(`warning: could not finish the goal branch (${msg(e)}); you may still be on ${gb.branch}`);
   }
@@ -1357,8 +1387,45 @@ function prBody(goal: string, lr: LastRun): string {
   );
 }
 
+/**
+ * A brief's shared branch: one pull request for the whole brief, opened after its first passed goal (the brief's
+ * first line as title, the brief as body) and updated by pushing after each later one.
+ */
+function briefPullRequest(gb: GoalBranch, lr: LastRun): string | undefined {
+  const state = readJsonFile<{ pr?: string; brief?: string }>(SPEC_STATE, {});
+  if (state.pr && gb.branch === `orch/brief-${state.brief}`) {
+    try {
+      execFileSync("git", ["push", "-q", "origin", gb.branch], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        timeout: 120_000,
+      });
+      console.log(`pull request updated: ${state.pr}`);
+      emit("pr", { branch: gb.branch, base: gb.base, url: state.pr, updated: true });
+    } catch (e) {
+      console.warn(`warning: could not push ${gb.branch} (${msg(e)})`);
+      emit("pr", { branch: gb.branch, base: gb.base, url: state.pr, error: msg(e) });
+    }
+    return state.pr;
+  }
+  const spec = readSpec();
+  const title =
+    spec
+      .split("\n")
+      .find((l) => l.trim())
+      ?.replace(/^#+\s*/, "") ?? "YAAIORCH brief";
+  const url = openPullRequest(
+    gb,
+    title,
+    lr,
+    `${spec.slice(0, 6000)}\n\n---\nBuilt goal by goal by [YAAIORCH](https://github.com/alyn3d/yaaiorch); each goal is one or more commits on this branch, and this pull request grows until the brief is done.\n`,
+  );
+  if (url && existsSync(SPEC_STATE)) writeFileAtomic(SPEC_STATE, JSON.stringify({ ...readJsonFile<object>(SPEC_STATE, {}), pr: url }));
+  return url;
+}
+
 /** Push the goal branch to origin and open a pull request with gh. Returns its URL; failures are reported, never thrown. */
-function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun): string | undefined {
+function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: string): string | undefined {
   let url: string | undefined;
   let error: string | undefined;
   try {
@@ -1375,7 +1442,7 @@ function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun): string | un
     // The title is the only goal text on a command line; strip what a shell fallback could misread.
     const title = (gh.shell ? goal.replace(/[^\w .,:()/+-]/g, "") : goal).replace(/\s+/g, " ").trim().slice(0, 72) || "YAAIORCH goal";
     const r = spawnSync(gh.file, [...gh.pre, "pr", "create", "--base", gb.base, "--head", gb.branch, "--title", title, "--body-file", "-"], {
-      input: prBody(goal, lr),
+      input: body ?? prBody(goal, lr),
       encoding: "utf8",
       shell: gh.shell,
       windowsHide: true,
@@ -1508,6 +1575,8 @@ type Opts = {
   approvePlan: boolean;
   /** When the queue runs dry, check the brief (spec.md) against the code and queue what is missing. */
   coverage: boolean;
+  /** loop: how often a failed goal is tried again, one power tier higher each time, before its dependents are blocked. */
+  retries: number;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1991,8 +2060,9 @@ const GOALS_FORMAT = `
 
 ## Reply format
 Do not create or edit any file. Reply with exactly one JSON object and nothing else:
-{"goals": ["<goal 1>", "<goal 2>", ...], "checks": {"<name>": "<shell command>"}}
-"checks" only for a new project; leave it out otherwise.`;
+{"goals": [{"goal": "<goal 1>", "after": []}, {"goal": "<goal 2>", "after": [1]}, ...], "checks": {"<name>": "<shell command>"}}
+"after" lists the numbers (1 = the first goal) of the earlier goals this one needs: if one of them fails, this one is
+not run. Use [] for a goal that needs none of them. "checks" only for a new project; leave it out otherwise.`;
 
 const readSpec = (): string => (existsSync(SPEC_FILE) ? readFileSync(SPEC_FILE, "utf8").trim() : "");
 
@@ -2007,14 +2077,27 @@ function specForPrompt(): string {
   );
 }
 
-/** Goals from a splitter reply: non-empty strings, at most MAX_GOALS, each at most 3000 characters. */
-function asGoals(v: unknown): string[] {
+/** A goal from a split: `after` holds 1-based positions of earlier goals it needs; null: not said (all earlier ones). */
+type SplitGoal = { goal: string; after: number[] | null };
+
+/** Goals from a splitter reply or a UI: strings or {goal, after}, at most MAX_GOALS, each at most 3000 characters. */
+function asGoals(v: unknown): SplitGoal[] {
   if (!Array.isArray(v)) return [];
-  return v
-    .filter((g): g is string => typeof g === "string" && !!g.trim())
-    .map((g) => g.trim().slice(0, 3000))
-    .slice(0, MAX_GOALS);
+  const out: SplitGoal[] = [];
+  for (const g of v) {
+    const text =
+      typeof g === "string" ? g : g && typeof g === "object" && typeof (g as { goal?: unknown }).goal === "string" ? (g as { goal: string }).goal : "";
+    if (!text.trim()) continue;
+    const raw = typeof g === "object" && g ? (g as { after?: unknown }).after : undefined;
+    const after = Array.isArray(raw) ? raw.filter((n): n is number => Number.isInteger(n)) : null;
+    out.push({ goal: text.trim().slice(0, 3000), after });
+  }
+  return out.slice(0, MAX_GOALS);
 }
+
+/** The earlier positions (1-based) goal `i` (0-based) needs: what was said, kept to earlier goals; else all earlier ones. */
+const needs = (g: SplitGoal, i: number) =>
+  g.after === null ? Array.from({ length: i }, (_, j) => j + 1) : [...new Set(g.after.filter((n) => n >= 1 && n <= i))];
 
 /**
  * One read-only architect call that splits a brief into goals in build order. `fresh`: an empty project, whose first
@@ -2061,25 +2144,55 @@ async function splitBrief(brief: string, o: Opts, fresh: boolean, setup?: string
       .slice(0, 4) as [string, string][],
   );
   // `queued`: the goals are queued right away (not --propose), so a UI must not offer to queue them again.
-  emit("split_proposal", { goals, ...(fresh ? { checks } : {}), queued: !proposeOnly, cost: round4(ctx.budget.spent) });
+  emit("split_proposal", {
+    goals: goals.map((g) => g.goal),
+    after: goals.map(needs),
+    ...(fresh ? { checks } : {}),
+    queued: !proposeOnly,
+    cost: round4(ctx.budget.spent),
+  });
   return { goals, checks, cost: ctx.budget.spent };
 }
 
-/** Keep the brief and queue its goals (marked as coming from it, for the coverage check). Returns their ids. */
-function acceptSplit(brief: string, goals: string[]): number[] {
+/** A name for a brief: when it was queued and its first words (its goals share the branch orch/brief-<this>). */
+function briefId(brief: string): string {
+  const slug =
+    brief
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+/, "")
+      .slice(0, 30)
+      .replace(/-+$/, "") || "brief";
+  return `${Date.now().toString(36)}-${slug}`;
+}
+
+/**
+ * Keep the brief and queue its goals, marked as coming from it (for the coverage check and the shared branch), each
+ * with the queue ids of the earlier goals it needs. Returns their ids.
+ */
+function acceptSplit(brief: string, goals: SplitGoal[]): number[] {
   if (!brief.trim()) throw new Error("the brief is empty");
   if (!goals.length) throw new Error("no goals to queue");
   mkdirSync(DIR, { recursive: true });
+  const id = briefId(brief);
   writeFileAtomic(SPEC_FILE, brief.trim().slice(0, MAX_SPEC) + "\n");
-  writeFileAtomic(SPEC_STATE, JSON.stringify({ passes: 0, checkedUpTo: 0 }));
-  const ids = updateQueue((q) =>
-    goals.map((goal) => {
-      const id = Math.max(0, ...q.map((i) => i.id)) + 1;
-      q.push({ id, goal, status: "pending", fromSpec: true });
-      return id;
-    }),
-  );
-  console.log(`queued ${ids.length} goal(s) from the brief (kept in ${SPEC_FILE}):\n${goals.map((g, i) => `  #${ids[i]} ${g}`).join("\n")}`);
+  writeFileAtomic(SPEC_STATE, JSON.stringify({ passes: 0, checkedUpTo: 0, brief: id }));
+  const ids = updateQueue((q) => {
+    const made: number[] = [];
+    goals.forEach((g, i) => {
+      const n = Math.max(0, ...q.map((x) => x.id)) + 1;
+      q.push({ id: n, goal: g.goal, status: "pending", fromSpec: true, brief: id, after: needs(g, i).map((pos) => made[pos - 1]) });
+      made.push(n);
+    });
+    return made;
+  });
+  const deps = (i: number) =>
+    needs(goals[i], i).length
+      ? ` (after ${needs(goals[i], i)
+          .map((pos) => `#${ids[pos - 1]}`)
+          .join(", ")})`
+      : "";
+  console.log(`queued ${ids.length} goal(s) from the brief (kept in ${SPEC_FILE}):\n${goals.map((g, i) => `  #${ids[i]} ${g.goal}${deps(i)}`).join("\n")}`);
   return ids;
 }
 
@@ -2111,7 +2224,7 @@ async function split(values: Record<string, string | boolean | undefined>, words
     console.log("asking the architect to split the brief into goals...");
     const { goals, cost } = await splitBrief(brief, o, false, undefined, !!values.propose);
     console.log(`cost: ${usd(cost)}`);
-    if (values.propose) return console.log(`\nproposed ${goals.length} goal(s):\n${goals.map((g, i) => `  ${i + 1}. ${g}`).join("\n")}`);
+    if (values.propose) return console.log(`\nproposed ${goals.length} goal(s):\n${goals.map((g, i) => `  ${i + 1}. ${g.goal}`).join("\n")}`);
     acceptSplit(brief, goals);
   }
   if (values.start) return loop(o, Number(values.poll), true);
@@ -2170,12 +2283,17 @@ async function newProject(dir: string, spec: string, o: Opts, setup: string | un
 async function coverageCheck(o: Opts): Promise<{ queued: number; cost: number }> {
   const spec = readSpec();
   if (!spec) return { queued: 0, cost: 0 };
-  const state = readJsonFile<{ passes?: number; checkedUpTo?: number }>(SPEC_STATE, {});
+  const state = readJsonFile<{ passes?: number; checkedUpTo?: number; brief?: string; pr?: string }>(SPEC_STATE, {});
   const passes = state.passes ?? 0;
   const q = readQueue();
   const mine = q.filter((i) => i.fromSpec);
   const last = Math.max(0, ...mine.map((i) => i.id));
-  if (passes >= COVERAGE_PASSES || !mine.length || last <= (state.checkedUpTo ?? 0) || mine.some((i) => i.status === "pending" || i.status === "running"))
+  if (
+    passes >= COVERAGE_PASSES ||
+    !mine.length ||
+    last <= (state.checkedUpTo ?? 0) ||
+    mine.some((i) => i.status === "pending" || i.status === "running" || i.status === "blocked")
+  )
     return { queued: 0, cost: 0 };
   const roster = discoverAgents();
   const architect = roster.find((a) => a.name === "architect")!;
@@ -2197,17 +2315,19 @@ async function coverageCheck(o: Opts): Promise<{ queued: number; cost: number }>
       `Brief:\n${spec.slice(0, MAX_SPEC)}` +
       GOALS_FORMAT;
     const r = await run(architect, modelFor(o.power, o.models, "architect", "architect"), prompt, ctx, true);
-    missing = asGoals(extractJson<{ goals?: unknown }>(r.text).goals).slice(0, 5);
+    missing = asGoals(extractJson<{ goals?: unknown }>(r.text).goals)
+      .slice(0, 5)
+      .map((g) => g.goal);
   } catch (e) {
     if (isFatal(e)) throw e;
     console.warn(`coverage check failed (${msg(e)}); not checked`);
   }
-  writeFileAtomic(SPEC_STATE, JSON.stringify({ passes: passes + 1, checkedUpTo: last }));
+  writeFileAtomic(SPEC_STATE, JSON.stringify({ ...state, passes: passes + 1, checkedUpTo: last }));
   emit("coverage", { pass: passes + 1, missing, cost: round4(ctx.budget.spent) });
   if (!missing.length) console.log("coverage check: the brief looks covered");
   else
     updateQueue((qq) => {
-      for (const goal of missing) qq.push({ id: Math.max(0, ...qq.map((i) => i.id)) + 1, goal, status: "pending", fromSpec: true });
+      for (const goal of missing) qq.push({ id: Math.max(0, ...qq.map((i) => i.id)) + 1, goal, status: "pending", fromSpec: true, brief: state.brief });
     });
   if (missing.length) console.log(`coverage check: queued ${missing.length} goal(s) for what is missing:\n- ${missing.join("\n- ")}`);
   return { queued: missing.length, cost: ctx.budget.spent };
@@ -2286,7 +2406,7 @@ const writeLastRun = (lr: LastRun) => writeFileAtomic(LAST_RUN, JSON.stringify(l
 let lastGoalCost = 0;
 /** QA's notes for the goal being run, written to notes.md when it ends. */
 let goalNotes: string[] = [];
-async function runGoal(goal: string, o: Opts, id?: number): Promise<boolean> {
+async function runGoal(goal: string, o: Opts, id?: number, brief?: string): Promise<boolean> {
   emit("goal_start", {
     goal,
     maxRounds: o.maxRounds,
@@ -2315,12 +2435,15 @@ async function runGoal(goal: string, o: Opts, id?: number): Promise<boolean> {
   let passed = false;
   let interrupted = false;
   try {
-    cp = o.dryRun ? "" : prepareGit();
-    if (cp && o.branch) {
-      gb = startGoalBranch(goal, id);
-      lr.branch = gb.branch;
-      lr.base = gb.base;
-    }
+    // With --branch the checkpoint is taken on the goal's branch (a brief's shared branch may be ahead of the base).
+    cp = o.dryRun
+      ? ""
+      : prepareGit(() => {
+          if (!o.branch) return;
+          gb = startGoalBranch(goal, id, brief);
+          lr.branch = gb.branch;
+          lr.base = gb.base;
+        });
     lr.checkpoint = cp || undefined;
     if (!o.dryRun) writeLastRun(lr); // the UI offers rollback from this even if the run is killed in round 1
     passed = await runGoalInner(goal, o, cp, ctx, lr);
@@ -2758,6 +2881,57 @@ async function waitForReset(e: UsageLimit) {
   while (Date.now() < until) await sleep(Math.min(5000, until - Date.now()));
 }
 
+/** The first pending goal whose goals-it-needs are all done (a goal never waits on a later one). */
+function nextRunnable(q: Item[]): Item | undefined {
+  const status = new Map(q.map((i) => [i.id, i.status]));
+  return q.find((i) => i.status === "pending" && (i.after ?? []).every((d) => status.get(d) === "done" || !status.has(d)));
+}
+
+/** Mark pending goals that need a failed or blocked one as blocked (repeatedly, down the chain). Returns them. */
+function blockDependents(q: Item[]): Item[] {
+  const out: Item[] = [];
+  for (let changed = true; changed;) {
+    changed = false;
+    const byId = new Map(q.map((i) => [i.id, i]));
+    for (const i of q) {
+      if (i.status !== "pending") continue;
+      const bad = (i.after ?? []).map((d) => byId.get(d)).find((d) => d && (d.status === "failed" || d.status === "blocked"));
+      if (!bad) continue;
+      i.status = "blocked";
+      i.note = `needs #${bad.id}, which ${bad.status === "failed" ? "failed" : "is blocked"}; run "orch retry ${bad.id}" once it is fixed`;
+      out.push(i);
+      changed = true;
+    }
+  }
+  return out;
+}
+
+/** `orch retry ID`: a failed or blocked goal, and the goals it blocked, back to pending (a fresh retry budget). */
+function retryGoal(id: number) {
+  const back = updateQueue((q) => {
+    const it = q.find((i) => i.id === id);
+    if (!it) throw new Error(`no goal #${id} in the queue`);
+    if (it.status !== "failed" && it.status !== "blocked") throw new Error(`goal #${id} is ${it.status}; only a failed or blocked goal can be retried`);
+    const reset: Item[] = [it];
+    // The goals blocked behind it, down the chain.
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const i of q)
+        if (i.status === "blocked" && !reset.includes(i) && (i.after ?? []).some((d) => reset.some((r) => r.id === d))) {
+          reset.push(i);
+          changed = true;
+        }
+    }
+    for (const i of reset) {
+      i.status = "pending";
+      delete i.note;
+      delete i.attempts;
+    }
+    return reset.map((i) => i.id);
+  });
+  console.log(`back in the queue: ${back.map((n) => `#${n}`).join(", ")}`);
+}
+
 async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
   if (o.dryRun) throw new Error("--dry-run cannot be used with loop: the goal would stay pending and be planned again forever");
   // The run lock guarantees one orchestrator per repo, so anything still "running" was interrupted (crash or Stop).
@@ -2789,14 +2963,19 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       emit("loop_stop", { reason: "budget", spent: round4(spentTotal) });
       break;
     }
-    const item = updateQueue((q) => {
-      const next = q.find((i) => i.status === "pending");
+    const { item, blocked } = updateQueue((q) => {
+      const newlyBlocked = blockDependents(q);
+      const next = nextRunnable(q);
       if (next) {
         next.status = "running";
         delete next.note;
       }
-      return next && { ...next };
+      return { item: next && { ...next }, blocked: newlyBlocked };
     });
+    for (const b of blocked) {
+      console.warn(`goal #${b.id} is blocked: ${b.note}`);
+      emit("blocked", { id: b.id, goal: b.goal, note: b.note });
+    }
     if (!item) {
       if (o.coverage) {
         const c = await coverageCheck(o);
@@ -2811,13 +2990,19 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     emit("queue_item", { id: item.id, goal: item.goal });
     let outcome: "done" | "failed" | "limit" = "failed";
     let resetAt: number | undefined;
+    let noRetry = false;
     try {
       // With a loop budget, a goal may spend at most what is left of it (and its own --max-cost, if lower).
       const left = o.maxCostTotal === undefined ? undefined : o.maxCostTotal - spentTotal;
-      const goalOpts = left === undefined ? o : { ...o, maxCost: Math.min(o.maxCost ?? Infinity, left) };
+      const goalOpts = {
+        ...o,
+        ...(left === undefined ? {} : { maxCost: Math.min(o.maxCost ?? Infinity, left) }),
+        // A retried goal runs a tier higher (see below).
+        ...(item.power ? { power: item.power, models: bumpAliases(o.models) } : {}),
+      };
       lastGoalCost = 0;
       try {
-        outcome = (await runGoal(item.goal, goalOpts, item.id)) ? "done" : "failed";
+        outcome = (await runGoal(item.goal, goalOpts, item.id, item.brief)) ? "done" : "failed";
       } finally {
         spentTotal += lastGoalCost;
       }
@@ -2825,7 +3010,10 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       if (e instanceof UsageLimit) {
         outcome = "limit";
         resetAt = e.resetAt;
-      } else console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
+      } else {
+        if (e instanceof BudgetExceeded) noRetry = true; // more power would only spend more of a budget already gone
+        console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
+      }
     }
     const until = outcome === "limit" ? waitUntil(resetAt) : 0;
     updateQueue((q) => {
@@ -2834,6 +3022,16 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       if (!cur) return;
       // A usage limit is not the goal's fault: put it back and try again after the reset.
       cur.status = outcome === "limit" ? "pending" : outcome;
+      // A failed goal gets another try, a tier higher, before the goals that build on it are blocked.
+      const tier = TIERS.indexOf(cur.power ?? o.power);
+      if (outcome === "failed" && !noRetry && (cur.attempts ?? 0) < o.retries) {
+        cur.attempts = (cur.attempts ?? 0) + 1;
+        cur.power = TIERS[Math.min(tier + 1, TIERS.length - 1)];
+        cur.status = "pending";
+        cur.note = `failed; retry ${cur.attempts} of ${o.retries} at power ${cur.power}`;
+        console.log(`goal #${cur.id} failed; trying it again at power ${cur.power} (retry ${cur.attempts} of ${o.retries})`);
+        emit("retry", { id: cur.id, attempt: cur.attempts, power: cur.power });
+      }
       if (outcome === "limit")
         cur.note =
           o.onLimit === "stop"
@@ -2899,6 +3097,8 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const branch = pr || !!values.branch || cfg.branch === true;
   const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
   const coverage = !values["no-coverage"] && cfg.coverage !== false;
+  const retries = Number(values.retries ?? cfg.retries ?? 1);
+  if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
   return {
     maxRounds,
     power: power as Power,
@@ -2921,6 +3121,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     pr,
     approvePlan,
     coverage,
+    retries,
     strictFiles,
     maxCostTotal,
   };
@@ -2962,6 +3163,7 @@ async function main() {
       accept: { type: "boolean", default: false },
       start: { type: "boolean", default: false },
       "no-coverage": { type: "boolean", default: false },
+      retries: { type: "string" },
       setup: { type: "string" },
       pr: { type: "boolean", default: false },
       review: { type: "boolean", default: false },
@@ -3009,7 +3211,10 @@ async function main() {
     case "status":
       return console.log(
         readQueue()
-          .map((i) => `#${i.id} [${i.status}] ${i.goal}`)
+          .map(
+            (i) =>
+              `#${i.id} [${i.status}] ${i.goal}${i.after?.length ? ` (after ${i.after.map((d) => `#${d}`).join(", ")})` : ""}${i.note ? `  -- ${i.note}` : ""}`,
+          )
           .join("\n") || "queue empty",
       );
     case "agents":
@@ -3032,6 +3237,11 @@ async function main() {
     }
     case "approve":
       return approve(values);
+    case "retry": {
+      const id = Number(rest[0]);
+      if (!Number.isInteger(id)) throw new Error("usage: orch retry ID");
+      return retryGoal(id);
+    }
     case "new": {
       const [dir, ...words] = rest;
       if (!dir) throw new Error('usage: orch new DIR "<spec>"  (or --spec-file FILE)');
