@@ -181,7 +181,10 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   `.orchestrator/spec.md`, and every goal's architect reads it, so each goal fits the rest. When the queue runs
   dry, a coverage check compares the brief with the code and queues what is still missing (at most twice per
   brief; `--no-coverage` or `"coverage": false` to skip it).
-- **New projects** (`orch new DIR "<spec>"`, or `--spec-file SPEC.md`; `--start` runs the loop right away): creates the folder with git, `SPEC.md` and a
+- **New projects** (**+ New project** next to the repo tabs, or `orch new DIR "<spec>"` / `--spec-file SPEC.md`;
+  `--start` runs the loop right away). In the UI you pick the parent folder and a name, paste the spec, optionally
+  a setup command and a budget, and tick **Start building right away** if you want; the project opens in its own tab.
+  Otherwise: creates the folder with git, `SPEC.md` and a
   `.gitignore`, uses the spec as the first project brief, and has the architect split it into queued goals (the
   scaffold first, then one goal per feature) with suggested checks in `.orchestrator/config.json`. Nothing is
   built until you run `orch loop --until-empty` there, so you can review the queue and the checks first. Checks

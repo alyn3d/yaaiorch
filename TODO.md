@@ -123,7 +123,8 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Eval case** `greenfield-inventory` (empty repo, scaffold goal, feature goal).
 - [x] **Big briefs**: `orch split`, the **Big brief** box (edit the split, queue, queue and start), spec.md for every
   architect, a coverage check when the queue runs dry.
-- [ ] **New project in the UI**: a folder picker and a spec box that run `orch new` and open the repo.
+- [x] **New project in the UI**: **+ New project** (parent folder, name, spec, setup, power, budget, start) runs
+  `orch new` in a new tab.
 - [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
 
 ## 0.6: product and packaging

@@ -410,7 +410,7 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
 /// Run and loop get the global limits: --usage-cap from the caps (`caps`, "" for none), and with a daily
 /// budget a --max-cost of at most what is left today (their own --max-cost, if lower).
 fn with_budget(mut args: Vec<String>, left: Option<f64>, caps: &str) -> Vec<String> {
-    if !matches!(args.first().map(String::as_str), Some("run" | "loop" | "learn" | "share" | "split")) {
+    if !matches!(args.first().map(String::as_str), Some("run" | "loop" | "learn" | "share" | "split" | "new")) {
         return args;
     }
     if !caps.is_empty() && !args.iter().any(|a| a == "--usage-cap") {
@@ -686,6 +686,73 @@ fn add_repo(app: AppHandle, state: State<AppState>, path: String) -> Result<(), 
     persist(&app);
     emit_init(&app);
     Ok(())
+}
+
+/// A new folder (parent + a plain name), opened as a repo tab, then `orch new` runs there like any run. The spec goes
+/// to orch in a temporary file, which orch deletes once read. Returns the repo path as the tabs show it.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn new_project(
+    app: AppHandle,
+    state: State<AppState>,
+    parent: String,
+    name: String,
+    spec: String,
+    setup: Option<String>,
+    start: Option<bool>,
+    power: String,
+    max_cost: Option<f64>,
+    plugins: Option<PluginOpts>,
+) -> Result<String, String> {
+    let ok_name = name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && name.len() <= 64
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    if !ok_name {
+        return Err("project name: letters, digits, dots, dashes and underscores".into());
+    }
+    if spec.trim().is_empty() {
+        return Err("spec required".into());
+    }
+    let parent = Path::new(&parent);
+    if !parent.is_dir() {
+        return Err(format!("not a folder: {}", parent.display()));
+    }
+    let dir = parent.join(&name);
+    if dir.is_dir() && std::fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(true) {
+        return Err(format!("{} is not empty", dir.display()));
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    add_session(&mut state.0.lock().unwrap(), &dir)?;
+    persist(&app);
+    emit_init(&app);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let file = std::env::temp_dir().join(format!("yaaiorch-brief-{}-{nanos}.md", std::process::id()));
+    std::fs::write(&file, spec).map_err(|e| e.to_string())?;
+    let mut args = vec![
+        "new".to_string(),
+        ".".into(),
+        "--brief-file".into(),
+        file.to_string_lossy().into_owned(),
+        "--brief-file-temp".into(),
+    ];
+    if let Some(s) = setup.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        args.extend(["--setup".into(), s.chars().take(300).collect()]);
+    }
+    if start.unwrap_or(false) {
+        args.push("--start".into());
+    }
+    let extra = Extra {
+        max_cost,
+        plugins,
+        ..Default::default()
+    };
+    args.extend(flags(&power, 5, false, &extra));
+    let repo = dir.to_string_lossy().into_owned();
+    request_start(&app, &repo, args, "new project".into())?;
+    Ok(repo)
 }
 
 #[tauri::command]
@@ -1190,6 +1257,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             add_repo,
+            new_project,
             remove_repo,
             set_max_parallel,
             set_daily_budget,

@@ -11,8 +11,9 @@ export type Proposal = { goals: string[]; at: number };
 /** Everything the UI knows about one repo. */
 export type Session = { state: State; log: string[]; run: RunView | null; proposal?: Proposal };
 
+/** Only a proposal still to be edited and queued: `orch new` and a plain `orch split` queue theirs at once (`queued`). */
 const proposalOf = (e: OrchEvent): Proposal | undefined =>
-  e.type === "split_proposal" && Array.isArray(e.goals) ? { goals: e.goals.filter((g: unknown) => typeof g === "string"), at: e.t } : undefined;
+  e.type === "split_proposal" && !e.queued && Array.isArray(e.goals) ? { goals: e.goals.filter((g: unknown) => typeof g === "string"), at: e.t } : undefined;
 
 const stopped = (): OrchEvent => ({ type: "stopped", t: Date.now() });
 const MAX_LOG = 5000;

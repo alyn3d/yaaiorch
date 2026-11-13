@@ -4,6 +4,7 @@ import { useOrch } from "./useOrch";
 import { RepoView } from "./RepoView";
 import { transport } from "./transport";
 import { Overview } from "./Overview";
+import { NewProjectDialog } from "./NewProject";
 import { baseName, repoStatus, usd } from "./repoStatus";
 import { Limits, clock, overCap } from "./Limits";
 
@@ -13,6 +14,7 @@ const OVERVIEW = "*overview";
 export function App() {
   const { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
   const [notifyOn, setNotifyOnState] = useState(notifyOnSaved);
+  const [newProject, setNewProject] = useState(false);
   // Re-render every 30 s so the usage-limit banner disappears when its reset time passes.
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -132,9 +134,14 @@ export function App() {
           );
         })}
         {canPickRepo || !adding ? (
-          <button className="tab-add" onClick={() => (canPickRepo ? addRepo() : setAdding(true))} title="Open another repo in a new tab">
-            + Repo
-          </button>
+          <>
+            <button className="tab-add" onClick={() => (canPickRepo ? addRepo() : setAdding(true))} title="Open another repo in a new tab">
+              + Repo
+            </button>
+            <button className="tab-add" onClick={() => setNewProject(true)} title="Start a project from a spec in a new folder">
+              + New project
+            </button>
+          </>
         ) : (
           <form
             className="tab-add-form"
@@ -154,6 +161,15 @@ export function App() {
         )}
       </nav>
       {error && <p className="error">{error}</p>}
+      {newProject && (
+        <NewProjectDialog
+          onClose={() => setNewProject(false)}
+          onCreated={(repo) => {
+            setNewProject(false);
+            setActive(repo);
+          }}
+        />
+      )}
 
       {global.usageLimit && global.usageLimit.until > now && (
         <section className="card notice banner" role="status">

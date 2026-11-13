@@ -22,6 +22,10 @@ export interface Transport {
   call(path: string, body?: Record<string, unknown>): Promise<void>;
   /** Open a repo in a new tab: a picked folder (desktop) or the given path (browser). */
   addRepo(path?: string): Promise<void>;
+  /** A new folder `name` in `parent`, opened as a repo, where `orch new` splits `spec` into goals (and starts with `start`). Returns the repo path. */
+  newProject(p: NewProject): Promise<string>;
+  /** Tauri: a folder picker for the parent folder; browser mode: null (type the path). */
+  pickFolder(): Promise<string | null>;
   removeRepo(repo: string): Promise<void>;
   setMaxParallel(n: number): Promise<void>;
   /** Daily budget across all repos in USD; null removes it. */
@@ -61,7 +65,19 @@ async function api(path: string, init: RequestInit = {}, retry = true): Promise<
 async function post(path: string, body: Record<string, unknown>) {
   const r = await api(`/api/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+  return r.json().catch(() => ({}));
 }
+
+export type NewProject = {
+  parent: string;
+  name: string;
+  spec: string;
+  setup?: string;
+  start: boolean;
+  power: string;
+  maxCost?: number;
+  plugins?: unknown;
+};
 
 const web: Transport = {
   canPickRepo: false,
@@ -115,6 +131,10 @@ const web: Transport = {
     if (!path?.trim()) throw new Error("type the repo's folder path");
     await post("add-repo", { path: path.trim() });
   },
+  async newProject(p) {
+    return (await post("new-project", p)).repo;
+  },
+  pickFolder: async () => null,
   removeRepo: (repo) => post("remove-repo", { repo }),
   setMaxParallel: (n) => post("settings", { maxParallel: n }),
   setDailyBudget: (usd) => post("settings", { dailyBudget: usd }),
@@ -186,6 +206,11 @@ const tauri: Transport = {
   async addRepo() {
     const p = await open({ directory: true, multiple: false, title: "Open a repo" });
     if (typeof p === "string") await tauriInvoke("add_repo", { path: p });
+  },
+  newProject: (p) => tauriInvoke<string>("new_project", p),
+  async pickFolder() {
+    const p = await open({ directory: true, multiple: false, title: "Where to create the project" });
+    return typeof p === "string" ? p : null;
   },
   removeRepo: (repo) => tauriInvoke("remove_repo", { repo }),
   setMaxParallel: (n) => tauriInvoke("set_max_parallel", { maxParallel: n }),

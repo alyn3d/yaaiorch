@@ -2020,7 +2020,7 @@ function asGoals(v: unknown): string[] {
  * One read-only architect call that splits a brief into goals in build order. `fresh`: an empty project, whose first
  * goal sets it up and which also gets suggested checks. Emits `split_proposal` (goals, checks, cost).
  */
-async function splitBrief(brief: string, o: Opts, fresh: boolean, setup?: string) {
+async function splitBrief(brief: string, o: Opts, fresh: boolean, setup?: string, proposeOnly = false) {
   const roster = discoverAgents();
   const architect = roster.find((a) => a.name === "architect")!;
   writeBuiltins(roster);
@@ -2060,7 +2060,8 @@ async function splitBrief(brief: string, o: Opts, fresh: boolean, setup?: string
       .filter(([n, c]) => /^[\w-]{1,30}$/.test(n) && typeof c === "string" && c.trim() && c.length < 300)
       .slice(0, 4) as [string, string][],
   );
-  emit("split_proposal", { goals, ...(fresh ? { checks } : {}), cost: round4(ctx.budget.spent) });
+  // `queued`: the goals are queued right away (not --propose), so a UI must not offer to queue them again.
+  emit("split_proposal", { goals, ...(fresh ? { checks } : {}), queued: !proposeOnly, cost: round4(ctx.budget.spent) });
   return { goals, checks, cost: ctx.budget.spent };
 }
 
@@ -2108,7 +2109,7 @@ async function split(values: Record<string, string | boolean | undefined>, words
     if (!brief.trim()) throw new Error('usage: orch split "<brief>"  (or --brief-file FILE)');
     acquireRunLock("split");
     console.log("asking the architect to split the brief into goals...");
-    const { goals, cost } = await splitBrief(brief, o, false);
+    const { goals, cost } = await splitBrief(brief, o, false, undefined, !!values.propose);
     console.log(`cost: ${usd(cost)}`);
     if (values.propose) return console.log(`\nproposed ${goals.length} goal(s):\n${goals.map((g, i) => `  ${i + 1}. ${g}`).join("\n")}`);
     acceptSplit(brief, goals);
@@ -2127,7 +2128,9 @@ const NEW_GITIGNORE = [".orchestrator/", "node_modules/", ".venv/", "venv/", "__
 async function newProject(dir: string, spec: string, o: Opts, setup: string | undefined, start: boolean, poll: number) {
   if (!spec.trim()) throw new Error('usage: orch new DIR "<spec>"  (or --spec-file FILE)');
   const target = resolve(dir);
-  if (existsSync(target) && readdirSync(target).length) throw new Error(`${target} is not empty; orch new starts a project in a new or empty folder`);
+  // Only .orchestrator (a UI's doctor or plugin check may create it) counts as empty too.
+  if (existsSync(target) && readdirSync(target).some((f) => f !== ".orchestrator"))
+    throw new Error(`${target} is not empty; orch new starts a project in a new or empty folder`);
   mkdirSync(target, { recursive: true });
   process.chdir(target);
   git("init", "-q");

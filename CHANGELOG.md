@@ -11,6 +11,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   the loop. The brief is kept in `.orchestrator/spec.md` and read by every goal's architect, and when the queue
   runs dry a coverage check queues what is still missing (at most twice; `--no-coverage`). `orch new` uses the
   same splitter, takes `--start`, and queues up to 30 goals. New `split_proposal` and `coverage` events.
+- **+ New project** in the UI: pick a parent folder and a name, paste the spec, optionally a setup command, a
+  budget and **Start building right away**; the new project opens in its own tab.
 - **New projects**: `orch new DIR "<spec>"` (or `--spec-file`) creates a git repo with `SPEC.md`, uses the spec as
   the project brief, and queues the architect's goals (scaffold first) with suggested checks; run `orch loop`
   there to build it.

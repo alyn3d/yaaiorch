@@ -640,3 +640,19 @@ input.limit {
     }
   }
 }
+
+// New project: a folder, a spec, and orch new.
+.new-project {
+  textarea {
+    width: 100%;
+    box-sizing: border-box;
+    font: inherit;
+    margin: 0.4rem 0;
+  }
+  label.grow {
+    flex: 1;
+    input {
+      width: 100%;
+    }
+  }
+}

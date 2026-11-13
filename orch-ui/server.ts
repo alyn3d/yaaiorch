@@ -8,7 +8,7 @@
 import http from "node:http";
 import { spawn, execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { readFileSync, existsSync, mkdirSync, writeFileSync, createReadStream, statSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, createReadStream, statSync, readdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { resolve, join, extname, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -262,7 +262,7 @@ function startNext() {
  * at most what is left today (their own --max-cost, if lower).
  */
 function withBudget(args: string[]): string[] {
-  if (!["run", "loop", "learn", "share", "split"].includes(args[0])) return args;
+  if (!["run", "loop", "learn", "share", "split", "new"].includes(args[0])) return args;
   const caps = (["fiveHour", "week"] as Window[]).filter((w) => usageCap[w] !== null).map((w) => `${WINDOW_CLI[w]}=${usageCap[w]}`);
   if (caps.length && !args.includes("--usage-cap")) args = [...args, "--usage-cap", caps.join(",")];
   const left = budgetLeft();
@@ -544,6 +544,30 @@ http
           const s = addRepo(b.path.trim());
           saveSettings();
           sendInit();
+          return json(200, { ok: true, repo: s.repo });
+        }
+        if (url.pathname === "/api/new-project") {
+          // A new folder (parent + a plain name), opened as a repo tab, then `orch new` runs there like any run.
+          const name = typeof b.name === "string" ? b.name.trim() : "";
+          if (typeof b.parent !== "string" || !b.parent.trim()) return json(400, { error: "parent folder required" });
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) return json(400, { error: "project name: letters, digits, dots, dashes and underscores" });
+          if (typeof b.spec !== "string" || !b.spec.trim()) return json(400, { error: "spec required" });
+          const parent = resolve(b.parent.trim());
+          if (!existsSync(parent) || !statSync(parent).isDirectory()) return json(400, { error: `not a folder: ${parent}` });
+          const dir = join(parent, name);
+          if (existsSync(dir) && readdirSync(dir).length) return json(400, { error: `${dir} is not empty` });
+          mkdirSync(dir, { recursive: true });
+          const s = addRepo(dir);
+          saveSettings();
+          sendInit();
+          const file = join(tmpdir(), `yaaiorch-brief-${process.pid}-${Date.now()}.md`);
+          writeFileSync(file, b.spec);
+          const setup = typeof b.setup === "string" && b.setup.trim() ? ["--setup", b.setup.trim().slice(0, 300)] : [];
+          requestStart(
+            s,
+            ["new", ".", "--brief-file", file, "--brief-file-temp", ...setup, ...(b.start ? ["--start"] : []), ...flags({ ...b, dryRun: false })],
+            "new project",
+          );
           return json(200, { ok: true, repo: s.repo });
         }
         if (url.pathname === "/api/settings") {

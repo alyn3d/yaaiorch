@@ -668,6 +668,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     );
     assert.deepEqual(prop.last("split_proposal").goals, ["[A] Build part A", "[B] Build part B"], "junk entries dropped");
     assert.equal(prop.last("split_proposal").cost, 0.05);
+    assert.equal(prop.last("split_proposal").queued, false, "a UI may offer to queue it");
     assert.ok(!existsSync(join(dir, ".orchestrator", "queue.json")), "nothing queued");
 
     // The UI's path: edited goals and the brief on stdin.
@@ -693,6 +694,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     writeFileSync(file, "Build part A and part B");
     const f = orch(dir, ["split", "--brief-file", file, "--brief-file-temp"]);
     assert.equal(f.code, 0, f.out);
+    assert.equal(f.last("split_proposal").queued, true, "already queued: a UI must not offer it again");
     assert.ok(!existsSync(file));
     assert.equal(JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8")).length, 4);
   });
