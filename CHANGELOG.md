@@ -69,6 +69,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   A shim orch cannot read still goes through cmd.exe, and `orch doctor` says so.
 
 ### Fixed
+- A goal stopped because the queue's budget (`--max-cost-total`, **Budget $**) ran out was marked failed, which
+  now also blocked every goal that needs it. It stays pending with a note instead, the loop stops, and a run
+  with more budget carries on. A goal over its own `--max-cost` still fails.
 - `--branch` with a brief: each goal branched from the starting branch, so later goals never saw the earlier
   goals' work. A brief's goals now share one branch, `orch/brief-<id>`; a failed goal is parked instead of
   staying under the next ones, and `--pr` opens one pull request for the brief that grows with each goal.

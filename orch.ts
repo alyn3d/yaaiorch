@@ -2991,13 +2991,15 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     }
     console.log(`\n##### goal #${item.id}: ${item.goal}`);
     emit("queue_item", { id: item.id, goal: item.goal });
-    let outcome: "done" | "failed" | "limit" = "failed";
+    /** "budget": the loop's budget (not the goal's own --max-cost) ran out during the goal; it is not the goal's fault. */
+    let outcome: "done" | "failed" | "limit" | "budget" = "failed";
     let resetAt: number | undefined;
     let noRetry = false;
     const started = Date.now();
+    // With a loop budget, a goal may spend at most what is left of it (and its own --max-cost, if lower).
+    const left = o.maxCostTotal === undefined ? undefined : o.maxCostTotal - spentTotal;
+    const loopCapped = left !== undefined && left < (o.maxCost ?? Infinity);
     try {
-      // With a loop budget, a goal may spend at most what is left of it (and its own --max-cost, if lower).
-      const left = o.maxCostTotal === undefined ? undefined : o.maxCostTotal - spentTotal;
       const goalOpts = {
         ...o,
         ...(left === undefined ? {} : { maxCost: Math.min(o.maxCost ?? Infinity, left) }),
@@ -3014,6 +3016,9 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       if (e instanceof UsageLimit) {
         outcome = "limit";
         resetAt = e.resetAt;
+      } else if (e instanceof BudgetExceeded && loopCapped) {
+        outcome = "budget";
+        console.log(`the queue's budget ran out during goal #${item.id}; it stays pending`);
       } else {
         if (e instanceof BudgetExceeded) noRetry = true; // more power would only spend more of a budget already gone
         console.error(process.env.ORCH_DEBUG ? e : `Error: ${msg(e)}`);
@@ -3024,8 +3029,9 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       // Edited under the queue lock: goals added meanwhile stay.
       const cur = q.find((i) => i.id === item.id);
       if (!cur) return;
-      // A usage limit is not the goal's fault: put it back and try again after the reset.
-      cur.status = outcome === "limit" ? "pending" : outcome;
+      // A usage limit or the queue's budget is not the goal's fault: put it back (after the reset, or a bigger budget).
+      cur.status = outcome === "limit" || outcome === "budget" ? "pending" : outcome;
+      if (outcome === "budget") cur.note = "the queue's budget ran out during this goal; raise it and process the queue again";
       cur.cost = round4((cur.cost ?? 0) + lastGoalCost);
       cur.seconds = (cur.seconds ?? 0) + Math.round((Date.now() - started) / 1000);
       // A failed goal gets another try, a tier higher, before the goals that build on it are blocked.
@@ -3046,6 +3052,12 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     });
     // For UIs: the queue on disk changed (status, cost, time), read it again.
     emit("queue_changed", { id: item.id });
+    // Never pick the same goal again with the few cents left: stop here.
+    if (outcome === "budget") {
+      console.log(`loop budget of ${usd(o.maxCostTotal!)} used up (${usd(spentTotal)} spent): goal #${item.id} is pending again`);
+      emit("loop_stop", { reason: "budget", spent: round4(spentTotal) });
+      break;
+    }
     if (outcome === "limit" && o.onLimit === "stop") {
       console.log(`usage limit reached; goal #${item.id} is pending again. Stopping (--on-limit stop).`);
       process.exit(3);

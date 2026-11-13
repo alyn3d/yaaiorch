@@ -970,15 +970,34 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--max-cost-total", "0.4"], { FAKE_QA: "pass" });
     assert.equal(r.code, 0, r.out);
     const q = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    // The goal the budget ran out in is not at fault: it stays pending (so nothing that needs it is blocked).
     assert.deepEqual(
       q.map((i) => i.status),
-      ["done", "failed", "pending"],
+      ["done", "pending", "pending"],
       r.out,
     );
+    assert.match(q[1].note, /queue's budget ran out during this goal/);
+    assert.equal(r.ev("retry").length, 0, "no retry for a budget stop");
     assert.equal(r.last("loop_stop").reason, "budget");
     assert.ok(r.last("loop_stop").spent > 0.25, "the second goal's spending counts too");
     assert.match(r.out, /loop budget of \$0\.40 used up/);
     assert.notEqual(orch(dir, ["loop", "--max-cost-total", "0"]).code, 0, "0 is rejected");
+
+    // A bigger budget carries on where it stopped.
+    const more = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--max-cost-total", "2"], { FAKE_QA: "pass" });
+    assert.equal(more.code, 0, more.out);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8")).map((i) => i.status),
+      ["done", "done", "done"],
+    );
+
+    // A goal's own --max-cost is different: that goal costs too much, so it fails (and is not retried).
+    const own = repo();
+    orch(own, ["add", "pricey"]);
+    const o = orch(own, ["loop", "--until-empty", "--max-rounds", "1", "--max-cost", "0.1", "--max-cost-total", "5"], { FAKE_QA: "pass" });
+    assert.equal(o.code, 0, o.out);
+    assert.equal(JSON.parse(readFileSync(join(own, ".orchestrator", "queue.json"), "utf8"))[0].status, "failed");
+    assert.equal(o.ev("retry").length, 0);
   });
 
   test("phantom completion: a task that claims success without a diff is re-dispatched once", () => {
