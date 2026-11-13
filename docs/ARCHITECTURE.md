@@ -51,7 +51,7 @@ Map each role to a model. The architect and QA get the strongest models; impleme
 2b. **Plan critic** (`--critic`, config `"critic": true`, off by default). The built-in read-only `critic` agent (never given tasks) reviews the plan with only the goal, the brief and the plan, never the architect's reasoning, and answers `{approved, issues[]}` on QA's model. A rejection goes back to the architect once with the issues; the revised plan is not reviewed again. A critic error that is not a budget or usage limit just approves. Emits `critic`; its cost is part of the plan's. A reply that is not valid JSON or fails validation is sent back once with the reason.
 3. **Validate.** Rejects a malformed plan, unknown agents, invalid phases, foundation/build tasks without files, a file owned by two tasks (paths normalized: `./`, `\`, case on Windows), and plans with no `verify` task. Plans are untrusted input: every file path must be relative to the repo root (no absolute, drive or UNC path, no `..`), must not be in `.git/` or `.orchestrator/`, and must not resolve outside the repo through a symlink or junction (checked on the deepest existing part); at most 25 tasks and 60 files per task. The error names the task and the file.
 4. **Foundation** tasks run one at a time (shared types, tokens, API client). If one errors, the rest of the round is skipped (`SKIPPED`).
-5. **Build** tasks run in parallel. File ownership is what makes this safe. A task that errors does not stop its siblings; its error becomes a round failure.
+5. **Build** tasks run in parallel. File ownership is what makes this safe. A task that errors does not stop its siblings; its error becomes a round failure. **Ownership check:** afterwards, files changed outside every task's list (git status against the files changed before the round) are logged and sent as `unowned`; QA gets the list with the diff, and with `--strict-files` (config `strictFiles`) they fail the round. Plans without file lists (the fast path) are exempt.
 6. **Commit.** All changes except `.orchestrator/` are committed on the current branch (`orch: <goal> (round N)`). If the commit fails (for example a hook), the round continues uncommitted.
 7. **Checks.** The orchestrator runs the repo's check commands itself (10 min timeout each) and emits `checks`. Commands come from `.orchestrator/config.json` `checks`, else from the package.json scripts `typecheck`, `lint`, `test`, `build` (npm's placeholder test is skipped).
 8. **Verify** tasks run sequentially, never edit. Each returns `{passed, failures[]}`. They receive the implementer reports, the diff stat against the checkpoint, any uncommitted new files, and the check results with output tails. A verify call that errors counts as a failure.
@@ -66,6 +66,12 @@ Round 1 skips the architect: one generalist `dev` agent does the whole goal on t
 ### Limits
 
 - **Agent timeout** (`--agent-timeout`, 30 min): a call that runs longer is killed with its whole process tree (`taskkill /T` on Windows) and becomes a task error.
+- **Transient errors**: a call whose CLI error text shows an API overload, a 5xx or 429 API error, or a dropped
+  connection (`TRANSIENT_RE`) is retried once after 15 s (`ORCH_RETRY_DELAY_MS`). Never the usage limit, the
+  budget or an agent timeout, and never a task's own failure.
+- **Loop budget** (`--max-cost-total`, config `maxCostTotal`, `loop` only): the goals of one loop run share it;
+  each goal's `--max-cost` is capped to what is left, and the loop stops before its next goal (`loop_stop`,
+  reason `budget`) once it is used up.
 - **Budget** (`--max-cost`): every call's `total_cost_usd` is added to the goal's total, also for failed calls. Before it starts, each call reserves its share of the unreserved budget and gets it as `--max-budget-usd`: alone, all of it; in the parallel build batch, an equal share per task still to start (with $0.20 left, two build agents get $0.10 each). When the call ends its reservation is released and its real cost counted, also on failure, timeout or a spawn error. A call that would get less than $0.01 waits while others hold reservations, and otherwise stops the goal. When the CLI reports `error_max_budget_usd`, or the total reaches the cap, the goal stops with `Stopped: budget of $X used up`. The CLI checks its limit after each turn, so a call can overshoot its share by up to one turn.
 
 - **Usage limit**: the Claude subscription limit comes back as an error result with subtype `success` and text like `You've hit your 5-hour limit · resets 1:30am (Europe/London)`. `run()` turns it into a `UsageLimit` error (reset time parsed in the named IANA zone) that ends the goal instead of becoming a task failure, so it never triggers stuck detection. It emits `usage_limit`, then `goal_end` with `usageLimit: true, resetAt`. What happens next is the **"when the usage limit is hit"** setting (`--on-limit`, config `onLimit`):
@@ -125,7 +131,8 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `round_end` | round, passed, failures[], cost |
 | `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power?, agents? ({agent: power} when only the failing tasks' agents move up) |
 | `critic` | round, approved, issues[], revised, cost |
-| `loop_stop` | reason (`requested`): the loop exits before its next goal |
+| `loop_stop` | reason (`requested`, or `budget` with spent): the loop exits before its next goal |
+| `unowned` | round, files[], strict: files changed outside every task's list |
 | `learn_start`, `learn_end` | `orch learn`: power; then ok, cost |
 | `usage_limit` | message, resetAt? (epoch ms) |
 | `goal_end` | passed, cost, error?, usageLimit?, resetAt? |

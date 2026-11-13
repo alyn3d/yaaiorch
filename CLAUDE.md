@@ -20,7 +20,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, learn_start, learn_end, loop_stop, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
+architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, learn_start, learn_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
 in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
 process exits without `goal_end`.
 
@@ -31,7 +31,7 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- `npm test`: 42 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, plus the browser server's request guard (`test/server.test.mjs`); no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 47 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
@@ -46,6 +46,7 @@ process exits without `goal_end`.
 - Headless agents get no shell unless allowed: `claude -p` with `acceptEdits` refuses every Bash/PowerShell call. So orch.ts runs the repo's checks itself (`.orchestrator/config.json` `checks`, else package.json `typecheck`/`lint`/`test`/`build`) and a non-zero exit fails the round. Agents get an allow-list for those commands via `--settings`.
 - Read-only roles (architect, verifiers) run with `--permission-mode default` and `readonly-settings.json` (edit tools denied). Deny rules alone are not enough: under `acceptEdits` an agent writes files with a shell redirect instead.
 - Limits: `--agent-timeout` (30 min, kills the process tree), `--max-cost` per goal (each call reserves its share of what is left and gets it as `--max-budget-usd`; parallel build tasks split it equally; CLI reports `error_max_budget_usd`). Stuck rounds (no file changed, or same failures again) move up one power tier: only the failing tasks' agents when others completed (`agentPower`), else the whole round; two in a row stop the goal. Fix rounds give the architect `previousRound()` (plan, task statuses, diff stat); `.orchestrator/brief.md` is the architect's project brief (commit-stamped; checked again after 20+ changed files; `orch learn` writes it up front), reused across rounds, goals and all agents via `ctx.repoContext` (`--no-brief`); `.orchestrator/notes.md` collects lessons between goals (`appendNotes`, `--no-notes`). `--critic`: the built-in read-only `critic` agent reviews each plan once (event `critic`); it is excluded from the architect's roster.
+- Transient API errors (`TRANSIENT_RE`) are retried once in `run()`; files changed outside every task's list are reported (`unowned`; `--strict-files` fails the round); `--max-cost-total` caps a whole `loop`. Export new pure helpers at the bottom of orch.ts for unit tests.
 - `--fast`: round 1 is a single built-in `dev` agent (strong model, no file list) judged by the checks (QA only without checks); failure falls back to the full loop. Eval it as `--power economy+fast`.
 - `orch doctor --json` is the first-run check both UIs show as a banner.
 - Usage limit ("You've hit your … limit · resets …"): ends the goal as `UsageLimit` (never a task failure or stuck round). `--on-limit wait` (default; config `onLimit`): the work goes to `orchestrator/interrupted-*`, orch waits for the reset and retries (`run` and `loop`). `--on-limit stop`: the goal stays pending and orch exits 3. The eval runner always passes `--on-limit stop` and never records such runs: it stops (or waits with `--wait-on-limit`), and `--resume <stamp>` finishes later.
@@ -65,4 +66,4 @@ process exits without `goal_end`.
 - GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
-0.2.0 shipped several repos at once and cost control. Next milestone is 0.3 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then hardening (retries, loop budget, ownership enforcement).
+0.2.0 shipped several repos at once and cost control. Next milestone is 0.3 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then lint/format in CI and spawning `claude` without a shell on Windows.

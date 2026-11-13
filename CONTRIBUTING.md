@@ -66,7 +66,8 @@ cd orch-ui
 npm test        # scenario tests: real orch.ts, fake claude, throwaway git repos (~40 s)
 ```
 
-`test/server.test.mjs` starts the browser-mode server and checks its request guard (foreign `Host`,
+`test/unit.test.mjs` tests orch.ts's pure helpers (plan validation, JSON extraction, reset-time parsing and so on); it
+imports orch.ts with `ORCH_NO_MAIN=1`, so export a helper at the bottom of orch.ts to test it. `test/server.test.mjs` starts the browser-mode server and checks its request guard (foreign `Host`,
 `Origin` and missing tokens are refused). `test/scenarios.test.mjs` runs `orch` end to end against [`test/fake-claude/`](test/fake-claude/fake-claude.mjs),
 a stand-in for `claude -p --output-format json` that never calls a model. The scenarios cover the
 happy path, plan retry, a crashing or hanging agent, failed checks beating QA, the budget cap, stuck

@@ -37,6 +37,10 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   the architect once; also "critic": true in config
          --no-notes   do not use or write .orchestrator/notes.md (lessons from earlier goals, read by the
                   architect); also "notes": false in config
+         --strict-files   a file changed outside every task's file list fails the round (default: QA is told)
+                  also "strictFiles": true in config
+         --max-cost-total USD   loop only: stop before the next goal once the queue has spent this much
+                  (each goal also gets at most what is left as its --max-cost); also "maxCostTotal" in config
          --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
                   reused across rounds and goals); also "brief": false in config
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
@@ -408,6 +412,8 @@ type Config = {
   usageCap?: { "5h"?: number; week?: number };
   plugins?: { off?: boolean; disable?: string[]; hooks?: boolean };
   brief?: boolean;
+  strictFiles?: boolean;
+  maxCostTotal?: number;
   notes?: boolean;
   critic?: boolean;
 };
@@ -696,9 +702,25 @@ function killTree(p: ChildProcess) {
   }
 }
 
+/**
+ * API overload, server errors and dropped connections, as the CLI reports them. Matched against the CLI's
+ * own error text only (not task output), and never the usage limit, the budget or our agent timeout.
+ */
+const TRANSIENT_RE = /API Error: (?:5\d\d|429)\b|overloaded_error|\bapi_error\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|fetch failed|Connection error|Request timed out/i;
+
 async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
-  await respectUsageCap(ctx);
-  return runOnce(agent, model, prompt, ctx, readOnly);
+  for (let attempt = 1; ; attempt++) {
+    await respectUsageCap(ctx);
+    try {
+      return await runOnce(agent, model, prompt, ctx, readOnly);
+    } catch (e) {
+      const text = msg(e);
+      if (attempt >= 2 || isFatal(e) || /timed out after \d/.test(text) || !TRANSIENT_RE.test(text)) throw e;
+      const wait = Number(process.env.ORCH_RETRY_DELAY_MS ?? 15_000);
+      console.warn(`${agent.name}: transient error (${text.slice(0, 160)}); retrying once in ${Math.round(wait / 1000)} s`);
+      await sleep(wait);
+    }
+  }
 }
 
 /** The CLI's stream-json output: the final `result` line, plus any rate-limit readings. A single JSON object also works. */
@@ -974,6 +996,21 @@ function diffSummary(cp: string) {
   return (stat || "(no changes)") + (untracked ? `\nNew files not committed:\n${untracked}` : "");
 }
 
+/** Paths with uncommitted changes (modified, added, deleted, untracked; both sides of a rename), outside .orchestrator. */
+function changedFiles(): string[] {
+  // Not git(): it trims, and the first entry's status may start with a space (" M path").
+  const raw = execFileSync("git", ["status", "--porcelain=v1", "-z", "-uall", "--", ".", NOT_STATE], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const entries = raw.split("\0");
+  const out: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.length < 4) continue;
+    out.push(e.slice(3));
+    if (e[0] === "R" || e[0] === "C") out.push(entries[++i]); // the old path follows a rename or copy
+  }
+  return out.filter(Boolean);
+}
+
 /** Commit what is left, keep HEAD on a side branch, and reset the current branch to `cp`. */
 function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string): string | null {
   commitAll(message, true); // throws if it cannot commit: never reset over uncommitted work
@@ -1118,6 +1155,10 @@ const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
 /** `onLimit`: on a Claude usage limit, wait for the reset and retry the goal (default), or stop. */
 type Opts = {
   maxRounds: number; power: Power; dryRun: boolean; park: boolean; agentTimeoutMs: number; maxCost?: number; fast: boolean;
+  /** Files changed outside every task's list fail the round (else QA is told). */
+  strictFiles: boolean;
+  /** loop: spending cap over all goals of this loop run. */
+  maxCostTotal?: number;
   models: Models; onLimit: "wait" | "stop"; usageCap: UsageCap; plugins: PluginChoice; brief: boolean;
   notes: boolean; critic: boolean;
 };
@@ -1372,6 +1413,8 @@ function previousRound(round: number, plan: Plan, statuses: Map<Task, string>, c
 const writeLastRun = (lr: LastRun) => writeFileAtomic(LAST_RUN, JSON.stringify(lr, null, 2));
 
 // ---------- one goal: architect -> foundation -> build (parallel) -> verify, repeat ----------
+/** What the last runGoal() spent, also when it ended with an error (for --max-cost-total). */
+let lastGoalCost = 0;
 /** QA's notes for the goal being run, written to notes.md when it ends. */
 let goalNotes: string[] = [];
 async function runGoal(goal: string, o: Opts): Promise<boolean> {
@@ -1404,6 +1447,7 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
     });
     throw e;
   } finally {
+    lastGoalCost = ctx.budget.spent;
     if (cp) finishGit(cp, goal, passed, o.park || (interrupted && o.onLimit === "wait"), interrupted);
     console.log(`cost: ${usd(ctx.budget.spent)}${o.maxCost !== undefined ? ` of ${usd(o.maxCost)}` : ""}`);
     if (!o.dryRun) {
@@ -1514,6 +1558,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const verify = plan.tasks.filter((t) => t.phase === "verify");
 
     const results: Result[] = [];
+    // Files already changed before this round's agents ran (a commit that failed earlier) are not theirs.
+    const changedBefore = cp ? new Set(changedFiles().map(normPath)) : new Set<string>();
     for (const t of foundation) {
       if (results.some((r) => r.error)) skip(t);
       else results.push(await exec(t));
@@ -1532,6 +1578,16 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     for (const r of results) console.log(`[${r.agent}] touched ${r.touched.length} file(s)`);
     const errors = results.filter((r) => r.error).map((r) => `${r.agent} task failed: ${r.error}`);
 
+    // Ownership: files changed outside every task's list. Plans without file lists (fast path) are exempt.
+    const owned = new Set(plan.tasks.flatMap((t) => t.files ?? []).map(normPath));
+    const unowned =
+      cp && owned.size && !foundationFailed
+        ? changedFiles().filter((f) => !owned.has(normPath(f)) && !changedBefore.has(normPath(f)))
+        : [];
+    if (unowned.length) {
+      console.warn(`files changed outside every task's list: ${unowned.join(", ")}`);
+      emit("unowned", { round, files: unowned, strict: o.strictFiles });
+    }
     const committed = cp ? tryCommit(`orch: ${short(goal)} (round ${round})`) : null;
     const progressed = cp ? !!committed || !!dirtyFiles() : results.some((r) => r.touched.length > 0);
     // Budget or usage limit: siblings have finished and the work is committed; end the goal.
@@ -1548,7 +1604,10 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       checkResults = runChecks(checks);
       emit("checks", { round, results: checkResults.map(({ name, command, ok, code, ms }) => ({ name, command, ok, code, ms })) });
       const report = results.map((r) => `[${r.agent}] ${r.out}`).join("\n");
-      const diff = (cp ? `\n\nChanges since the checkpoint:\n${diffSummary(cp)}` : "") + checkReport(checkResults);
+      const diff =
+        (cp ? `\n\nChanges since the checkpoint:\n${diffSummary(cp)}` : "") +
+        (unowned.length ? `\n\nFiles changed outside every task's file list (check that each was needed and is correct):\n- ${unowned.join("\n- ")}` : "") +
+        checkReport(checkResults);
       for (const t of verify) {
         const id = idOf.get(t)!;
         emit("task_start", { round, id, agent: t.agent, phase: t.phase });
@@ -1573,9 +1632,12 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       .map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
     // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
     const verifiedBy = verify.length ? verdicts.length > 0 && verdicts.every((v) => v.passed) : checkResults.length > 0;
-    const passed = !errors.length && !checkFailures.length && verifiedBy;
+    const passed = !errors.length && !checkFailures.length && verifiedBy && !(o.strictFiles && unowned.length);
     const prevKey = failureKey(failures);
-    failures = [...errors, ...checkFailures, ...verdicts.flatMap((v) => v.failures)];
+    const ownershipFailures = o.strictFiles && unowned.length
+      ? [`files changed outside every task's file list: ${unowned.join(", ")}. Give them to a task in the plan, or have their changes reverted.`]
+      : [];
+    failures = [...errors, ...checkFailures, ...ownershipFailures, ...verdicts.flatMap((v) => v.failures)];
     const roundCost = round4(ctx.budget.spent - spentBefore);
     const checkSummary = checkResults.map(({ name, ok, code }) => ({ name, ok, code }));
     lr.state.push({ round, power, plan: plan.summary, touched: results.flatMap((r) => r.touched), checks: checkSummary, passed, failures, cost: roundCost });
@@ -1690,8 +1752,15 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     stop = true;
     console.log("\nstopping after current goal...");
   });
+  /** --max-cost-total: what the goals of this loop run have spent so far. */
+  let spentTotal = 0;
   while (!stop) {
     if (stopNow()) break;
+    if (o.maxCostTotal !== undefined && o.maxCostTotal - spentTotal < 0.01) {
+      console.log(`loop budget of ${usd(o.maxCostTotal)} used up (${usd(spentTotal)} spent): not starting another goal`);
+      emit("loop_stop", { reason: "budget", spent: round4(spentTotal) });
+      break;
+    }
     const item = updateQueue((q) => {
       const next = q.find((i) => i.status === "pending");
       if (next) {
@@ -1710,7 +1779,15 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     let outcome: "done" | "failed" | "limit" = "failed";
     let resetAt: number | undefined;
     try {
-      outcome = (await runGoal(item.goal, o)) ? "done" : "failed";
+      // With a loop budget, a goal may spend at most what is left of it (and its own --max-cost, if lower).
+      const left = o.maxCostTotal === undefined ? undefined : o.maxCostTotal - spentTotal;
+      const goalOpts = left === undefined ? o : { ...o, maxCost: Math.min(o.maxCost ?? Infinity, left) };
+      lastGoalCost = 0;
+      try {
+        outcome = (await runGoal(item.goal, goalOpts)) ? "done" : "failed";
+      } finally {
+        spentTotal += lastGoalCost;
+      }
     } catch (e) {
       if (e instanceof UsageLimit) {
         outcome = "limit";
@@ -1757,6 +1834,14 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     maxCost = Number(values["max-cost"]);
     if (!(maxCost > 0)) throw new Error(`--max-cost must be a positive amount in USD, got "${values["max-cost"]}"`);
   }
+  const cfgEarly = readJsonFile<Config>(CONFIG_FILE, {});
+  const totalRaw = values["max-cost-total"] ?? cfgEarly.maxCostTotal;
+  let maxCostTotal: number | undefined;
+  if (totalRaw !== undefined) {
+    maxCostTotal = Number(totalRaw);
+    if (!(maxCostTotal > 0)) throw new Error(`--max-cost-total must be a positive amount in USD, got "${totalRaw}"`);
+  }
+  const strictFiles = !!values["strict-files"] || cfgEarly.strictFiles === true;
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   const models = mergeModels(cfg.models, parseModelSpec(String(values.model ?? "")));
   const onLimit = String(values["on-limit"] ?? cfg.onLimit ?? "wait");
@@ -1768,7 +1853,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const critic = !!values.critic || cfg.critic === true;
   return {
     maxRounds, power: power as Power, dryRun: !!values["dry-run"], park: false, agentTimeoutMs: timeout * 60_000, maxCost,
-    fast: !!values.fast, models, onLimit, usageCap, plugins, brief, notes, critic,
+    fast: !!values.fast, models, onLimit, usageCap, plugins, brief, notes, critic, strictFiles, maxCostTotal,
   };
 }
 
@@ -1779,6 +1864,8 @@ async function main() {
       "max-rounds": { type: "string", default: "5" },
       power: { type: "string", default: "heavy" },
       "max-cost": { type: "string" },
+      "max-cost-total": { type: "string" },
+      "strict-files": { type: "boolean", default: false },
       "agent-timeout": { type: "string", default: "30" },
       poll: { type: "string", default: "15" },
       "until-empty": { type: "boolean", default: false },
@@ -1874,7 +1961,10 @@ async function main() {
   }
 }
 
-main().catch((e) => {
+// Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
+export { validate, extractJson, parseReset, failureKey, badPath, normPath, asVerdict, asReview, TRANSIENT_RE };
+
+if (!process.env.ORCH_NO_MAIN) main().catch((e) => {
   // Stack traces only on request: most errors here are expected ("dirty tree", "nothing to roll back").
   if (e instanceof UsageLimit) {
     // Exit 3 lets callers (the eval runner, scripts) tell "wait and retry" apart from a real failure.

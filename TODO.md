@@ -40,13 +40,13 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   `--fast` mode, and measure it.
 
 ### Test the orchestrator itself
-- [x] Fake `claude` (`test/fake-claude/`) and 42 scenario tests (`npm test`), run in CI on Linux and
+- [x] Fake `claude` (`test/fake-claude/`) and 47 scenario tests (`npm test`), run in CI on Linux and
   Windows; the Rust spawn test is `#[ignore]`d and run explicitly in CI.
-- [ ] **More scenarios**: phantom completion and its re-dispatch, foundation failure skipping the
-  round, a commit hook that fails, a pre-existing `.orchestrator/config.json` allow-list reaching the
+- [x] **More scenarios**: phantom completion and its re-dispatch, foundation failure skipping the
+  round, a commit hook that fails (done); still open: a pre-existing `.orchestrator/config.json` allow-list reaching the
   agents, `--wait-on-limit` and `--resume` in the eval runner. **good first issue**
-- [ ] **Unit tests** for `reduce.ts`, and for `validate`, `extractJson`, `parseReset`, `failureKey`
-  in `orch.ts` (export them or split helpers into a module). **good first issue**
+- [x] **Unit tests** for `validate`, `extractJson`, `parseReset`, `failureKey`, `badPath` and more in `orch.ts`
+  (`test/unit.test.mjs`); `reduce.ts` still has none. **good first issue**
 - [ ] **Lint and format**: ESLint + Prettier for TS, `rustfmt` + `clippy` for Rust, wired into CI.
   **good first issue**
 
@@ -55,12 +55,12 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   per-process session token on every `/api` call (`test/server.test.mjs`).
 - [x] **Queue write races.** (queue edits under a lock, atomic writes, a run lock per repo) The UI's `add` and the loop both read-modify-write `queue.json`. Use a
   lock file, or route every write through one process, and write through a temp file + rename.
-- [ ] **Retry transient failures** once (network errors, API overload), separately from the usage limit.
-- [ ] **Budget per loop session**, not only per goal (`--max-cost-total`).
+- [x] **Retry transient failures** once (network errors, API overload), separately from the usage limit.
+- [x] **Budget per loop session**, not only per goal (`--max-cost-total`).
 - [x] **Graceful "stop after current goal"** (`orch stop-after`, UI button) for `loop` from the UI (a stop file checked between
   goals). Today Stop kills the process tree.
-- [ ] **Ownership enforcement**: after the build phase, report files changed outside every task's
-  owned list to QA as a failure.
+- [x] **Ownership enforcement**: after the build phase, files changed outside every task's list go to QA,
+  and fail the round with `--strict-files`.
 - [ ] **Spawn `claude` without a shell on Windows** (resolve the executable once) to drop the
   `DEP0190` warning and the quoting risk.
 

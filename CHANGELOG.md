@@ -27,6 +27,14 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - **License: GPL-3.0-only** (was MIT). Versions up to and including 0.2.0 remain available under MIT.
 
 ### Added
+- **Retry of transient errors**: an agent call that fails with an API overload, a 5xx or 429 API error or a
+  dropped connection is retried once after 15 s. The usage limit, the budget and timeouts are never retried.
+- **Files outside the plan**: files changed outside every task's file list are reported to QA (and shown in
+  the run panel); with `--strict-files` (config `strictFiles`) they fail the round. New `unowned` event.
+- **Loop budget**: `--max-cost-total USD` (config `maxCostTotal`) caps a whole `loop` run; each goal gets at
+  most what is left and the loop stops before the next goal when it is used up (`loop_stop`, reason `budget`).
+- Tests: scenarios for phantom completion, a failed foundation task, retries, files outside the plan and the
+  loop budget, and unit tests for orch.ts's parsing and validation helpers (`test/unit.test.mjs`).
 - Evals: **series cases** (`tickets-series`, `api-series`): three goals in a row on one repo, graded at the
   end, to measure the project brief and notes; runner configs `+nomem` (`--no-brief --no-notes`) and
   `+critic`, combinable with a tier and `+fast`.

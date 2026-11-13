@@ -56,6 +56,8 @@ export type RoundView = {
   note?: string;
   /** From a `critic` event: the plan critic's review (`revised`: the architect re-planned after a rejection). */
   critic?: { approved: boolean; issues: string[]; revised: boolean; cost?: number };
+  /** From an `unowned` event: files changed outside every task's list (`strict`: that failed the round). */
+  unowned?: { files: string[]; strict: boolean };
 };
 export type RunView = {
   goal: string;

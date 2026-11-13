@@ -403,6 +403,62 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.ok(r.out.includes('"type":"loop_stop"'));
   });
 
+  test("a transient API error is retried once; the task then succeeds", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_TRANSIENT_ONCE: "be", ORCH_RETRY_DELAY_MS: "10" });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /be: transient error \(be: CLI returned success: API Error: 529/);
+    assert.equal(r.calls.filter((c) => c.startsWith("call agent=be ")).length, 2);
+    assert.equal(r.ev("task_end").find((e) => e.agent === "be").status, "COMPLETE");
+  });
+
+  test("files changed outside every task's list: QA is told; --strict-files fails the round", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_STRAY_FILE: "docs/stray.md" });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(r.last("unowned").files, ["docs/stray.md"]);
+    assert.ok(r.calls.includes("qa: told about files outside the plan"));
+
+    const s = orch(repo(), ["run", "x", "--max-rounds", "1", "--strict-files"], { FAKE_QA: "pass", FAKE_STRAY_FILE: "docs/stray.md" });
+    assert.equal(s.code, 1, s.out);
+    assert.equal(s.last("round_end").passed, false);
+    assert.match(s.last("round_end").failures.join("\n"), /files changed outside every task's file list: docs\/stray\.md/);
+
+    const clean = orch(repo(), ["run", "x", "--max-rounds", "1", "--strict-files"], { FAKE_QA: "pass" });
+    assert.equal(clean.code, 0, "owned files only: no complaint");
+    assert.equal(clean.ev("unowned").length, 0);
+  });
+
+  test("--max-cost-total: the loop stops before the next goal once its budget is spent", () => {
+    const dir = repo();
+    for (const g of ["one", "two", "three"]) orch(dir, ["add", g]);
+    const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--max-cost-total", "0.4"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    const q = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    assert.deepEqual(q.map((i) => i.status), ["done", "failed", "pending"], r.out);
+    assert.equal(r.last("loop_stop").reason, "budget");
+    assert.ok(r.last("loop_stop").spent > 0.25, "the second goal's spending counts too");
+    assert.match(r.out, /loop budget of \$0\.40 used up/);
+    assert.notEqual(orch(dir, ["loop", "--max-cost-total", "0"]).code, 0, "0 is rejected");
+  });
+
+  test("phantom completion: a task that claims success without a diff is re-dispatched once", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_NOWRITE: "1" });
+    assert.equal(r.calls.filter((c) => c.startsWith("call agent=be ")).length, 2, "be asked twice");
+    assert.equal(r.ev("task_end").find((e) => e.agent === "be").status, "PHANTOM");
+    assert.match(r.out, /phantom completion by be; re-dispatching/);
+  });
+
+  test("a failed foundation task skips the build and verify tasks of the round", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_FAIL_AGENT: "fe" });
+    assert.equal(r.code, 1);
+    const ends = r.ev("task_end");
+    assert.deepEqual(ends.map((e) => [e.agent, e.phase, e.status]), [["fe", "foundation", "ERROR"], ["be", "build", "SKIPPED"], ["fe", "build", "SKIPPED"], ["qa", "verify", "SKIPPED"]]);
+    assert.ok(!r.calls.some((c) => c.startsWith("call agent=be ")), "build agents never called");
+  });
+
   test("budget cap stops the goal", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "3", "--max-cost", "0.12"]);

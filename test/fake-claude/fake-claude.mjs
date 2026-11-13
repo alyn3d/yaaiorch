@@ -11,6 +11,8 @@
 // Switches (environment):
 //   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap
 //   FAKE_QA=pass|fail|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts
+//   FAKE_TRANSIENT_ONCE=<agent>  that agent's first call fails with "API Error: 529 ... overloaded_error"
+//   FAKE_STRAY_FILE=<path>   implementers also write this file, which no task owns
 //   FAKE_BE_FILE=<path>     the file the plan gives the be task (default src/api.ts), to test path checks
 //   FAKE_QA_NOTE=<text>      a passing QA verdict carries this in "notes"
 //   FAKE_CRITIC=approve|reject|reject-once   the plan critic's answer (default approve)
@@ -97,6 +99,20 @@ if (env.FAKE_LIMIT_ON || env.FAKE_LIMIT_AFTER) {
   }
 }
 
+// A transient API error on this agent's first call (FAKE_TRANSIENT_ONCE=<agent>), as the CLI reports one.
+if (env.FAKE_TRANSIENT_ONCE === agent) {
+  const flag = `.orchestrator/fake-transient-${agent}`;
+  if (!existsSync(flag)) {
+    writeFileSync(flag, "1");
+    log(`${agent}: transient error`);
+    process.stdout.write(JSON.stringify({
+      type: "result", subtype: "success", is_error: true, total_cost_usd: 0,
+      result: 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    }));
+    process.exit(1);
+  }
+}
+
 if (cap !== null && cost > Number(cap)) {
   log(`${agent}: over budget`);
   process.stdout.write(JSON.stringify({ type: "result", subtype: "error_max_budget_usd", is_error: true, total_cost_usd: cost }));
@@ -145,6 +161,7 @@ if (prompt.includes("Study this repository")) {
   const mode = env.FAKE_QA ?? "pass";
   const sawNew = /ui\.ts/.test(prompt) && /api\.ts/.test(prompt);
   if (prompt.includes("## Project brief")) log("qa: got brief");
+  if (prompt.includes("outside every task's file list")) log("qa: told about files outside the plan");
   log(`qa: sawNewFiles=${sawNew}`);
   if (mode === "fail") reply('{"passed": false, "failures": ["fake failure"]}');
   else if (mode === "needs-new" && !sawNew) reply('{"passed": false, "failures": ["QA did not see new files"]}');
@@ -170,6 +187,10 @@ if (prompt.includes("Study this repository")) {
       mkdirSync(dirname(f), { recursive: true });
       writeFileSync(f, `// ${agent} ${Date.now()} ${Math.random()}\n`);
     }
+  if (env.FAKE_STRAY_FILE && agent === "be") {
+    mkdirSync(dirname(env.FAKE_STRAY_FILE), { recursive: true });
+    writeFileSync(env.FAKE_STRAY_FILE, "not in any task's list\n");
+  }
   log(`${agent}: wrote ${env.FAKE_NOWRITE ? "nothing" : files.join(",")}`);
   reply("done\nStatus: COMPLETE");
 }
