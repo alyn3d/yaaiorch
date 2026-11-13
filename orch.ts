@@ -9,6 +9,7 @@ import {
   readdirSync,
   renameSync,
   unlinkSync,
+  rmSync,
   openSync,
   closeSync,
   statSync,
@@ -30,6 +31,8 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
+  orch share [--dry-run]  propose what orch learned (brief and lasting notes) as a CLAUDE.md section, committed
+                        on an orchestrator/claude-md-* branch for you to review and merge (--dry-run: print it)
   orch plugins [--json] [--details]  Claude Code plugins installed for this repo (--details: token cost)
   orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work is kept
                         on an orchestrator/discarded-* branch
@@ -49,6 +52,11 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   in config: {"off": true, "disable": [...], "hooks": false}. Your Claude Code setup is unchanged.
          --critic   a read-only critic agent reviews each plan before building; a rejected plan goes back to
                   the architect once; also "critic": true in config
+         --diff-critic   the critic also reviews each round's change against the goal, next to QA; a rejection
+                  fails the round like a QA failure; also "diffCritic": true in config
+         --review   a read-only reviewer checks each round's change for bugs and security problems; a rejection
+                  fails the round  --reviewers A,B   use these agents (yours, from .claude/agents) instead of the
+                  built-in reviewer; also "review": true or ["A", "B"] in config
          --no-notes   do not use or write .orchestrator/notes.md (lessons from earlier goals, read by the
                   architect); also "notes": false in config
          --strict-files   a file changed outside every task's file list fails the round (default: QA is told)
@@ -181,6 +189,9 @@ const MAX_BRIEF = 4000;
 /** Lessons from earlier goals (QA's notes, what failed), read by the architect; oldest entries are dropped past MAX_NOTES. */
 const NOTES_FILE = join(DIR, "notes.md");
 const MAX_NOTES = 8000;
+/** Past this size a cheap call merges and prunes the notes (tidyNotes) instead of only cutting the oldest. */
+const TIDY_AT = 5000;
+const NOTES_HEAD = "# Notes from earlier goals\n\n";
 /** Implementers: allow-list for the check commands, run with acceptEdits. */
 const AGENT_SETTINGS = `${DIR}/agent-settings.json`;
 /** Architect and verifiers: same allow-list plus a deny on edit tools, run with permission mode "default". */
@@ -372,6 +383,16 @@ const REVIEW_FORMAT = `
 Do not edit any file. Reply with exactly one JSON object and nothing else:
 {"approved": true | false, "issues": ["<what is wrong with the plan and what it should do instead>"]}
 Use an empty issues list when approved is true.`;
+const TIDY_FORMAT = `
+
+## Reply format
+Do not edit any file. Reply with exactly one JSON object and nothing else:
+{"notes": "<markdown bullet list, each lesson one line>"}`;
+const SHARE_FORMAT = `
+
+## Reply format
+Do not edit any file. Reply with exactly one JSON object and nothing else:
+{"section": "<markdown for the section's body: no top heading, at most 400 words>"}`;
 const VERDICT_FORMAT = `
 
 ## Reply format
@@ -454,6 +475,8 @@ type Config = {
   notes?: boolean;
   critic?: boolean;
   resume?: boolean;
+  diffCritic?: boolean;
+  review?: boolean | string[];
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -1263,6 +1286,10 @@ type Opts = {
   critic: boolean;
   /** Fix rounds continue an implementer's session from the round before (see pickSession). */
   resume: boolean;
+  /** The critic reviews each round's change against the goal. */
+  diffCritic: boolean;
+  /** Reviewers for bugs and security: null = off, [] = the built-in reviewer, else these agents. */
+  review: string[] | null;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1521,6 +1548,92 @@ async function learn(o: Opts) {
   }
 }
 
+/** Markers around the section `orch share` maintains in CLAUDE.md; everything outside them is left alone. */
+const SHARE_START = "<!-- yaaiorch:learned:start -->";
+const SHARE_END = "<!-- yaaiorch:learned:end -->";
+
+/** CLAUDE.md with the learned section put in (replacing an earlier one between the markers, else appended). */
+function withSharedSection(current: string, body: string): string {
+  const block = `${SHARE_START}\n## Learned by YAAIORCH\n\n${body.trim()}\n${SHARE_END}`;
+  const a = current.indexOf(SHARE_START);
+  const b = current.indexOf(SHARE_END);
+  if (a >= 0 && b > a) return current.slice(0, a) + block + current.slice(b + SHARE_END.length);
+  return (current.trim() ? `${current.trimEnd()}\n\n` : "") + `${block}\n`;
+}
+
+/** Commit `content` as `path` on a new branch off HEAD, without touching the working tree or the index. */
+function commitOnSideBranch(branch: string, path: string, content: string, message: string) {
+  const index = join(DIR, `share-index-${process.pid}`);
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  const g = (args: string[], input?: string) => execFileSync("git", args, { encoding: "utf8", env, input, stdio: ["pipe", "pipe", "pipe"] }).trim();
+  try {
+    g(["read-tree", "HEAD"]);
+    const blob = g(["hash-object", "-w", "--stdin"], content);
+    g(["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`]);
+    const tree = g(["write-tree"]);
+    const commit = g(["commit-tree", tree, "-p", "HEAD", "-m", message]);
+    g(["branch", branch, commit]);
+  } finally {
+    rmSync(index, { force: true });
+  }
+}
+
+/** `orch share`: the brief and lasting lessons as a CLAUDE.md section, on a branch to review. */
+async function share(o: Opts) {
+  const brief = readBrief();
+  const notes = existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8").trim() : "";
+  if (!brief && !notes) throw new Error(`nothing learned yet: no ${BRIEF_FILE} or ${NOTES_FILE} (run a goal or "orch learn" first)`);
+  if (!o.dryRun) git("rev-parse", "--verify", "HEAD"); // needs a commit to branch from
+  const roster = discoverAgents();
+  const architect = roster.find((a) => a.name === "architect")!;
+  writeBuiltins(roster);
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  writeAgentSettings(cfg, loadChecks(cfg), o.plugins);
+  const ctx: RunCtx = {
+    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+    timeoutMs: o.agentTimeoutMs,
+    usageCap: o.usageCap,
+    onLimit: o.onLimit,
+  };
+  let current = "";
+  try {
+    current = git("show", "HEAD:CLAUDE.md");
+  } catch {
+    /* no CLAUDE.md yet */
+  }
+  const ours = current.indexOf(SHARE_START) >= 0 ? current.slice(current.indexOf(SHARE_START), current.indexOf(SHARE_END)) : "";
+  const prompt =
+    `Write the section of this repository's CLAUDE.md that passes on what an automated build loop learned here, so ` +
+    `people and fresh Claude sessions working in the repo get it. Use the project brief and the lessons below; keep what ` +
+    `holds for the code as it is now (check the repository if unsure): stack and layout, conventions, how to build and ` +
+    `test, pitfalls. Leave out one-off failures, and anything the rest of CLAUDE.md already says.\n` +
+    (brief ? `\nProject brief:\n${brief}\n` : "") +
+    (notes ? `\nLessons from earlier goals:\n${notes.slice(-6000)}\n` : "") +
+    (current
+      ? `\nThe current CLAUDE.md${ours ? " (the part between the yaaiorch markers is the earlier version of this section)" : ""}:\n${current.slice(0, 8000)}\n`
+      : "") +
+    SHARE_FORMAT;
+  emit("share_start", {});
+  let ok = false;
+  let branch: string | undefined;
+  try {
+    const r = await run(architect, modelFor(o.power, o.models, "architect", "architect"), prompt, ctx, true);
+    const { section } = extractJson<{ section?: unknown }>(r.text);
+    if (typeof section !== "string" || section.trim().length < 20) throw new Error("the architect returned no section");
+    const next = withSharedSection(current, section);
+    if (o.dryRun) console.log(`\n${next.slice(next.indexOf(SHARE_START))}`);
+    else {
+      branch = `${BRANCH_PREFIX}claude-md-${Date.now()}`;
+      commitOnSideBranch(branch, "CLAUDE.md", next, "docs: what YAAIORCH learned about this repo (CLAUDE.md)");
+      console.log(`\nProposed on branch ${branch} (your working tree is unchanged).\n  review: git diff HEAD ${branch}\n  take it: git merge ${branch}`);
+    }
+    ok = true;
+  } finally {
+    emit("share_end", { ok, branch, cost: round4(ctx.budget.spent) });
+    console.log(`cost: ${usd(ctx.budget.spent)}`);
+  }
+}
+
 /** Brief and recent lessons for implementers, QA and the critic, so they need not explore the repo from scratch. */
 function repoContext(brief: string, notes: string): string {
   return (
@@ -1545,13 +1658,77 @@ function appendNotes(goal: string, passed: boolean, rounds: number, qaNotes: str
   if (!lines.length) return;
   const day = new Date().toISOString().slice(0, 10);
   const entry = `## ${day} · ${passed ? "passed" : "failed"} in ${rounds} round(s) · ${short(goal)}\n${lines.join("\n")}\n`;
-  let all = (existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8").trim() + "\n\n" : "# Notes from earlier goals\n\n") + entry;
+  let all = (existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8").trim() + "\n\n" : NOTES_HEAD) + entry;
   while (all.length > MAX_NOTES) {
     const i = all.indexOf("\n## ", all.indexOf("## ") + 3); // drop the oldest entry, keep the heading
     if (i < 0) break;
     all = all.slice(0, all.indexOf("## ")) + all.slice(i + 1);
   }
   writeFileAtomic(NOTES_FILE, all);
+}
+
+/**
+ * Merge duplicate lessons and drop ones that no longer apply, once notes.md is past TIDY_AT. One cheap read-only call
+ * (the implementers' model); any failure keeps the notes as they are. Returns the cost.
+ */
+async function tidyNotes(architect: Entry, o: Opts, ctx: RunCtx): Promise<number> {
+  const before = existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8") : "";
+  if (before.length <= TIDY_AT) return 0;
+  const spent = ctx.budget.spent;
+  let after = before.length;
+  let ok = false;
+  try {
+    const prompt =
+      `Tidy these lessons that earlier goals in this repository left for later ones. Merge duplicates and lessons that say ` +
+      `the same thing; drop lessons about one-off failures that were fixed, and ones that no longer apply to the code ` +
+      `(look at the repository if you are not sure). Keep pitfalls, decisions and conventions a later goal needs to know, ` +
+      `each as one short line. At most 25 lessons.\n\nLessons:\n${before}` +
+      TIDY_FORMAT;
+    const r = await run(architect, modelFor(o.power, o.models, "impl"), prompt, ctx, true);
+    const { notes } = extractJson<{ notes?: unknown }>(r.text);
+    if (typeof notes !== "string" || !notes.trim()) throw new Error("no notes in the reply");
+    const day = new Date().toISOString().slice(0, 10);
+    const text = `${NOTES_HEAD}## ${day} · tidied\n${notes.trim()}\n`;
+    if (text.length >= before.length) throw new Error("the tidied notes are not shorter");
+    writeFileAtomic(NOTES_FILE, text);
+    after = text.length;
+    ok = true;
+    console.log(`notes.md tidied: ${before.length} -> ${after} characters`);
+  } catch (e) {
+    console.warn(`could not tidy notes.md (${msg(e)}); kept as it is`);
+  }
+  const cost = ctx.budget.spent - spent;
+  emit("notes_tidy", { ok, before: before.length, after, cost: round4(cost) });
+  return cost;
+}
+
+/** A diff review: the critic against the goal, or a reviewer for bugs and security. Non-fatal errors approve. */
+type Lens = "goal" | "bugs";
+const LENS: Record<Lens, string> = {
+  goal:
+    "Review this change against the goal: does it do everything the goal asks, wired in where it must be (exports, routes, " +
+    "registration, config), with tests for the new behaviour? Reject only for gaps that mean the goal is not met.",
+  bugs:
+    "Review this change for bugs and security problems (logic errors, unhandled edge cases and errors, broken contracts " +
+    "between files, injection, missing authorization, secrets, unsafe input handling). Reject only for real defects, not style.",
+};
+async function reviewDiff(agent: Entry, lens: Lens, goal: string, cp: string, model: string, ctx: RunCtx): Promise<Review & { cost: number }> {
+  const patch = cp ? execFileSync("git", ["diff", cp, "--", ".", NOT_STATE], { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 }) : "";
+  const prompt =
+    `${ctx.repoContext ?? ""}Goal: ${goal}\n\n${LENS[lens]}\n\n` +
+    (cp ? `Changed files:\n${diffSummary(cp)}\n\n` : "") +
+    (patch
+      ? `The change${patch.length > 30_000 ? ` (first 30,000 characters; run "git diff ${cp}" for the rest)` : ""}:\n${patch.slice(0, 30_000)}`
+      : "Read the changed files to review the change.") +
+    REVIEW_FORMAT;
+  try {
+    const r = await run(agent, model, prompt, ctx, true);
+    return { ...asReview(extractJson<Review>(r.text)), cost: r.cost };
+  } catch (e) {
+    if (isFatal(e)) throw e;
+    console.warn(`${agent.name} could not review the change (${msg(e)}); going on without it`);
+    return { approved: true, issues: [], cost: 0 };
+  }
 }
 
 /** The plan critic: a read-only review of the plan before anything is built. Non-fatal errors approve the plan. */
@@ -1622,11 +1799,16 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
     lr.checkpoint = cp || undefined;
     if (!o.dryRun) writeLastRun(lr); // the UI offers rollback from this even if the run is killed in round 1
     passed = await runGoalInner(goal, o, cp, ctx, lr);
-    emit("goal_end", { passed, cost: round4(ctx.budget.spent) });
     if (o.notes && !o.dryRun) {
       const rounds = lr.state as { failures: string[] }[];
       appendNotes(goal, passed, rounds.length, goalNotes, rounds[0]?.failures ?? [], rounds.at(-1)?.failures ?? []);
+      await tidyNotes(
+        discoverAgents().find((a) => a.name === "architect")!,
+        o,
+        ctx,
+      );
     }
+    emit("goal_end", { passed, cost: round4(ctx.budget.spent) });
     return passed;
   } catch (e) {
     if (e instanceof UsageLimit) {
@@ -1657,9 +1839,16 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const roster = discoverAgents();
   const byName = new Map(roster.map((a) => [a.name, a]));
   const architect = byName.get("architect")!; // always present: built-in unless overridden
-  // The critic reviews plans; it is never given build or verify tasks.
-  const workers = roster.filter((a) => a.name !== "architect" && a.name !== "critic");
+  // The critic and the reviewers review; they are never given build or verify tasks.
+  const reviewerNames = o.review === null ? [] : o.review.length ? o.review : ["reviewer"];
+  for (const n of reviewerNames) if (!byName.has(n)) throw new Error(`reviewer "${n}" is not an agent (known: ${[...byName.keys()].join(", ")})`);
+  const workers = roster.filter((a) => !["architect", "critic", "reviewer", ...reviewerNames].includes(a.name));
   const critic = byName.get("critic");
+  /** Diff reviews each round runs next to QA: the critic against the goal, the reviewers for bugs and security. */
+  const diffReviewers: { agent: Entry; lens: Lens }[] = [
+    ...(o.diffCritic && critic ? [{ agent: critic, lens: "goal" as Lens }] : []),
+    ...reviewerNames.map((n) => ({ agent: byName.get(n)!, lens: "bugs" as Lens })),
+  ];
   const skills = discoverSkills();
   writeBuiltins(roster);
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
@@ -1823,11 +2012,23 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
     const verdicts: Verdict[] = [];
     let checkResults: Check[] = [];
+    let reviewsP: Promise<(Review & { agent: string; cost: number })[]> = Promise.resolve([]);
     if (foundationFailed)
       verify.forEach(skip); // building on a broken foundation is pointless to verify
     else {
       checkResults = runChecks(checks);
       emit("checks", { round, results: checkResults.map(({ name, command, ok, code, ms }) => ({ name, command, ok, code, ms })) });
+      // Diff reviews run next to QA, but only on a round the checks and tasks have not already failed.
+      const clean = !errors.length && checkResults.every((c) => c.ok);
+      reviewsP = clean
+        ? Promise.all(
+            diffReviewers.map(async ({ agent, lens }) => {
+              const rv = await reviewDiff(agent, lens, goal, cp, modelFor(power, models, "qa", agent.name), ctx);
+              emit("review", { round, agent: agent.name, lens, approved: rv.approved, issues: rv.issues, cost: round4(rv.cost) });
+              return { agent: agent.name, ...rv };
+            }),
+          )
+        : Promise.resolve([]);
       const report = results.map((r) => `[${r.agent}] ${r.out}`).join("\n");
       const diff =
         (cp ? `\n\nChanges since the checkpoint:\n${diffSummary(cp)}` : "") +
@@ -1866,17 +2067,19 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       }
     }
 
+    const reviews = await reviewsP;
+    const reviewFailures = reviews.filter((r) => !r.approved).flatMap((r) => r.issues.map((i) => `${r.agent} (review): ${i}`));
     // Exit codes beat opinions: a failed check fails the round whatever QA says.
     const checkFailures = checkResults.filter((c) => !c.ok).map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
     // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
     const verifiedBy = verify.length ? verdicts.length > 0 && verdicts.every((v) => v.passed) : checkResults.length > 0;
-    const passed = !errors.length && !checkFailures.length && verifiedBy && !(o.strictFiles && unowned.length);
+    const passed = !errors.length && !checkFailures.length && verifiedBy && !reviewFailures.length && !(o.strictFiles && unowned.length);
     const prevKey = failureKey(failures);
     const ownershipFailures =
       o.strictFiles && unowned.length
         ? [`files changed outside every task's file list: ${unowned.join(", ")}. Give them to a task in the plan, or have their changes reverted.`]
         : [];
-    failures = [...errors, ...checkFailures, ...ownershipFailures, ...verdicts.flatMap((v) => v.failures)];
+    failures = [...errors, ...checkFailures, ...ownershipFailures, ...verdicts.flatMap((v) => v.failures), ...reviewFailures];
     const roundCost = round4(ctx.budget.spent - spentBefore);
     const checkSummary = checkResults.map(({ name, ok, code }) => ({ name, ok, code }));
     lr.state.push({ round, power, plan: plan.summary, touched: results.flatMap((r) => r.touched), checks: checkSummary, passed, failures, cost: roundCost });
@@ -2095,6 +2298,14 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const notes = !values["no-notes"] && cfg.notes !== false;
   const critic = !!values.critic || cfg.critic === true;
   const resume = !values["no-resume"] && cfg.resume !== false;
+  const diffCritic = !!values["diff-critic"] || cfg.diffCritic === true;
+  const named = String(values.reviewers ?? "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const fromCfg = Array.isArray(cfg.review) ? cfg.review.map(String) : [];
+  const review = named.length ? named : values.review || cfg.review === true ? [] : fromCfg.length ? fromCfg : null;
+  for (const a of review ?? []) if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(a)) throw new Error(`--reviewers: "${a}" is not an agent name`);
   return {
     maxRounds,
     power: power as Power,
@@ -2111,6 +2322,8 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     notes,
     critic,
     resume,
+    diffCritic,
+    review,
     strictFiles,
     maxCostTotal,
   };
@@ -2140,6 +2353,9 @@ async function main() {
       "no-notes": { type: "boolean", default: false },
       "no-resume": { type: "boolean", default: false },
       critic: { type: "boolean", default: false },
+      "diff-critic": { type: "boolean", default: false },
+      review: { type: "boolean", default: false },
+      reviewers: { type: "string" },
       details: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
@@ -2203,6 +2419,11 @@ async function main() {
       const o = parseOpts(values);
       acquireRunLock("learn");
       return learn(o);
+    }
+    case "share": {
+      const o = parseOpts(values);
+      acquireRunLock("share");
+      return share(o);
     }
     case "stop-after":
       mkdirSync(DIR, { recursive: true });

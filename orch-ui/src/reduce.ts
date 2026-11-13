@@ -109,6 +109,14 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       );
     case "unowned":
       return run && upd(run, ev.round, (r) => ({ ...r, unowned: { files: ev.files ?? [], strict: !!ev.strict } }));
+    case "review":
+      return (
+        run &&
+        upd({ ...run, cost: run.cost + (ev.cost ?? 0) }, ev.round, (r) => ({
+          ...r,
+          reviews: [...(r.reviews ?? []), { agent: ev.agent, lens: ev.lens, approved: !!ev.approved, issues: ev.issues ?? [], cost: ev.cost }],
+        }))
+      );
     case "critic":
       return run && upd(run, ev.round, (r) => ({ ...r, critic: { approved: !!ev.approved, issues: ev.issues ?? [], revised: !!ev.revised, cost: ev.cost } }));
     case "waiting":

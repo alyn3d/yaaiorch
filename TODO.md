@@ -72,8 +72,8 @@ Each item should show its effect in the evals before it becomes the default.
   agent reviews the plan against the goal and the repo and returns `{approved, issues[]}`; issues go back
   to the architect once. It sees only artifacts (goal, plan, file list), never the architect's
   reasoning. Behind a flag first (`--critic`), compared with and without on the eval suite.
-- [ ] **Diff critic**: the same agent reviews the diff before QA, so QA and the critic are independent
-  opinions; a failed check still wins over both.
+- [x] **Diff critic**: the same agent reviews the diff before QA, so QA and the critic are independent
+  opinions; a failed check still wins over both (`--diff-critic`; runs next to QA, skipped when a check failed).
 - [x] **Project brief**: the architect writes `.orchestrator/brief.md` once (stack, conventions,
   commands) and later rounds and goals reuse it instead of re-reading the repo.
 - [x] **Context between rounds**: give the architect its previous plan, the diff and the check output,
@@ -82,18 +82,19 @@ Each item should show its effect in the evals before it becomes the default.
   instead of starting cold (`--no-resume` to turn off; not measured yet: compare `economy` with `economy+noresume`).
 - [x] **Memory between goals**: `.orchestrator/notes.md` with decisions and pitfalls, read by the
   architect, appended by QA.
-- [ ] **Review lens**: optional reviewer pass on the diff for bugs and security, with the user's own
-  reviewer agents when present.
+- [x] **Review lens**: optional reviewer pass on the diff for bugs and security, with the user's own
+  reviewer agents when present (`--review`, `--reviewers A,B`).
 - [x] **Escalate per task**: on a stuck round, move only the failing tasks up a tier.
 - [x] **Learn the repo**: `orch learn` / **Learn repo** writes the brief up front; implementers and QA get
   the brief and recent notes too; a brief stamped at an old commit (20+ changed files) is checked again.
-- [ ] **Tidy the notes**: when `notes.md` gets long, one cheap call merges duplicates and drops lessons that
+- [x] **Tidy the notes**: when `notes.md` gets long (past 5000 characters), one cheap call merges duplicates and drops lessons that
   no longer apply, instead of cutting the oldest.
-- [ ] **Share what was learned**: optionally propose the brief and lasting lessons as a section of the
+- [x] **Share what was learned** (`orch share`, **Share to CLAUDE.md**): optionally propose the brief and lasting lessons as a section of the
   repo's CLAUDE.md, as a commit to review, so teammates and fresh clones get it.
 - [x] **Cases to measure them with**: two series cases (`tickets-series`, `api-series`: three goals in a row
   on one repo) and runner configs `+nomem` and `+critic`.
-- [ ] **Measure these** (brief, notes, context between rounds, per-task escalation, plan critic): they were built
+- [ ] **Measure these** (brief, notes, context between rounds, per-task escalation, session resume, plan and diff
+  critic, review lens; configs `+nomem`, `+noresume`, `+critic`, `+diffcritic`, `+review`): they were built
   without an eval, because the current cases all pass in round 1. Needs cases that take several
   rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.
 

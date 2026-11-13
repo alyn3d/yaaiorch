@@ -58,6 +58,8 @@ export type RoundView = {
   note?: string;
   /** From a `critic` event: the plan critic's review (`revised`: the architect re-planned after a rejection). */
   critic?: { approved: boolean; issues: string[]; revised: boolean; cost?: number };
+  /** From `review` events: diff reviews next to QA (lens "goal": the critic; "bugs": a reviewer). */
+  reviews?: { agent: string; lens: "goal" | "bugs"; approved: boolean; issues: string[]; cost?: number }[];
   /** From an `unowned` event: files changed outside every task's list (`strict`: that failed the round). */
   unowned?: { files: string[]; strict: boolean };
 };

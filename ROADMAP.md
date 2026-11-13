@@ -69,7 +69,8 @@ Fewer rounds and cheaper rounds for the same pass rate, each change backed by ev
   seeing only artifacts (plan, diff, check output), never the other agents' reasoning.
 - A project brief reused across rounds and goals.
 - Richer context for fix rounds (previous plan, diff, check output) and resumed implementer sessions.
-- Memory between goals, an optional review lens, and per-task escalation.
+- Memory between goals (tidied when it grows, and shareable as a CLAUDE.md section), an optional review
+  lens, and per-task escalation. All built; what is left of 0.4 is measuring them.
 
 ## 0.5: autonomy
 

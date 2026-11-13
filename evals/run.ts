@@ -11,7 +11,8 @@
 // Options:
 //   --cases a,b          case ids (default: all)          --power economy,heavy  orch tiers (default: economy; "none" for no orch runs;
 //                                                                              suffixes: +fast (--fast), +nomem (--no-brief --no-notes),
-//                                                                              +critic (--critic), +noresume (--no-resume), e.g. economy+nomem)
+//                                                                              +critic (--critic), +noresume (--no-resume),
+//                                                                              +diffcritic (--diff-critic), +review (--review), e.g. economy+nomem)
 //   --single m1,m2       also run a single agent with these models (control group), e.g. sonnet,opus
 //   --orch-model SPEC    passed to orch as --model for every orch run, e.g. "architect=opus,impl=haiku"
 //   --repeat N           runs per case and tier (1)       --parallel N           runs at once (1)
@@ -105,7 +106,14 @@ const powers =
         .filter(Boolean);
 // Suffixes add orch options: "economy+fast" (direct attempt first), "economy+nomem" (no project brief or notes,
 // to measure what they are worth), "economy+critic" (plan critic), "economy+noresume" (fix rounds start cold). They combine: "heavy+nomem+critic".
-const SUFFIXES: Record<string, string[]> = { fast: ["--fast"], nomem: ["--no-brief", "--no-notes"], critic: ["--critic"], noresume: ["--no-resume"] };
+const SUFFIXES: Record<string, string[]> = {
+  fast: ["--fast"],
+  nomem: ["--no-brief", "--no-notes"],
+  critic: ["--critic"],
+  noresume: ["--no-resume"],
+  diffcritic: ["--diff-critic"],
+  review: ["--review"],
+};
 const tierOf = (label: string) => label.split("+")[0];
 const suffixArgs = (label: string) =>
   label

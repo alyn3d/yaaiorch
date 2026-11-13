@@ -132,6 +132,13 @@ export function RunPanel({ run }: { run: Run }) {
               {r.critic.cost !== undefined && <span className="cost"> ({money(r.critic.cost)})</span>}
             </p>
           )}
+          {r.reviews?.map((rv) => (
+            <p key={rv.agent} className={rv.approved ? "cost" : "note"} title={rv.issues.join("\n")}>
+              {rv.lens === "goal" ? "Diff critic" : `Review (${rv.agent})`}:{" "}
+              {rv.approved ? "approved" : `rejected (${rv.issues.length} issue${rv.issues.length === 1 ? "" : "s"}): ${rv.issues.join("; ")}`}
+              {rv.cost !== undefined && <span className="cost"> ({money(rv.cost)})</span>}
+            </p>
+          ))}
           {r.unowned && (
             <p className="note" title={r.unowned.files.join("\n")}>
               Changed outside the plan's file lists{r.unowned.strict ? " (fails the round)" : " (QA was told)"}: {r.unowned.files.join(", ")}

@@ -98,7 +98,7 @@ Other commands:
 | `orch learn` | study the repo once (read-only) and write the project brief that later goals reuse |
 | `orch plugins [--details]` | list your Claude Code plugins (with `--details`: context tokens each adds per call) |
 
-Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--no-brief` (do not keep a project brief), `--no-resume` (fix rounds start every implementer cold), `--strict-files` (a file changed outside the plan fails the round), `--max-cost-total USD` (budget for a whole `loop` run), `--no-notes` (do not keep lessons between goals), `--critic` (review each plan before building), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
+Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--no-brief` (do not keep a project brief), `--no-resume` (fix rounds start every implementer cold), `--strict-files` (a file changed outside the plan fails the round), `--max-cost-total USD` (budget for a whole `loop` run), `--no-notes` (do not keep lessons between goals), `--critic` (review each plan before building), `--diff-critic` (also review each round's change against the goal), `--review` / `--reviewers A,B` (review each change for bugs and security, optionally with your own agents), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
 `--agent-timeout MIN` (30), `--dry-run` (plan only). Run `orch` without arguments for the full usage.
 
 ### Browser UI
@@ -169,6 +169,15 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
 - **Plan critic** (optional, **Plan critic** in the run settings or `--critic`): a read-only agent reviews
   each plan before anything is built; a rejected plan goes back to the architect once. One extra call per
   round.
+- **Diff reviews** (optional): **Diff critic** (`--diff-critic`) has the critic check each round's change
+  against the goal, and **Review lens** (`--review`) has a reviewer check it for bugs and security
+  problems, the built-in one or your own agents (`--reviewers security-reviewer,backend-reviewer`). They run
+  next to QA, as independent opinions, and a rejection fails the round; when a check already failed they are
+  skipped. One extra call each per round.
+- **Tidy notes and share them.** When `notes.md` grows past 5,000 characters, one cheap call merges and prunes
+  it. `orch share` (**Share to CLAUDE.md**) turns the brief and lasting lessons into a section of the repo's
+  `CLAUDE.md`, committed on an `orchestrator/claude-md-*` branch for you to review and merge, so teammates and
+  their own Claude sessions get it too; your working tree is not touched.
 - **Plugins.** Agents are ordinary `claude -p` calls, so by default they load your Claude Code plugins
   and hooks, and every plugin adds context (cost) to every agent call; some, like prompt-style or
   "always use skills" plugins, also change how agents behave. In the UI, **Plugins** (in each repo's run

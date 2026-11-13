@@ -23,6 +23,9 @@
 //   FAKE_SLOW=<seconds>      implementers sleep first
 //   FAKE_NOWRITE=1           implementers claim COMPLETE but write nothing
 //   FAKE_NO_SESSION=1        a call with --resume fails like the real CLI when the session is gone
+//   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
+//   FAKE_TIDY=bad            the notes tidy call returns no usable notes
+// Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
 //   FAKE_BAD_PLAN_ONCE=1     the first plan is not JSON
 //   FAKE_LIMIT_ON=3,4        those call numbers return the real usage-limit reply (counted per repo
@@ -146,7 +149,20 @@ if (cap !== null && cost > Number(cap)) {
   process.exit(1);
 }
 
-if (prompt.includes("Study this repository")) {
+if (prompt.includes("Review this change")) {
+  // Diff review (critic against the goal, or a reviewer for bugs): FAKE_REVIEW_REJECT=<agent,agent> reject.
+  const lens = prompt.includes("against the goal") ? "goal" : "bugs";
+  const reject = (env.FAKE_REVIEW_REJECT ?? "").split(",").includes(agent);
+  log(`review: agent=${agent} lens=${lens} patch=${prompt.includes("The change") && prompt.includes("diff --git")} ${reject ? "rejected" : "approved"}`);
+  reply(reject ? `{"approved": false, "issues": ["${agent} found a bug in src/api.ts"]}` : '{"approved": true, "issues": []}');
+} else if (prompt.includes("Tidy these lessons")) {
+  // notes.md past its size limit: FAKE_TIDY=bad returns something unusable.
+  log(`tidy: called sawLessons=${prompt.includes("FAKE LESSON")}`);
+  reply(env.FAKE_TIDY === "bad" ? "no idea" : JSON.stringify({ notes: "- FAKE TIDIED: one merged lesson" }));
+} else if (prompt.includes("section of this repository's CLAUDE.md")) {
+  log(`share: called brief=${prompt.includes("FAKE BRIEF")} earlier=${prompt.includes("earlier version of this section")}`);
+  reply(JSON.stringify({ section: "FAKE SECTION: build with npm test; src/ holds the code." }));
+} else if (prompt.includes("Study this repository")) {
   // orch learn: a read-only pass that returns the project brief.
   log(`learn: called old=${prompt.includes("The current project brief")}`);
   reply(JSON.stringify({ brief: "FAKE BRIEF learned: node project, src/ holds the code, tests in test/." }));

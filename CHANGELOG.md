@@ -6,6 +6,18 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Diff critic** (`--diff-critic`, **Diff critic** in the run settings): the critic also reviews each round's
+  change against the goal, next to QA; a rejection fails the round.
+- **Review lens** (`--review`, **Review lens**): a read-only reviewer checks each round's change for bugs and
+  security problems, the new built-in `reviewer` or your own agents (`--reviewers security-reviewer,...`).
+  Both diff reviews are skipped when a check already failed, are off by default, and count toward the budget.
+  New `review` event; eval configs `+diffcritic` and `+review`.
+- **Tidy notes**: when `.orchestrator/notes.md` passes 5,000 characters, one cheap call merges duplicate
+  lessons and drops ones that no longer apply, instead of only cutting the oldest. New `notes_tidy` event.
+- **Share what was learned**: `orch share` (**Share to CLAUDE.md**) writes the brief and lasting lessons as a
+  section of the repo's `CLAUDE.md` and commits it on an `orchestrator/claude-md-*` branch for you to review
+  and merge; your working tree is untouched. Sharing again replaces the section. New `share_start` /
+  `share_end` events.
 - **Session resume for fix rounds**: when a round fails, the next round's implementer tasks continue the same
   agent's session from that round (on the same files) instead of starting cold, so they keep what they read
   and did. After a stuck round they start fresh; if a session is gone they start cold. A phantom completion's

@@ -190,7 +190,7 @@ fn emit_global<R: Runtime>(app: &AppHandle<R>) {
 fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
     let kind = ev["type"].as_str().unwrap_or("");
     let cost = ev["cost"].as_f64().filter(|c| *c > 0.0);
-    if let Some(cost) = cost.filter(|_| matches!(kind, "plan" | "task_end" | "learn_end")) {
+    if let Some(cost) = cost.filter(|_| matches!(kind, "plan" | "task_end" | "review" | "learn_end" | "notes_tidy" | "share_end")) {
         {
             let st = app.state::<AppState>();
             let mut g = st.0.lock().unwrap();
@@ -405,7 +405,7 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
 /// Run and loop get the global limits: --usage-cap from the caps (`caps`, "" for none), and with a daily
 /// budget a --max-cost of at most what is left today (their own --max-cost, if lower).
 fn with_budget(mut args: Vec<String>, left: Option<f64>, caps: &str) -> Vec<String> {
-    if !matches!(args.first().map(String::as_str), Some("run" | "loop" | "learn")) {
+    if !matches!(args.first().map(String::as_str), Some("run" | "loop" | "learn" | "share")) {
         return args;
     }
     if !caps.is_empty() && !args.iter().any(|a| a == "--usage-cap") {
@@ -554,7 +554,18 @@ struct Extra {
     on_limit: Option<String>,
     fast: Option<bool>,
     critic: Option<bool>,
+    diff_critic: Option<bool>,
+    review: Option<bool>,
+    /// "security-reviewer,backend-reviewer": the user's agents instead of the built-in reviewer
+    reviewers: Option<String>,
     plugins: Option<PluginOpts>,
+}
+
+/// Agent names, comma-separated, with safe characters only (orch checks them against the agents it finds).
+fn valid_reviewers(s: &str) -> bool {
+    !s.is_empty()
+        && s.split(',')
+            .all(|a| a.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) && a.chars().all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c)))
 }
 
 /// Which of the user's Claude Code plugins and hooks the agents get (see `orch plugins`).
@@ -604,6 +615,15 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if extra.critic.unwrap_or(false) {
         v.push("--critic".into());
+    }
+    if extra.diff_critic.unwrap_or(false) {
+        v.push("--diff-critic".into());
+    }
+    if extra.review.unwrap_or(false) {
+        v.push("--review".into());
+        if let Some(r) = extra.reviewers.as_deref().filter(|r| valid_reviewers(r)) {
+            v.extend(["--reviewers".into(), r.into()]);
+        }
     }
     if let Some(p) = &extra.plugins {
         if p.off.unwrap_or(false) {
@@ -734,6 +754,9 @@ fn run_goal(
     on_limit: Option<String>,
     fast: Option<bool>,
     critic: Option<bool>,
+    diff_critic: Option<bool>,
+    review: Option<bool>,
+    reviewers: Option<String>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
@@ -745,6 +768,9 @@ fn run_goal(
         on_limit,
         fast,
         critic,
+        diff_critic,
+        review,
+        reviewers,
         plugins,
     };
     let mut args = vec!["run".to_string()];
@@ -768,6 +794,9 @@ fn run_loop(
     on_limit: Option<String>,
     fast: Option<bool>,
     critic: Option<bool>,
+    diff_critic: Option<bool>,
+    review: Option<bool>,
+    reviewers: Option<String>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     let extra = Extra {
@@ -776,6 +805,9 @@ fn run_loop(
         on_limit,
         fast,
         critic,
+        diff_critic,
+        review,
+        reviewers,
         plugins,
     };
     let mut args = vec!["loop".to_string()];
@@ -830,10 +862,34 @@ fn learn_repo(
         fast: None,
         critic,
         plugins,
+        ..Default::default()
     };
     let mut args = vec!["learn".to_string()];
     args.extend(flags(&power, max_rounds.unwrap_or(1), false, &extra));
     request_start(&app, &repo, args, "learn repo".into())
+}
+
+/// `orch share`: proposes a CLAUDE.md section on an orchestrator/claude-md-* branch (the working tree is untouched).
+#[tauri::command]
+fn share_repo(
+    app: AppHandle,
+    repo: String,
+    power: String,
+    max_cost: Option<f64>,
+    models: Option<String>,
+    on_limit: Option<String>,
+    plugins: Option<PluginOpts>,
+) -> Result<(), String> {
+    let extra = Extra {
+        max_cost,
+        models,
+        on_limit,
+        plugins,
+        ..Default::default()
+    };
+    let mut args = vec!["share".to_string()];
+    args.extend(flags(&power, 1, false, &extra));
+    request_start(&app, &repo, args, "share to CLAUDE.md".into())
 }
 
 /// Runs as a normal orch process: one per repo, output streams to that repo's log.
@@ -1014,6 +1070,7 @@ fn main() {
             clear_log,
             rollback,
             learn_repo,
+            share_repo,
             stop_after,
             doctor,
             plugins
@@ -1068,14 +1125,34 @@ mod tests {
     }
 
     #[test]
+    fn review_flags() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let tail = |e: Extra| flags("heavy", 1, false, &e)[4..].to_vec();
+        let on = Extra {
+            diff_critic: Some(true),
+            review: Some(true),
+            reviewers: Some("security-reviewer,a.b:c".into()),
+            ..Default::default()
+        };
+        assert_eq!(tail(on), v(&["--diff-critic", "--review", "--reviewers", "security-reviewer,a.b:c"]));
+        let bad = Extra {
+            review: Some(true),
+            reviewers: Some("a;rm -rf".into()),
+            ..Default::default()
+        };
+        assert_eq!(tail(bad), v(&["--review"]));
+        let off = Extra {
+            reviewers: Some("a".into()),
+            ..Default::default()
+        };
+        assert!(tail(off).is_empty());
+    }
+
+    #[test]
     fn plugin_flags() {
         let extra = |p: PluginOpts| Extra {
-            max_cost: None,
-            models: None,
-            on_limit: None,
-            fast: None,
-            critic: None,
             plugins: Some(p),
+            ..Default::default()
         };
         let tail = |e: Extra| flags("heavy", 1, false, &e)[4..].to_vec();
         assert!(tail(extra(PluginOpts::default())).is_empty());

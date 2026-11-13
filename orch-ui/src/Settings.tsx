@@ -31,6 +31,12 @@ export type RunSettings = {
   fast: boolean;
   /** A read-only critic reviews each plan before building (--critic). */
   critic: boolean;
+  /** The critic also reviews each round's change against the goal (--diff-critic). */
+  diffCritic: boolean;
+  /** A reviewer checks each round's change for bugs and security problems (--review). */
+  review: boolean;
+  /** Your own reviewer agents instead of the built-in one, comma-separated (--reviewers). */
+  reviewers: string;
   plugins: PluginSettings;
 };
 
@@ -40,6 +46,9 @@ export const DEFAULT_SETTINGS: RunSettings = {
   onLimit: "wait",
   fast: false,
   critic: false,
+  diffCritic: false,
+  review: false,
+  reviewers: "",
   plugins: DEFAULT_PLUGINS,
 };
 
@@ -113,6 +122,28 @@ export function SettingsPanel({ repo, power, settings, onChange }: { repo: strin
         >
           <input type="checkbox" checked={settings.critic} onChange={(e) => onChange({ ...settings, critic: e.target.checked })} /> Plan critic
         </label>
+        <label
+          className="check"
+          title="The critic also reviews each round's change against the goal, next to QA; a rejection fails the round. One extra call per round (QA's model), skipped when the checks already failed."
+        >
+          <input type="checkbox" checked={settings.diffCritic} onChange={(e) => onChange({ ...settings, diffCritic: e.target.checked })} /> Diff critic
+        </label>
+        <label
+          className="check"
+          title="A read-only reviewer checks each round's change for bugs and security problems; a rejection fails the round. One extra call per reviewer per round (QA's model)."
+        >
+          <input type="checkbox" checked={settings.review} onChange={(e) => onChange({ ...settings, review: e.target.checked })} /> Review lens
+        </label>
+        {settings.review && (
+          <label title="Your own reviewer agents (from .claude/agents), comma-separated. Empty: the built-in reviewer.">
+            Reviewers
+            <input
+              placeholder="built-in"
+              value={settings.reviewers}
+              onChange={(e) => onChange({ ...settings, reviewers: e.target.value.replace(/\s+/g, "") })}
+            />
+          </label>
+        )}
       </div>
       <details className="models">
         <summary>Models {custom ? <span className="badge warn">{custom} custom</span> : <span className="muted">(from the {power} tier)</span>}</summary>

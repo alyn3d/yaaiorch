@@ -55,6 +55,9 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     onLimit: settings.onLimit,
     fast: settings.fast,
     critic: settings.critic,
+    diffCritic: settings.diffCritic,
+    review: settings.review,
+    reviewers: settings.reviewers || undefined,
     plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;
@@ -144,6 +147,13 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
             onClick={() => call("learn", opts)}
           >
             Learn repo
+          </button>
+          <button
+            disabled={busy || badSettings}
+            title="Proposes what orch learned here (the project brief and lasting notes) as a section of CLAUDE.md, committed on an orchestrator/claude-md-* branch for you to review and merge. Your working tree is not touched. One agent call."
+            onClick={() => call("share", opts)}
+          >
+            Share to CLAUDE.md
           </button>
           <button
             disabled={!goal.trim()}

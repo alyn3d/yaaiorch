@@ -333,6 +333,125 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.ok(orch(dir, ["learn"]).calls.includes("learn: called old=true"));
   });
 
+  test("diff critic and review lens: both read the change next to QA; a rejection fails the round", () => {
+    const dir = repo();
+    const ok = orch(dir, ["run", "x", "--max-rounds", "1", "--diff-critic", "--review"], { FAKE_QA: "pass" });
+    assert.equal(ok.code, 0, ok.out);
+    assert.deepEqual(ok.calls.filter((c) => c.startsWith("review:")).sort(), [
+      "review: agent=critic lens=goal patch=true approved",
+      "review: agent=reviewer lens=bugs patch=true approved",
+    ]);
+    assert.deepEqual(
+      ok
+        .ev("review")
+        .map((e) => [e.agent, e.lens, e.approved, e.cost])
+        .sort(),
+      [
+        ["critic", "goal", true, 0.05],
+        ["reviewer", "bugs", true, 0.05],
+      ],
+    );
+    assert.equal(ok.last("goal_end").cost, 0.35, "architect + 3 implementers + qa + 2 reviews");
+    // Off by default.
+    assert.ok(!orch(repo(), ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass" }).calls.some((c) => c.startsWith("review:")));
+
+    const bad = orch(repo(), ["run", "x", "--max-rounds", "1", "--review"], { FAKE_QA: "pass", FAKE_REVIEW_REJECT: "reviewer" });
+    assert.equal(bad.code, 1);
+    assert.deepEqual(bad.last("round_end").failures, ["reviewer (review): reviewer found a bug in src/api.ts"]);
+  });
+
+  test("review lens: your own reviewer agents; unknown names refused; skipped when the checks already failed", () => {
+    const dir = repo();
+    mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "agents", "sec.md"), "---\nname: sec\ndescription: security reviewer\n---\nReview for security.\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "agent");
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--reviewers", "sec"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.calls.filter((c) => c.startsWith("review:")),
+      ["review: agent=sec lens=bugs patch=true approved"],
+    );
+    const unknown = orch(dir, ["run", "x", "--review", "--reviewers", "nobody"]);
+    assert.notEqual(unknown.code, 0);
+    assert.match(unknown.out, /reviewer "nobody" is not an agent/);
+
+    const failing = repo();
+    writeConfig(failing, { checks: { boom: 'node -e "process.exit(3)"' } });
+    const f = orch(failing, ["run", "x", "--max-rounds", "1", "--diff-critic", "--review"], { FAKE_QA: "pass" });
+    assert.equal(f.code, 1);
+    assert.ok(!f.calls.some((c) => c.startsWith("review:")), "a failed check wins; no review is paid for");
+  });
+
+  test("notes past the size limit are tidied by one cheap call; a bad reply keeps them", () => {
+    const dir = repo();
+    const big =
+      "# Notes from earlier goals\n\n" +
+      Array.from({ length: 80 }, (_, i) => `## 2026-01-01 · passed · g${i}\n- FAKE LESSON ${i}: use the helper\n`).join("\n");
+    mkdirSync(join(dir, ".orchestrator"), { recursive: true });
+    writeFileSync(join(dir, ".orchestrator", "notes.md"), big);
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--power", "economy"], { FAKE_QA: "pass", FAKE_QA_NOTE: "new lesson" });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.calls.includes("tidy: called sawLessons=true"));
+    assert.ok(
+      r.calls.some((c) => /^call agent=architect mode=default .* model=haiku/.test(c)),
+      "read-only, the implementers' model",
+    );
+    const notes = readFileSync(join(dir, ".orchestrator", "notes.md"), "utf8");
+    assert.match(notes, /^# Notes from earlier goals\n\n## \d{4}-\d\d-\d\d · tidied\n- FAKE TIDIED/);
+    assert.equal(r.last("notes_tidy").ok, true);
+    assert.equal(r.last("goal_end").cost, 0.3, "the tidy call is part of the goal's cost");
+    // Short notes: no call.
+    assert.ok(!orch(repo(), ["run", "y", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_QA_NOTE: "n" }).calls.some((c) => c.startsWith("tidy:")));
+
+    const kept = repo();
+    mkdirSync(join(kept, ".orchestrator"), { recursive: true });
+    writeFileSync(join(kept, ".orchestrator", "notes.md"), big);
+    const b = orch(kept, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_QA_NOTE: "new lesson", FAKE_TIDY: "bad" });
+    assert.equal(b.code, 0, b.out);
+    assert.equal(b.last("notes_tidy").ok, false);
+    assert.match(readFileSync(join(kept, ".orchestrator", "notes.md"), "utf8"), /FAKE LESSON 79[\s\S]*- new lesson/);
+  });
+
+  test("orch share proposes a CLAUDE.md section on a side branch; the working tree is untouched", () => {
+    const dir = repo();
+    assert.match(orch(dir, ["share"]).out, /nothing learned yet/);
+    writeFileSync(join(dir, "CLAUDE.md"), "# My project\n\nHand-written rules.\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "claude.md");
+    assert.equal(orch(dir, ["learn"]).code, 0);
+    const head = git(dir, "rev-parse", "HEAD");
+
+    const dry = orch(dir, ["share", "--dry-run"]);
+    assert.equal(dry.code, 0, dry.out);
+    assert.match(dry.out, /<!-- yaaiorch:learned:start -->\n## Learned by YAAIORCH\n\nFAKE SECTION/);
+    assert.deepEqual(branches(dir), []);
+
+    const r = orch(dir, ["share"]);
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.calls.includes("share: called brief=true earlier=false"));
+    const [branch] = branches(dir);
+    assert.match(branch, /^orchestrator\/claude-md-\d+$/);
+    assert.equal(r.last("share_end").branch, branch);
+    assert.equal(git(dir, "rev-parse", "HEAD"), head, "HEAD unchanged");
+    assert.equal(dirty(dir), "", "working tree unchanged");
+    assert.equal(readFileSync(join(dir, "CLAUDE.md"), "utf8"), "# My project\n\nHand-written rules.\n");
+    const proposed = git(dir, "show", `${branch}:CLAUDE.md`);
+    assert.match(
+      proposed,
+      /^# My project\n\nHand-written rules\.\n\n<!-- yaaiorch:learned:start -->\n## Learned by YAAIORCH\n\nFAKE SECTION.*\n<!-- yaaiorch:learned:end -->$/s,
+    );
+
+    // After merging, sharing again replaces the section instead of adding a second one.
+    git(dir, "merge", "-q", "--ff-only", branch);
+    git(dir, "branch", "-D", branch);
+    const again = orch(dir, ["share"]);
+    assert.ok(again.calls.includes("share: called brief=true earlier=true"));
+    const next = git(dir, "show", `${branches(dir)[0]}:CLAUDE.md`);
+    assert.equal(next.split("yaaiorch:learned:start").length, 2, "one section");
+    assert.match(next, /^# My project\n\nHand-written rules\./);
+  });
+
   test("plan critic: a rejected plan goes back to the architect once; off by default", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "1", "--critic"], { FAKE_QA: "pass", FAKE_CRITIC: "reject-once" });

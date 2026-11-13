@@ -166,7 +166,8 @@ const sendGlobal = () => {
   for (const s of sessions.values()) if (s.pending) sendSession(s); // their wait reason may have changed
 };
 
-/** Every agent call reports its cost once: the plan (architect, with retries) and each task_end. */
+/** Every agent call reports its cost once: the plan (architect, critic), each task_end, diff reviews, learn, notes tidy, share. */
+const COST_EVENTS = new Set(["plan", "task_end", "review", "learn_end", "notes_tidy", "share_end"]);
 function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number; until?: number; reason?: string } & Partial<Record<Window, Reading>>) {
   if (ev.type === "usage") {
     // The windows are per account, so the latest reading from any repo holds for all of them.
@@ -175,7 +176,7 @@ function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number
     usage = { ...usage, ...next };
     sendGlobal();
   }
-  if ((ev.type === "plan" || ev.type === "task_end" || ev.type === "learn_end") && typeof ev.cost === "number" && ev.cost > 0) {
+  if (COST_EVENTS.has(ev.type) && typeof ev.cost === "number" && ev.cost > 0) {
     if (spent.day !== today()) spent = { day: today(), usd: 0 };
     spent.usd += ev.cost;
     saveSettings();
@@ -261,7 +262,7 @@ function startNext() {
  * at most what is left today (their own --max-cost, if lower).
  */
 function withBudget(args: string[]): string[] {
-  if (args[0] !== "run" && args[0] !== "loop" && args[0] !== "learn") return args;
+  if (!["run", "loop", "learn", "share"].includes(args[0])) return args;
   const caps = (["fiveHour", "week"] as Window[]).filter((w) => usageCap[w] !== null).map((w) => `${WINDOW_CLI[w]}=${usageCap[w]}`);
   if (caps.length && !args.includes("--usage-cap")) args = [...args, "--usage-cap", caps.join(",")];
   const left = budgetLeft();
@@ -333,6 +334,8 @@ const pluginFlags = (p?: PluginOpts) => {
   const ids = Array.isArray(p.disable) ? p.disable.filter((x): x is string => typeof x === "string" && PLUGIN_ID.test(x)) : [];
   return [...(p.off ? ["--plugins", "off"] : []), ...(ids.length ? ["--disable-plugins", ids.join(",")] : []), ...(p.hooks === false ? ["--no-hooks"] : [])];
 };
+/** Agent names, comma-separated (orch checks them against the agents it finds). */
+const REVIEWERS = /^[A-Za-z0-9][A-Za-z0-9._:-]*(,[A-Za-z0-9][A-Za-z0-9._:-]*)*$/;
 const flags = (b: {
   power?: string;
   maxRounds?: number;
@@ -342,6 +345,9 @@ const flags = (b: {
   onLimit?: string;
   fast?: boolean;
   critic?: boolean;
+  diffCritic?: boolean;
+  review?: boolean;
+  reviewers?: string;
   plugins?: PluginOpts;
 }) => [
   "--power",
@@ -354,6 +360,9 @@ const flags = (b: {
   ...(b.onLimit === "wait" || b.onLimit === "stop" ? ["--on-limit", b.onLimit] : []),
   ...(b.fast ? ["--fast"] : []),
   ...(b.critic ? ["--critic"] : []),
+  ...(b.diffCritic ? ["--diff-critic"] : []),
+  ...(b.review ? ["--review"] : []),
+  ...(b.review && typeof b.reviewers === "string" && REVIEWERS.test(b.reviewers) ? ["--reviewers", b.reviewers] : []),
   ...pluginFlags(b.plugins),
 ];
 
@@ -574,6 +583,11 @@ http
         if (url.pathname === "/api/learn") {
           // `orch learn`: a read-only pass that writes the project brief; a run like any other (slot, budget, log).
           requestStart(s, ["learn", ...flags({ ...b, dryRun: false })], "learn repo");
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/share") {
+          // `orch share`: proposes a CLAUDE.md section on an orchestrator/claude-md-* branch; the working tree is untouched.
+          requestStart(s, ["share", ...flags({ ...b, dryRun: false })], "share to CLAUDE.md");
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/rollback") {
