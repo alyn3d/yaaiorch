@@ -74,15 +74,20 @@ Still open, moved to the next release:
 - Measuring the 0.3 and 0.4 features on the eval cases (series, greenfield, multi-round) before they stay on
   by default, and a full baseline across tiers with the numbers published.
 
-## 0.5: autonomy (partly shipped in 0.4.0)
+## 0.5: autonomy (released 0.5.0)
 
 From "run this goal" to "work through this backlog".
 
-- A branch and a pull request per goal; humans review PRs, not runs (done: `--branch`, `--pr`).
-- Goals from `BACKLOG.md` or labelled GitHub issues, with dependencies (done; priorities still open).
-- Queue lifecycle (retry policy, `blocked` goals), an optional plan approval gate (done), notifications (done).
-- Worktrees per build task (or per goal) for real isolation between parallel agents, and optional
-  sandboxed runs (container or VM) for repos you do not fully trust the agents with.
+Shipped across 0.4.0 and 0.5.0: a branch and a pull request per goal (one per brief), goals from labelled GitHub
+issues or `BACKLOG.md` with dependencies and priorities, retries and blocked goals, comments on the issue, the
+pull request's CI watched and fixed, a plan approval gate, notifications, protected paths and a secret scan.
+
+Still open, moved on:
+
+- Worktrees per build task (or per goal) for real isolation between parallel agents, and optional sandboxed runs
+  (container or VM) for repos you do not fully trust the agents with.
+- A GitHub Action that runs orch on a labelled issue in CI, and optional auto-merge after CI and a human review.
+- Running the issue and CI flows against real GitHub, and measuring all of 0.3 to 0.5 on the evals.
 
 ## 0.6: product and packaging
 

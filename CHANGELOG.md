@@ -5,6 +5,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-13
+
+From backlog to merged pull request: goals come in from GitHub issues (or a backlog file), run in priority order,
+comment on their issue, open a pull request and see its CI through, fixing it when it fails. Safer unattended runs
+(protected paths, a secret scan before every commit), a redesigned app, and a desktop app that brings its own
+Node.js. Tested with the fake claude and a fake gh; the issue and CI flows have not run against real GitHub yet.
+
 ### Changed
 - **The desktop app brings its own Node.js**: the installers include the official Node.js 22 build for their
   platform (checked against its SHA-256 at build time), so Node.js no longer has to be installed or on PATH.
@@ -303,7 +310,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/alyn3d/yaaiorch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/alyn3d/yaaiorch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/alyn3d/yaaiorch/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/alyn3d/yaaiorch/compare/v0.1.0...v0.2.0

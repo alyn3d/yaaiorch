@@ -83,4 +83,4 @@ process exits without `goal_end`.
 - GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
-0.4.0 shipped whole projects (big briefs, `orch new`, goal dependencies, retries, a shared brief branch and PR, queue budget and progress) and better rounds (session resume, diff critic, review lens, notes tidy and share, plan approval, notifications). Still open in `TODO.md`: measuring all of it on the evals (series, greenfield, multi-round cases) and the baseline; then the rest of 0.5 (backlog intake, worktrees, sandboxing).
+0.5.0 shipped backlog to merged PR (intake from issues or BACKLOG.md, priorities, issue comments, PR CI watched and fixed), safety (protected paths, secret scan), the redesigned UI and a bundled Node.js. Still open in `TODO.md`: measuring everything since 0.3 on the evals (series, greenfield, multi-round cases), a real run of the GitHub flows, worktrees and sandboxing, then 0.6 (packaging, run history, other runtimes).

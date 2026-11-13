@@ -98,7 +98,7 @@ Each item should show its effect in the evals before it becomes the default.
   without an eval, because the current cases all pass in round 1. Needs cases that take several
   rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.
 
-## 0.5: autonomy
+## 0.5: autonomy (0.5.0 released; worktrees and sandboxing carry over)
 
 - [x] **Branch and pull request per goal**: run each goal on `orch/<id>-<slug>`, finish with
   `gh pr create`, never touch the main branch (`--branch`, `--pr`).
