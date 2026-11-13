@@ -19,6 +19,10 @@ Three layers:
 
 `orch.ts` and `orch-ui/` must sit side by side. The UI looks for `../orch.ts`.
 
+## Desktop packaging
+
+The desktop app ships its own Node.js as a Tauri sidecar (`bundle.externalBin: ["binaries/node"]`). `orch-ui/scripts/fetch-node.mjs` downloads the official build of the pinned `VERSION` for the build's target triple (`--target`, `TAURI_ENV_TARGET_TRIPLE`, or the host's), checks it against the release's `SHASUMS256.txt`, and writes `src-tauri/binaries/node-<triple>[.exe]` (git-ignored; a `.version` stamp skips the download next time). `universal-apple-darwin` is the x64 and arm64 builds fused with `lipo`. Tauri installs it next to the app executable as `node`/`node.exe`; `main.rs` (`node_bin`) runs orch with `YAAIORCH_NODE` if set, else that file, else `node` on PATH. The project's own checks still run with whatever the project uses.
+
 ## Orchestrator (`orch.ts`)
 
 ### CLI

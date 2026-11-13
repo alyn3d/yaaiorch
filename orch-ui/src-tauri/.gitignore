@@ -1,3 +1,5 @@
 /target
 /gen
 /resources/orch.mjs
+# The bundled Node.js (scripts/fetch-node.mjs downloads it)
+/binaries/

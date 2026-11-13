@@ -18,12 +18,15 @@ jobs:
         include:
           - name: Windows
             platform: windows-latest
+            target: x86_64-pc-windows-msvc
             args: ""
           - name: macOS (universal)
             platform: macos-latest
+            target: universal-apple-darwin
             args: "--target universal-apple-darwin"
           - name: Linux
             platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
             args: ""
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
@@ -48,6 +51,10 @@ jobs:
       - name: Install
         working-directory: orch-ui
         run: npm ci
+      # The app ships its own Node.js (Tauri externalBin): download it for this target and check its SHA-256.
+      - name: Bundled Node.js
+        working-directory: orch-ui
+        run: node scripts/fetch-node.mjs --target ${{ matrix.target }}
       # tauri.conf.json's beforeBuildCommand bundles ../orch.ts and builds the UI.
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -59,7 +66,7 @@ jobs:
           releaseBody: |
             See [CHANGELOG.md](https://github.com/alyn3d/yaaiorch/blob/${{ github.ref_name }}/CHANGELOG.md) for what changed.
 
-            **Requirements:** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and logged in, Node.js 20+ on PATH, and git.
+            **Requirements:** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and logged in, and git. The desktop app brings its own Node.js; the CLI bundle (`yaaiorch-cli-*.mjs`) needs Node.js 20+.
             The installers are not code-signed yet, so Windows SmartScreen and macOS Gatekeeper will warn on first launch.
           releaseDraft: true
           prerelease: false

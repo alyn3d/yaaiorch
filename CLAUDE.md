@@ -17,7 +17,8 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 - `orch-ui/src`: React + TypeScript + SCSS. `transport.ts` picks HTTP/SSE (browser) or Tauri invoke/events.
 - `orch-ui/src/reduce.ts`: folds structured events into the run view.
 - `orch-ui/server.ts`: browser-mode server. Spawns orch.ts, forwards events over SSE.
-- `orch-ui/src-tauri/src/main.rs`: desktop backend. Spawns the bundled `orch.mjs` with `node` in the chosen repo.
+- `orch-ui/src-tauri/src/main.rs`: desktop backend. Spawns the bundled `orch.mjs` with the bundled Node.js (`node_bin`: `YAAIORCH_NODE`, else the `node` sidecar next to the app, else PATH) in the chosen repo.
+- `orch-ui/scripts/fetch-node.mjs`: downloads and SHA-256-checks the official Node.js for the build target into `src-tauri/binaries/node-<triple>` (Tauri `externalBin`; `universal-apple-darwin` via lipo). Run by `beforeDevCommand` / `beforeBuildCommand`; `VERSION` pins it.
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,

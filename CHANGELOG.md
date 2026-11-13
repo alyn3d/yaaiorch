@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Changed
+- **The desktop app brings its own Node.js**: the installers include the official Node.js 22 build for their
+  platform (checked against its SHA-256 at build time), so Node.js no longer has to be installed or on PATH.
+  `YAAIORCH_NODE` points the app at another one. The CLI bundle still needs Node.js 20+.
 - **A new look for the app**: a left sidebar with the repos and their status (Overview, Open repo, New project,
   and limits, parallel runs and notifications at the bottom), and a cleaner repo page: a goal composer with the run
   settings folded into one panel, the Big brief in its own card, and from 1180px the run and live output beside

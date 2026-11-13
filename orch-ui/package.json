@@ -15,6 +15,7 @@
     "start": "tsx server.ts",
     "build:orch": "esbuild ../orch.ts --bundle --platform=node --format=esm --target=node20 --outfile=src-tauri/resources/orch.mjs",
     "build:app": "npm run build:orch && npm run build",
+    "fetch:node": "node scripts/fetch-node.mjs",
     "tauri": "tauri",
     "test": "node --test \"../test/*.test.mjs\"",
     "lint": "cd .. && eslint -c orch-ui/eslint.config.mjs .",

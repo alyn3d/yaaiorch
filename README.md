@@ -55,8 +55,9 @@ Installers for Windows (`.exe` setup or `.msi`), macOS and Linux, and a standalo
 
 - The apps are **not code-signed** yet: Windows SmartScreen shows "Windows protected your PC"
   (choose *More info* → *Run anyway*), and macOS needs right-click → *Open* the first time.
-- The desktop app runs the orchestrator with your **Node.js** (20+, on PATH) and your logged-in
-  **Claude Code**; it does not bundle either.
+- The desktop app **brings its own Node.js** to run the orchestrator, so you only need your logged-in **Claude
+  Code** and git. (It uses `node` on PATH only when built without it; `YAAIORCH_NODE` points it at another one.)
+  Your project's own checks (`npm test` and so on) still use whatever your project needs.
 
 ## Quick start (from source)
 
@@ -144,7 +145,9 @@ npm run tauri dev       # development window
 npm run tauri build     # installers in src-tauri/target/release/bundle
 ```
 
-Pick the target repo with **Choose repo…**. The app needs Node on PATH at runtime.
+Pick the target repo with **Open repo**. `npm run tauri dev` and `npm run tauri build` first download the Node.js the
+app bundles (`npm run fetch:node`: the official build for your platform, checked against its SHA-256, into
+`src-tauri/binaries/`, which is not committed).
 
 ## How it works
 

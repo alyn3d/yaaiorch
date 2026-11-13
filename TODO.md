@@ -158,7 +158,7 @@ Each item should show its effect in the evals before it becomes the default.
 - [ ] **More agent runtimes**: put Codex CLI, Gemini CLI and OpenCode behind the `run()` contract
   (prompt in, `{text, cost}` out, permission mode mapped per runtime), choosable per role, and add
   `--runtime` to the eval runner to compare them.
-- [ ] **Packaging**: bundle Node as a sidecar, sign the Windows installer, auto-update, release builds
+- [ ] **Packaging**: bundle Node as a sidecar (done: `fetch-node.mjs`, Tauri externalBin), sign the Windows installer, auto-update, release builds
   for Windows, macOS and Linux from CI.
 - [ ] **Verify on macOS and Linux** (CLI, browser mode, desktop build). **good first issue** if you
   have the machine.

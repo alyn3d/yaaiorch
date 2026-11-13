@@ -4,19 +4,41 @@
   "version": "0.4.0",
   "identifier": "dev.alinion.yaaiorch",
   "build": {
-    "beforeDevCommand": "npm run build:orch && vite",
+    "beforeDevCommand": "node scripts/fetch-node.mjs && npm run build:orch && vite",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build:app",
+    "beforeBuildCommand": "node scripts/fetch-node.mjs && npm run build:app",
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "label": "main", "title": "YAAIORCH - Yet Another AI Orchestrator", "width": 1100, "height": 820, "minWidth": 700, "minHeight": 500 }],
-    "security": { "csp": null }
+    "windows": [
+      {
+        "label": "main",
+        "title": "YAAIORCH - Yet Another AI Orchestrator",
+        "width": 1100,
+        "height": 820,
+        "minWidth": 700,
+        "minHeight": 500
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
-    "resources": { "resources/orch.mjs": "resources/orch.mjs" }
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/orch.mjs": "resources/orch.mjs"
+    },
+    "externalBin": [
+      "binaries/node"
+    ]
   }
 }

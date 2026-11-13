@@ -360,7 +360,7 @@ fn repo_of<R: Runtime>(app: &AppHandle<R>, key: &str) -> Result<PathBuf, String>
 }
 
 fn node_cmd<R: Runtime>(app: &AppHandle<R>, repo: &Path, args: &[String]) -> Result<Command, String> {
-    let mut cmd = Command::new("node");
+    let mut cmd = Command::new(node_bin());
     cmd.arg(orch_path(app)?)
         .args(args)
         .current_dir(repo)
@@ -380,7 +380,21 @@ fn node_cmd<R: Runtime>(app: &AppHandle<R>, repo: &Path, args: &[String]) -> Res
     Ok(cmd)
 }
 
-const NODE_HINT: &str = "failed to start node (is Node.js installed and on PATH?)";
+const NODE_HINT: &str = "failed to start node (the one bundled with the app, or Node.js 20+ on PATH)";
+
+/// The Node.js that runs orch: YAAIORCH_NODE if set, else the one installed next to the app (Tauri externalBin,
+/// see scripts/fetch-node.mjs), else `node` on PATH (a build without it, or a source checkout).
+fn node_bin() -> PathBuf {
+    if let Some(p) = std::env::var_os("YAAIORCH_NODE").filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
+    let name = if cfg!(windows) { "node.exe" } else { "node" };
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join(name)))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("node"))
+}
 
 /// Start now if a slot is free, else queue the start. One run per repo.
 fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, label: String) -> Result<(), String> {
