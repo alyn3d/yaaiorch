@@ -5,6 +5,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Fixed
+- **The macOS universal build** of the desktop app: `fetch-node.mjs` now keeps the x64 and arm64 Node.js binaries
+  next to the fused universal one, since Tauri's per-architecture builds look for them. 0.5.0 shipped without a
+  macOS app because of this.
+
 ## [0.5.0] - 2026-11-13
 
 From backlog to merged pull request: goals come in from GitHub issues (or a backlog file), run in priority order,

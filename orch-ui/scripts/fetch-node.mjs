@@ -5,7 +5,8 @@
 //
 // The target comes from --target, else TAURI_ENV_TARGET_TRIPLE (set by `tauri build/dev`), else the host (rustc -vV).
 // The official build is downloaded from nodejs.org and checked against its SHASUMS256.txt before it is used.
-// universal-apple-darwin fuses the x64 and arm64 builds with lipo (macOS only). A binary already in place for the
+// universal-apple-darwin also places the x64 and arm64 builds (Tauri's per-architecture builds look for them) and
+// fuses them with lipo into the universal one (macOS only). A binary already in place for the
 // same version is kept, so repeated builds do not download again.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -78,22 +79,29 @@ async function fetchOne(triple, dest) {
   }
 }
 
-const triple = targetTriple();
-const exe = triple.includes("windows") ? ".exe" : "";
-const out = join(binDir, `node-${triple}${exe}`);
-const stamp = `${out}.version`;
-if (existsSync(out) && existsSync(stamp) && readFileSync(stamp, "utf8").trim() === VERSION) {
-  console.log(`fetch-node: node v${VERSION} for ${triple} is already in place`);
-} else {
+/** binaries/node-<triple>[.exe], downloaded (or fused) unless the same version is already there. */
+async function ensure(triple, make) {
+  const out = join(binDir, `node-${triple}${triple.includes("windows") ? ".exe" : ""}`);
+  const stamp = `${out}.version`;
+  if (existsSync(out) && existsSync(stamp) && readFileSync(stamp, "utf8").trim() === VERSION) {
+    console.log(`fetch-node: node v${VERSION} for ${triple} is already in place`);
+    return out;
+  }
   mkdirSync(binDir, { recursive: true });
-  if (triple === "universal-apple-darwin") {
-    const parts = ["x86_64-apple-darwin", "aarch64-apple-darwin"].map((t) => join(binDir, `node-${t}.part`));
-    await fetchOne("x86_64-apple-darwin", parts[0]);
-    await fetchOne("aarch64-apple-darwin", parts[1]);
-    execFileSync("lipo", ["-create", ...parts, "-output", out], { stdio: "inherit" });
-    chmodSync(out, 0o755);
-    for (const p of parts) rmSync(p, { force: true });
-  } else await fetchOne(triple, out);
+  await make(out);
   writeFileSync(stamp, VERSION);
   console.log(`fetch-node: node v${VERSION} for ${triple} -> ${out}`);
+  return out;
 }
+
+const triple = targetTriple();
+if (triple === "universal-apple-darwin") {
+  // `tauri build --target universal-apple-darwin` builds each architecture on its own first, and each of those
+  // builds checks for its own sidecar; the universal app then gets the fused one. So all three must exist.
+  const x64 = await ensure("x86_64-apple-darwin", (out) => fetchOne("x86_64-apple-darwin", out));
+  const arm = await ensure("aarch64-apple-darwin", (out) => fetchOne("aarch64-apple-darwin", out));
+  await ensure("universal-apple-darwin", (out) => {
+    execFileSync("lipo", ["-create", x64, arm, "-output", out], { stdio: "inherit" });
+    chmodSync(out, 0o755);
+  });
+} else await ensure(triple, (out) => fetchOne(triple, out));
