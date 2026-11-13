@@ -10,6 +10,20 @@
     <meta name="theme-color" content="#0b0d14" />
     <title>YAAIORCH — From goal to verified code</title>
     <link rel="icon" href="assets/logo-256.png" />
+    <link rel="canonical" href="https://alyn3d.github.io/yaaiorch/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="YAAIORCH" />
+    <meta property="og:url" content="https://alyn3d.github.io/yaaiorch/" />
+    <meta property="og:title" content="YAAIORCH — From goal to verified code" />
+    <meta
+      property="og:description"
+      content="An open-source AI coding orchestrator: agents plan, build in parallel and run your project's checks until QA passes."
+    />
+    <meta property="og:image" content="https://alyn3d.github.io/yaaiorch/assets/social-card.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="YAAIORCH: from a goal to verified code, next to the app running a goal" />
+    <meta name="twitter:card" content="summary_large_image" />
     <style>
       :root {
         color-scheme: dark;
@@ -325,6 +339,27 @@
 
       .loop-note b {
         color: #d3c7ff;
+      }
+
+      .app-shot {
+        margin: 0 auto;
+        padding: 0 0 56px;
+      }
+
+      .app-shot img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        box-shadow: 0 30px 80px rgb(0 0 0 / 45%);
+      }
+
+      .app-shot figcaption {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 14px;
+        text-align: center;
       }
 
       .trust-strip {
@@ -690,8 +725,8 @@
             </a>
           </div>
           <p class="requirements">
-            Runs on Claude Code (installed and logged in) and git. The desktop app brings its own Node.js; the CLI needs
-            Node.js 20+.
+            Desktop app for Windows and Linux; macOS arrives in 0.6. The CLI runs wherever Node.js 20+ does. Needs
+            Claude Code (installed and logged in) and git; the desktop app brings its own Node.js.
           </p>
         </div>
 
@@ -727,6 +762,18 @@
           <p class="loop-note"><b>Not done yet?</b> Failures go back into the plan. The next round tries again.</p>
         </div>
       </section>
+
+      <figure class="wrap app-shot">
+        <img
+          src="assets/app-run.webp"
+          width="1920"
+          height="1200"
+          loading="lazy"
+          decoding="async"
+          alt="The YAAIORCH app running a goal: the architect's plan, a finished foundation task, two build tasks running in parallel, and two more goals waiting in the queue."
+        />
+        <figcaption>A goal mid-run: the plan, tasks with their files and cost, and the queue that runs next.</figcaption>
+      </figure>
 
       <div class="trust-strip">
         <div class="wrap trust-items">
@@ -829,7 +876,7 @@
 
       <section class="wrap cta" aria-labelledby="cta-title">
         <h2 id="cta-title">Build with a loop you can trust.</h2>
-        <p>Open source, designed for review, and measured with real coding evaluations.</p>
+        <p>Open source, designed for review, and judged on coding tasks with hidden tests that the agents never see.</p>
         <div class="actions">
           <a class="button" href="https://github.com/alyn3d/yaaiorch/releases/latest">Explore releases <span aria-hidden="true">↗</span></a>
           <a class="button secondary" href="https://github.com/alyn3d/yaaiorch">View the source</a>

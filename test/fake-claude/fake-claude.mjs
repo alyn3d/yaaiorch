@@ -32,6 +32,7 @@
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
 //   FAKE_BAD_PLAN_ONCE=1     the first plan is not JSON
+//   FAKE_PLAN_FILE=<file>    the architect returns this plan (JSON) instead of the fixed one, for demos
 //   FAKE_LIMIT_ON=3,4        those call numbers return the real usage-limit reply (counted per repo
 //                            in .orchestrator/fake-calls, or in FAKE_LIMIT_FILE)
 //   FAKE_LIMIT_AFTER=<n>     every call after the n-th returns the usage-limit reply
@@ -217,16 +218,19 @@ if (prompt.includes("Review this change")) {
     log(
       `architect: previousRound=${/What round \d+ did/.test(prompt) && prompt.includes("Plan: fake plan")} brief=${prompt.includes("FAKE BRIEF") ? "seen" : prompt.includes("No project brief exists yet") ? "asked" : "none"}`,
     );
-    const plan = {
-      summary: "fake plan",
-      tasks: [
-        { agent: "fe", phase: "foundation", task: "types", files: ["src/types.ts"] },
-        { agent: "be", phase: "build", task: "api", files: [env.FAKE_BE_FILE ?? "src/api.ts"] },
-        { agent: "fe", phase: "build", task: "ui", files: [".\\src\\ui.ts"] },
-        { agent: "qa", phase: "verify", task: "check it" },
-      ],
-      ...(prompt.includes("No project brief exists yet") ? { brief: "FAKE BRIEF: a fake repo with src/ and no checks." } : {}),
-    };
+    // FAKE_PLAN_FILE: a plan of your own (JSON), for demos and screenshots.
+    const plan = env.FAKE_PLAN_FILE
+      ? JSON.parse(readFileSync(env.FAKE_PLAN_FILE, "utf8"))
+      : {
+          summary: "fake plan",
+          tasks: [
+            { agent: "fe", phase: "foundation", task: "types", files: ["src/types.ts"] },
+            { agent: "be", phase: "build", task: "api", files: [env.FAKE_BE_FILE ?? "src/api.ts"] },
+            { agent: "fe", phase: "build", task: "ui", files: [".\\src\\ui.ts"] },
+            { agent: "qa", phase: "verify", task: "check it" },
+          ],
+          ...(prompt.includes("No project brief exists yet") ? { brief: "FAKE BRIEF: a fake repo with src/ and no checks." } : {}),
+        };
     reply("```json\n" + JSON.stringify(plan) + "\n```");
   }
 } else if (prompt.includes('{"approved": true | false')) {
