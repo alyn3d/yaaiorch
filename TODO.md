@@ -78,8 +78,8 @@ Each item should show its effect in the evals before it becomes the default.
   commands) and later rounds and goals reuse it instead of re-reading the repo.
 - [x] **Context between rounds**: give the architect its previous plan, the diff and the check output,
   not only the failure strings.
-- [ ] **Session resume for fix rounds**: continue the implementer's session (`session_id` from the CLI)
-  instead of starting cold.
+- [x] **Session resume for fix rounds**: continue the implementer's session (`session_id` from the CLI)
+  instead of starting cold (`--no-resume` to turn off; not measured yet: compare `economy` with `economy+noresume`).
 - [x] **Memory between goals**: `.orchestrator/notes.md` with decisions and pitfalls, read by the
   architect, appended by QA.
 - [ ] **Review lens**: optional reviewer pass on the diff for bugs and security, with the user's own

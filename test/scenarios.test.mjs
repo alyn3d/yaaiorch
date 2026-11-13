@@ -487,6 +487,54 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.calls.filter((c) => c.startsWith("call agent=be ")).length, 2, "be asked twice");
     assert.equal(r.ev("task_end").find((e) => e.agent === "be").status, "PHANTOM");
     assert.match(r.out, /phantom completion by be; re-dispatching/);
+    // The retry continues the same session and is told which files did not change.
+    assert.ok(r.calls.includes("be: phantom nudge"), r.calls.join("\n"));
+    assert.ok(
+      r.calls.some((c) => /^be: resume=fake-be-\S+ fork=true/.test(c)),
+      r.calls.join("\n"),
+    );
+  });
+
+  test("session resume: a fix round continues each implementer's session on the same files", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "3"], { FAKE_QA: "fail-once" });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.ev("round_start").length, 2);
+    const starts = (round) => r.ev("task_start").filter((e) => e.round === round && e.phase !== "verify");
+    assert.ok(starts(1).every((e) => e.resumed === undefined));
+    // fe had two tasks (types, ui) and continues each one's own session; be continues its own.
+    assert.deepEqual(
+      starts(2).map((e) => [e.agent, e.resumed]),
+      [
+        ["fe", 1],
+        ["be", 1],
+        ["fe", 1],
+      ],
+    );
+    const resumes = r.calls.filter((c) => / resume=/.test(c));
+    assert.equal(resumes.length, 3, resumes.join("\n"));
+    assert.equal(new Set(resumes.map((c) => /resume=(\S+)/.exec(c)[1])).size, 3, "three different sessions");
+    for (const c of resumes) assert.match(c, /fork=true .* files=true$/);
+    // QA is never resumed; the resumed prompt is the task alone (the session has the brief already).
+    assert.ok(!r.calls.some((c) => c.startsWith("qa: resume=")));
+  });
+
+  test("session resume: off with --no-resume, cold after a stuck round, cold again if the session is gone", () => {
+    const off = orch(repo(), ["run", "x", "--max-rounds", "2", "--no-resume"], { FAKE_QA: "fail-once" });
+    assert.equal(off.code, 0, off.out);
+    assert.ok(!off.calls.some((c) => / resume=/.test(c)));
+    assert.ok(off.ev("task_start").every((e) => e.resumed === undefined));
+
+    // Round 2 resumes; it fails the same way, so round 3 (after the stuck round) starts cold.
+    const stuck = orch(repo(), ["run", "x", "--max-rounds", "3"], { FAKE_QA: "fail" });
+    const resumedIn = (round) => stuck.ev("task_start").filter((e) => e.round === round && e.resumed);
+    assert.equal(resumedIn(2).length, 3, stuck.out);
+    assert.equal(resumedIn(3).length, 0);
+
+    const gone = orch(repo(), ["run", "x", "--max-rounds", "2"], { FAKE_QA: "fail-once", FAKE_NO_SESSION: "1" });
+    assert.equal(gone.code, 0, gone.out);
+    assert.match(gone.out, /be: resuming its session failed .*; starting cold/);
+    assert.equal(gone.ev("task_end").filter((e) => e.round === 2 && e.status === "COMPLETE").length, 3);
   });
 
   test("a failed foundation task skips the build and verify tasks of the round", () => {

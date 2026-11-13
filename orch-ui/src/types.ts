@@ -36,6 +36,8 @@ export type TaskView = {
   cost?: number;
   startedAt?: number;
   endedAt?: number;
+  /** Continued the agent's session from this earlier round. */
+  resumed?: number;
 };
 export type RoundView = {
   round: number;

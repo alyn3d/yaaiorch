@@ -10,7 +10,8 @@
 //
 // Switches (environment):
 //   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap
-//   FAKE_QA=pass|fail|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts
+//   FAKE_QA=pass|fail|fail-once|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts;
+//                            fail-once fails the first verdict in the repo, then passes
 //   FAKE_TRANSIENT_ONCE=<agent>  that agent's first call fails with "API Error: 529 ... overloaded_error"
 //   FAKE_STRAY_FILE=<path>   implementers also write this file, which no task owns
 //   FAKE_BE_FILE=<path>     the file the plan gives the be task (default src/api.ts), to test path checks
@@ -21,6 +22,8 @@
 //   FAKE_HANG_AGENT=<name>   that implementer never returns
 //   FAKE_SLOW=<seconds>      implementers sleep first
 //   FAKE_NOWRITE=1           implementers claim COMPLETE but write nothing
+//   FAKE_NO_SESSION=1        a call with --resume fails like the real CLI when the session is gone
+// Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
 //   FAKE_BAD_PLAN_ONCE=1     the first plan is not JSON
 //   FAKE_LIMIT_ON=3,4        those call numbers return the real usage-limit reply (counted per repo
 //                            in .orchestrator/fake-calls, or in FAKE_LIMIT_FILE)
@@ -60,8 +63,10 @@ const prompt = readFileSync(0, "utf8");
 const log = (s) => env.FAKE_LOG && appendFileSync(env.FAKE_LOG, s + "\n");
 const cost = Number(env.FAKE_COST ?? 0.05);
 const cap = opt("--max-budget-usd");
+// Every call gets a new session id (a resumed call is forked, as with --fork-session).
+const session = `fake-${agent ?? "x"}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const reply = (result, extra = {}) =>
-  process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result, total_cost_usd: cost, ...extra }));
+  process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result, total_cost_usd: cost, session_id: session, ...extra }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const agentsFile = opt("--agents");
@@ -73,6 +78,16 @@ if (agentsFile) {
   }
 }
 log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap}`);
+const resume = opt("--resume");
+if (resume) {
+  log(`${agent}: resume=${resume} fork=${args.includes("--fork-session")} new=${session} files=${prompt.includes("Your files (touch only these):")}`);
+  if (prompt.includes("none of your files changed")) log(`${agent}: phantom nudge`);
+  // The real CLI prints this on stderr and exits 1 without a result line.
+  if (env.FAKE_NO_SESSION) {
+    process.stderr.write(`No conversation found with session ID: ${resume}\n`);
+    process.exit(1);
+  }
+}
 
 // Subscription usage, as the real CLI streams it before the result line.
 if (env.FAKE_USAGE && opt("--output-format") === "stream-json") {
@@ -177,7 +192,9 @@ if (prompt.includes("Study this repository")) {
   if (prompt.includes("## Project brief")) log("qa: got brief");
   if (prompt.includes("outside every task's file list")) log("qa: told about files outside the plan");
   log(`qa: sawNewFiles=${sawNew}`);
-  if (mode === "fail") reply('{"passed": false, "failures": ["fake failure"]}');
+  const failOnce = mode === "fail-once" && !existsSync(".orchestrator/fake-qa-failed");
+  if (failOnce) writeFileSync(".orchestrator/fake-qa-failed", "1");
+  if (mode === "fail" || failOnce) reply('{"passed": false, "failures": ["fake failure"]}');
   else if (mode === "needs-new" && !sawNew) reply('{"passed": false, "failures": ["QA did not see new files"]}');
   else reply(JSON.stringify({ passed: true, failures: [], ...(env.FAKE_QA_NOTE ? { notes: [env.FAKE_QA_NOTE] } : {}) }));
 } else {

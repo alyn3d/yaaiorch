@@ -67,6 +67,14 @@ Round 1 skips the architect: one generalist `dev` agent does the whole goal on t
 ### Limits
 
 - **Agent timeout** (`--agent-timeout`, 30 min): a call that runs longer is killed with its whole process tree (`taskkill /T` on Windows) and becomes a task error.
+- **Session resume** (`--no-resume` or config `"resume": false` to turn off): every CLI reply carries a `session_id`.
+  In a fix round, an implementer task continues the session of the same agent's task from the round before that
+  shares a file with it (most shared files wins; with no file lists, only one task per agent then and now), with
+  `--resume <id> --fork-session`, so parallel tasks and retries never share a session. Its prompt is the new task
+  alone: the session already has the brief, the files it read and what it did. After a stuck round every task
+  starts cold, so a failed approach is not carried on; QA and the architect never resume. If resuming fails (the
+  session is gone), the task starts cold once. A phantom completion's retry continues its own session and is told
+  which files did not change. `task_start` has `resumed: <round>` (a badge in the run panel).
 - **Transient errors**: a call whose CLI error text shows an API overload, a 5xx or 429 API error, or a dropped
   connection (`TRANSIENT_RE`) is retried once after 15 s (`ORCH_RETRY_DELAY_MS`). Never the usage limit, the
   budget or an agent timeout, and never a task's own failure.
@@ -127,7 +135,7 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `architect_start` | round |
 | `plan` | round, summary, cost, tasks[] (each with `id`) |
 | `checks` | round, results[] ({name, command, ok, code, ms}) |
-| `task_start` | round, id, agent, phase |
+| `task_start` | round, id, agent, phase, resumed? (the round whose session it continues) |
 | `task_end` | round, id, agent, phase, status, touched[], cost?, failures?, error? |
 | `round_end` | round, passed, failures[], cost |
 | `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power?, agents? ({agent: power} when only the failing tasks' agents move up) |

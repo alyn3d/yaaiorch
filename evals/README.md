@@ -29,7 +29,7 @@ Runs orch for real (this spends money). Options:
 | option | default | meaning |
 |---|---|---|
 | `--cases a,b` | all | case ids from `cases.json` |
-| `--power economy,heavy` | economy | orch configurations to compare (`none` to skip orch): a tier, optionally with `+fast` (`--fast`), `+nomem` (`--no-brief --no-notes`) or `+critic` (`--critic`), combinable, e.g. `economy,economy+nomem` |
+| `--power economy,heavy` | economy | orch configurations to compare (`none` to skip orch): a tier, optionally with `+fast` (`--fast`), `+nomem` (`--no-brief --no-notes`) `+critic` (`--critic`) or `+noresume` (`--no-resume`), combinable, e.g. `economy,economy+nomem` |
 | `--single sonnet,opus` | | also run the **control group**: one `claude -p` call per case with this model, the same goal, permissions, check commands and budget |
 | `--repeat N` | 1 | runs per case and tier (LLM runs vary; use 3+ for decisions) |
 | `--parallel N` | 1 | runs at once |

@@ -57,6 +57,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   (each goal also gets at most what is left as its --max-cost); also "maxCostTotal" in config
          --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
                   reused across rounds and goals); also "brief": false in config
+         --no-resume   fix rounds start every implementer cold (default: an agent that worked on the same
+                  files in the round before continues its session); also "resume": false in config
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
                   are no checks); if that fails, later rounds run the full architect/build/QA loop
 Agents: built-in (architect, fe, be, qa), overridden by ~/.claude/agents and ./.claude/agents.
@@ -82,7 +84,7 @@ type Review = { approved: boolean; issues: string[] };
 /** `note` says why a pending goal is waiting (for example a usage-limit reset). */
 type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed"; note?: string };
 type Entry = { name: string; description: string; builtin?: boolean };
-type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string };
+type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string; session?: string };
 
 const POWER = {
   max: { arch: "opus", impl: "opus", heavy: "opus", qa: "opus" },
@@ -451,6 +453,7 @@ type Config = {
   maxCostTotal?: number;
   notes?: boolean;
   critic?: boolean;
+  resume?: boolean;
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -567,7 +570,7 @@ const checkReport = (cs: Check[]) =>
     : "\n\nNo checks are configured for this repo; verify by reading the code.";
 
 // ---------- claude runner (prompt via stdin: no quoting problems on Windows) ----------
-type CliResult = { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number };
+type CliResult = { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number; session_id?: unknown };
 /**
  * Money spent on one goal; `cap` is the --max-cost limit. Each agent call reserves its share of what is
  * left before it starts (`reserved`), so parallel calls cannot overspend together; `launching` counts the
@@ -598,7 +601,7 @@ async function reserve(budget: Budget): Promise<number | undefined> {
 /** Percent caps on the subscription's usage windows (1-100); unset = no cap. */
 type UsageCap = { fiveHour?: number; week?: number };
 /** `repoContext`: the brief and recent lessons, put in front of every implementer and QA prompt. */
-type RunCtx = { budget: Budget; timeoutMs: number; usageCap: UsageCap; onLimit: "wait" | "stop"; repoContext?: string };
+type RunCtx = { budget: Budget; timeoutMs: number; usageCap: UsageCap; onLimit: "wait" | "stop"; repoContext?: string; resume?: boolean };
 
 // ---------- subscription usage: read from the CLI's rate_limit_event (stream-json) ----------
 type Window = "fiveHour" | "week";
@@ -763,11 +766,14 @@ function killTree(p: ChildProcess) {
 const TRANSIENT_RE =
   /API Error: (?:5\d\d|429)\b|overloaded_error|\bapi_error\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|fetch failed|Connection error|Request timed out/i;
 
-async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
+type Reply = { text: string; cost: number; session?: string };
+
+/** `resume`: a session id to continue (forked, so the original stays as it was). */
+async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean, resume?: string): Promise<Reply> {
   for (let attempt = 1; ; attempt++) {
     await respectUsageCap(ctx);
     try {
-      return await runOnce(agent, model, prompt, ctx, readOnly);
+      return await runOnce(agent, model, prompt, ctx, readOnly, resume);
     } catch (e) {
       const text = msg(e);
       if (attempt >= 2 || isFatal(e) || /timed out after \d/.test(text) || !TRANSIENT_RE.test(text)) throw e;
@@ -796,7 +802,7 @@ function parseCliOutput(out: string): CliResult | undefined {
   return r;
 }
 
-async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean): Promise<{ text: string; cost: number }> {
+async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean, resume?: string): Promise<Reply> {
   const { budget } = ctx;
   if (budget.cap !== undefined && budget.spent >= budget.cap) throw new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`);
   const ceiling = await reserve(budget);
@@ -823,6 +829,8 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
       "--verbose",
       "--permission-mode",
       readOnly ? "default" : "acceptEdits",
+      // --fork-session: the resumed call gets a new id, so retries and parallel tasks never share one.
+      ...(resume ? ["--resume", resume, "--fork-session"] : []),
       // This call's reserved share. The CLI checks it after each turn, so a call can overshoot it a little.
       ...(ceiling !== undefined ? ["--max-budget-usd", (Math.floor(ceiling * 100 + 1e-6) / 100).toFixed(2)] : []),
     ];
@@ -861,7 +869,7 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
         const detail = typeof r.result === "string" ? `: ${r.result.slice(0, 200)}` : "";
         return reject(new Error(`${agent.name}: CLI returned ${r.subtype ?? `exit ${code}`}${detail}`));
       }
-      resolve({ text: r.result, cost });
+      resolve({ text: r.result, cost, session: typeof r.session_id === "string" ? r.session_id : undefined });
     });
     p.stdin.end(prompt);
   });
@@ -1253,26 +1261,76 @@ type Opts = {
   brief: boolean;
   notes: boolean;
   critic: boolean;
+  /** Fix rounds continue an implementer's session from the round before (see pickSession). */
+  resume: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
-async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx): Promise<Result> {
-  const prompt =
-    (ctx.repoContext ? `${ctx.repoContext}## Your task\n` : "") +
+async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx, resume?: { id: string; round: number }): Promise<Result> {
+  const task =
     (t.files?.length ? `${t.task}\n\nYour files (touch only these):\n${t.files.map((f) => `- ${f}`).join("\n")}` : t.task) +
     (t.figma ? `\n\nFigma: ${t.figma}` : "") +
     (t.skills?.length ? `\n\nBefore starting, load these skills with the Skill tool: ${t.skills.join(", ")}` : "") +
     TASK_FORMAT;
+  const cold = (ctx.repoContext ? `${ctx.repoContext}## Your task\n` : "") + task;
+  // A resumed session already holds the brief, the files it read and what it did; it gets only the new task.
+  const resumed = resume
+    ? `Round ${resume.round} of this goal (your work in this session) did not pass. This is your task for the next round. ` +
+      `Other agents may have changed files since, so re-read a file before you edit it.\n\n## Your task\n${task}`
+    : "";
   let cost = 0;
+  let session = resume?.id;
+  let prompt = resume ? resumed : cold;
   for (let attempt = 1; attempt <= 2; attempt++) {
     const before = new Map((t.files ?? []).map((f) => [f, sig(f)]));
-    const r = await run(agent, model, prompt, ctx, false);
+    let r: Reply;
+    try {
+      r = await run(agent, model, prompt, ctx, false, session);
+    } catch (e) {
+      // The session may be gone (cleaned up, another machine): start cold once. Never after a timeout or a fatal error.
+      if (!session || isFatal(e) || /timed out after \d/.test(msg(e))) throw e;
+      console.warn(`${t.agent}: resuming its session failed (${msg(e).slice(0, 160)}); starting cold`);
+      prompt = cold;
+      r = await run(agent, model, prompt, ctx, false);
+    }
     cost += r.cost;
     const touched = (t.files ?? []).filter((f) => sig(f) !== before.get(f));
-    if (!t.files?.length || touched.length || !/Status:\s*COMPLETE/i.test(r.text)) return { agent: t.agent, out: r.text, touched, cost };
+    if (!t.files?.length || touched.length || !/Status:\s*COMPLETE/i.test(r.text)) return { agent: t.agent, out: r.text, touched, cost, session: r.session };
     console.warn(`phantom completion by ${t.agent}; re-dispatching`);
+    // Same session when there is one and resuming is on: the agent sees what it claimed and is told what is missing.
+    if (ctx.resume && r.session) {
+      session = r.session;
+      prompt =
+        `You replied "Status: COMPLETE", but none of your files changed:\n${t.files.map((f) => `- ${f}`).join("\n")}\n` +
+        `Make the changes now, in those files.${TASK_FORMAT}`;
+    } else {
+      session = undefined;
+      prompt = cold;
+    }
   }
   return { agent: t.agent, out: "PHANTOM: no diff after 2 attempts", touched: [], cost };
+}
+
+/** A session from the round before, from a task of the same agent; one at most per agent and session. */
+type Session = { agent: string; id: string; files: string[]; round: number };
+
+/**
+ * Which earlier session a new task continues: the same agent's task from the round before that shares a file
+ * with it (most shared files wins). With no file lists on either side, only when the agent had exactly one
+ * task then and has exactly one now. Otherwise the task starts cold.
+ */
+function pickSession(t: Task, sessions: Session[], tasksOfAgent: number): Session | undefined {
+  const mine = sessions.filter((s) => s.agent === t.agent);
+  const files = new Set((t.files ?? []).map(normPath));
+  let best: Session | undefined;
+  let bestShared = 0;
+  for (const s of mine) {
+    const shared = s.files.filter((f) => files.has(normPath(f))).length;
+    if (shared > bestShared) [best, bestShared] = [s, shared];
+  }
+  if (best) return best;
+  if (mine.length === 1 && tasksOfAgent === 1 && !files.size && !mine[0].files.length) return mine[0];
+  return undefined;
 }
 
 /** Ask the architect for a plan; on bad JSON or a rejected plan, ask once more with the reason. */
@@ -1630,6 +1688,9 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   /** Per-task escalation: agents moved up on their own after a stuck round (tier, and models with aliases stepped up). */
   const agentPower = new Map<string, Power>();
   const agentModels = new Map<string, Models>();
+  /** Implementer sessions from the round before, continued by the next round's tasks (empty after a stuck round). */
+  let sessions: Session[] = [];
+  ctx.resume = o.resume;
 
   for (let round = 1; round <= o.maxRounds; round++) {
     const spentBefore = ctx.budget.spent;
@@ -1692,6 +1753,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
     const idOf = new Map(plan.tasks.map((t, id) => [t, id]));
     const statuses = new Map<Task, string>();
+    const roundSessions: Session[] = [];
     const skip = (t: Task) => (
       statuses.set(t, "SKIPPED"),
       emit("task_end", { round, id: idOf.get(t)!, agent: t.agent, phase: t.phase, status: "SKIPPED", touched: [] })
@@ -1699,13 +1761,16 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     /** Never throws: a failed task becomes a failure for the next round, and its siblings run to the end. */
     const exec = async (t: Task): Promise<Result> => {
       const id = idOf.get(t)!;
-      emit("task_start", { round, id, agent: t.agent, phase: t.phase });
+      const tasksOfAgent = plan.tasks.filter((x) => x.agent === t.agent && x.phase !== "verify").length;
+      const prev = o.resume ? pickSession(t, sessions, tasksOfAgent) : undefined;
+      emit("task_start", { round, id, agent: t.agent, phase: t.phase, ...(prev ? { resumed: prev.round } : {}) });
       try {
         const role: Role = t.agent === "dev" ? "dev" : t.heavy ? "heavy" : "impl";
         const model = modelFor(agentPower.get(t.agent) ?? power, agentModels.get(t.agent) ?? models, role, t.agent);
-        const r = await execute(t, byName.get(t.agent)!, model, ctx);
+        const r = await execute(t, byName.get(t.agent)!, model, ctx, prev && { id: prev.id, round: prev.round });
         const status = /Status:\s*(COMPLETE|PARTIAL|FAILED)/i.exec(r.out)?.[1]?.toUpperCase() ?? (r.out.startsWith("PHANTOM") ? "PHANTOM" : "UNKNOWN");
         statuses.set(t, status);
+        if (r.session) roundSessions.push({ agent: t.agent, id: r.session, files: t.files ?? [], round });
         emit("task_end", { round, id, agent: t.agent, phase: t.phase, status, touched: r.touched, cost: round4(r.cost) });
         return { ...r, status };
       } catch (e) {
@@ -1856,9 +1921,12 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         }
       }
       note = `Note: ${why}. Do not repeat the previous plan; find the real cause and take a different approach.`;
+      // A fresh look: the next round's agents start cold instead of continuing the approach that got stuck.
+      sessions = [];
     } else {
       stuck = 0;
       note = "";
+      sessions = roundSessions;
     }
   }
   console.error(`\nStopped: max rounds (${o.maxRounds}) reached without QA passing.`);
@@ -2026,6 +2094,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const brief = !values["no-brief"] && cfg.brief !== false;
   const notes = !values["no-notes"] && cfg.notes !== false;
   const critic = !!values.critic || cfg.critic === true;
+  const resume = !values["no-resume"] && cfg.resume !== false;
   return {
     maxRounds,
     power: power as Power,
@@ -2041,6 +2110,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     brief,
     notes,
     critic,
+    resume,
     strictFiles,
     maxCostTotal,
   };
@@ -2068,6 +2138,7 @@ async function main() {
       "no-hooks": { type: "boolean", default: false },
       "no-brief": { type: "boolean", default: false },
       "no-notes": { type: "boolean", default: false },
+      "no-resume": { type: "boolean", default: false },
       critic: { type: "boolean", default: false },
       details: { type: "boolean", default: false },
       json: { type: "boolean", default: false },

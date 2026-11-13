@@ -72,7 +72,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
         }))
       );
     case "task_start":
-      return run && upd(run, ev.round, (r) => updTask(r, ev.id, (t) => ({ ...t, status: "running", startedAt: ev.t })));
+      return run && upd(run, ev.round, (r) => updTask(r, ev.id, (t) => ({ ...t, status: "running", startedAt: ev.t, resumed: ev.resumed })));
     case "task_end":
       return (
         run &&

@@ -36,6 +36,11 @@ function Task({ t, now }: { t: TaskView; now: number }) {
       <div className="row">
         <span className="agent">{t.agent}</span>
         <span className={`badge ${tone(t.status)}`}>{t.status.toLowerCase()}</span>
+        {t.resumed !== undefined && (
+          <span className="badge" title={`Continued this agent's session from round ${t.resumed}`}>
+            resumed
+          </span>
+        )}
         <span className="spacer" />
         {t.cost !== undefined && <span className="cost">{money(t.cost)}</span>}
         <span className="muted">{elapsed}</span>

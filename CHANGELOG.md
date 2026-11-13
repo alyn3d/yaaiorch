@@ -5,6 +5,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- **Session resume for fix rounds**: when a round fails, the next round's implementer tasks continue the same
+  agent's session from that round (on the same files) instead of starting cold, so they keep what they read
+  and did. After a stuck round they start fresh; if a session is gone they start cold. A phantom completion's
+  retry is told, in the same session, which files did not change. The run panel marks resumed tasks.
+  `--no-resume` or `"resume": false` turns it off; eval config suffix `+noresume`. Not measured yet.
+
 ### Changed
 - Development: ESLint, Prettier, rustfmt and clippy run in CI (`npm run lint`, `npm run format:check`);
   the code was formatted once (that commit is in `.git-blame-ignore-revs`).
