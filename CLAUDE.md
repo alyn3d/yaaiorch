@@ -66,4 +66,4 @@ process exits without `goal_end`.
 - GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
-0.2.0 shipped several repos at once and cost control. Next milestone is 0.3 (reliability and trust) in `TODO.md`: finish the eval baseline, harder eval cases, a committed fake `claude` with scenario tests in CI, then lint/format in CI and spawning `claude` without a shell on Windows.
+0.3.0 shipped reliability (locks, retries, path checks, loop budget, server guard) and repo memory (brief, notes, `orch learn`, critic). Still open from 0.3 in `TODO.md`: the eval baseline, measuring the memory features on the series cases, lint/format in CI, and spawning `claude` without a shell on Windows; then 0.4.

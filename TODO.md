@@ -4,7 +4,7 @@ Open work, grouped by milestone (see [ROADMAP.md](ROADMAP.md) for the why). Item
 **good first issue** are small and self-contained. Want one? Open an issue or comment on the existing
 one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGELOG.md).
 
-## 0.3: reliability and trust
+## 0.3: reliability and trust (0.3.0 released; open items carry over)
 
 ### Measure
 - [ ] **Finish the baseline.** Run the whole eval suite on all four tiers with `--repeat 3`

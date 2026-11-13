@@ -5,26 +5,12 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
-### Security
-- The browser-mode server could be driven by any web page you visited (it accepted every request on
-  `localhost:4317`), for example to start runs on your Claude account. It now refuses requests whose
-  `Host` or `Origin` is not local (this also stops DNS rebinding) and requires a per-process session
-  token on every `/api` call; the UI fetches it automatically. The desktop app was not affected.
+## [0.3.0] - 2026-11-13
 
-### Fixed
-- Two orch processes could run in the same repo (for example a CLI `loop` next to the UI) and overwrite
-  each other's work. A run lock (`.orchestrator/run.lock`) now allows one at a time; a lock left by a
-  crashed or killed process is taken over automatically.
-- Goals added while a loop was running could be lost (both read and rewrote `queue.json`). Queue edits now
-  happen under a short lock, and the browser server adds goals through `orch add`.
-- State files (`queue.json`, `last-run.json`, `brief.md`, `notes.md`) are written atomically, and a damaged
-  `queue.json` is reported instead of being replaced with an empty queue.
-- Plans are checked as untrusted input: file paths outside the repo (absolute, `..`, drive or UNC paths, or
-  through a symlink or junction), inside `.git/` or `.orchestrator/`, and oversized plans are rejected with
-  the task and file named.
-
-### Changed
-- **License: GPL-3.0-only** (was MIT). Versions up to and including 0.2.0 remain available under MIT.
+Reliability and memory: the orchestrator learns a repo (project brief, notes between goals, `orch learn`),
+plans get an optional critic, fix rounds build on the previous round, and running it unattended is safer
+(a run lock per repo, safe queue edits, plan path checks, retries, a loop budget, a protected browser
+server). Relicensed under GPL-3.0-only.
 
 ### Added
 - **Retry of transient errors**: an agent call that fails with an API overload, a 5xx or 429 API error or a
@@ -61,6 +47,27 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   daily budget.
 
 These are not measured by the evals yet (the current cases pass in round 1).
+
+### Changed
+- **License: GPL-3.0-only** (was MIT). Versions up to and including 0.2.0 remain available under MIT.
+
+### Fixed
+- Two orch processes could run in the same repo (for example a CLI `loop` next to the UI) and overwrite
+  each other's work. A run lock (`.orchestrator/run.lock`) now allows one at a time; a lock left by a
+  crashed or killed process is taken over automatically.
+- Goals added while a loop was running could be lost (both read and rewrote `queue.json`). Queue edits now
+  happen under a short lock, and the browser server adds goals through `orch add`.
+- State files (`queue.json`, `last-run.json`, `brief.md`, `notes.md`) are written atomically, and a damaged
+  `queue.json` is reported instead of being replaced with an empty queue.
+- Plans are checked as untrusted input: file paths outside the repo (absolute, `..`, drive or UNC paths, or
+  through a symlink or junction), inside `.git/` or `.orchestrator/`, and oversized plans are rejected with
+  the task and file named.
+
+### Security
+- The browser-mode server could be driven by any web page you visited (it accepted every request on
+  `localhost:4317`), for example to start runs on your Claude account. It now refuses requests whose
+  `Host` or `Origin` is not local (this also stops DNS rebinding) and requires a per-process session
+  token on every `/api` call; the UI fetches it automatically. The desktop app was not affected.
 
 ## [0.2.0] - 2026-11-12
 
@@ -174,6 +181,7 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/alyn3d/yaaiorch/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/alyn3d/yaaiorch/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/alyn3d/yaaiorch/releases/tag/v0.1.0

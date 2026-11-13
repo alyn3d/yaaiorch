@@ -43,17 +43,23 @@ limit and an Overview tab, one shared usage-limit hold, a daily budget and perce
 the agents, and safer git and budget handling (no lost checkpoint after a failed commit, parallel
 agents share the budget). See [CHANGELOG.md](CHANGELOG.md).
 
-## 0.3: reliability and trust
+## 0.3: reliability and trust (released 0.3.0)
 
 Make it boring to run unattended, and prove it with tests.
 
+Shipped in 0.3.0: a fake `claude` with scenario, server and unit tests in CI (no tokens); a run lock per
+repo, safe queue edits and atomic state files; plan path checks; retries of transient API errors; a loop
+budget; a report of files changed outside the plan; a protected browser-mode server; stop after the current
+goal. Ahead of schedule from 0.4: the project brief and `orch learn`, notes between goals, context between
+rounds, per-task escalation and an optional plan critic (built, not yet measured), and series eval cases to
+measure them.
+
+Still open, moved to the next release:
+
 - A full eval baseline across tiers, a default tier chosen from it, and the numbers published (pass
   rate, false passes, cost per tier): the claim "measured" needs public data.
-- Harder eval cases, since the first ones are too easy to tell the tiers apart.
-- A committed fake `claude` and cross-platform scenario tests in CI, so contributors can change the
-  loop without spending tokens.
-- Hardening: browser-mode CSRF protection, queue locking, retries, loop budget, ownership check (done), retrying transient failures, budget per loop
-  session, graceful stop, enforced file ownership.
+- Measuring the 0.4 features above on the series cases before they stay on by default.
+- Lint and format in CI, and spawning `claude` without a shell on Windows.
 
 ## 0.4: better results per dollar
 
