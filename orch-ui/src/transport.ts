@@ -76,6 +76,8 @@ export type NewProject = {
   start: boolean;
   power: string;
   maxCost?: number;
+  /** With start: a budget for all the goals together. */
+  maxCostTotal?: number;
   plugins?: unknown;
 };
 

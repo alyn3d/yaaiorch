@@ -3,6 +3,8 @@ import { pluginOpts } from "./Plugins";
 import type { Power } from "./types";
 import { RunPanel } from "./RunView";
 import { BriefBox } from "./Brief";
+import { briefProgress, leftText } from "./progress";
+import { usd } from "./repoStatus";
 import { SettingsPanel, modelSpec, useRepoSettings } from "./Settings";
 import { transport } from "./transport";
 import { useFindings, type Session } from "./useOrch";
@@ -17,6 +19,8 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
   const [power, setPower] = useState<Power>("heavy");
   const [maxRounds, setMaxRounds] = useState(5);
   const [maxCost, setMaxCost] = useState("");
+  /** The queue's budget: all goals of a loop together (--max-cost-total). */
+  const [queueBudget, setQueueBudget] = useState("");
   const [dryRun, setDryRun] = useState(false);
   const [confirmRollback, setConfirmRollback] = useState(false);
   const [error, setError] = useState("");
@@ -65,6 +69,9 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;
+  const total = Number(queueBudget);
+  const loopOpts = { ...opts, maxCostTotal: total > 0 ? total : undefined };
+  const progress = briefProgress(state.queue);
   const rounds = state.lastRun?.state ?? [];
   // last-run.json names the checkpoint only while that branch exists, so this survives restarts.
   const checkpoint = busy ? undefined : state.lastRun?.checkpoint;
@@ -172,7 +179,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           </button>
         </div>
         <SettingsPanel repo={repo} power={power} settings={settings} onChange={setSettings} />
-        <BriefBox repo={repo} busy={busy} disabled={badSettings} proposal={session.proposal} call={call} opts={opts} />
+        <BriefBox repo={repo} busy={busy} disabled={badSettings} proposal={session.proposal} call={call} opts={loopOpts} />
         {error && <p className="error">{error}</p>}
       </section>
 
@@ -180,18 +187,41 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
         <div className="row">
           <h2>Queue</h2>
           <span className="spacer" />
+          <label title="A budget for all the goals the queue runs together (Process queue, Loop, Queue and start); it stops before the next goal once spent. Each goal's own Max $ still applies. Empty: no limit.">
+            Budget $
+            <input type="number" min={0} step={1} placeholder="none" value={queueBudget} onChange={(e) => setQueueBudget(e.target.value)} />
+          </label>
           {/* "Plan only" would leave each goal pending and replan it forever, so the loop refuses it. */}
           <button
             disabled={busy || dryRun || badSettings}
             title={dryRun ? "Untick Plan only to process the queue" : ""}
-            onClick={() => call("loop", { ...opts, untilEmpty: true })}
+            onClick={() => call("loop", { ...loopOpts, untilEmpty: true })}
           >
             Process queue
           </button>
-          <button disabled={busy || dryRun || badSettings} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", opts)}>
+          <button disabled={busy || dryRun || badSettings} title={dryRun ? "Untick Plan only to process the queue" : ""} onClick={() => call("loop", loopOpts)}>
             Loop (watch)
           </button>
         </div>
+        {progress && (
+          <div className="progress" title="The goals of the latest brief">
+            <div className="bar" aria-hidden>
+              <span className="done" style={{ width: `${(100 * progress.done) / progress.total}%` }} />
+              <span className="failed" style={{ width: `${(100 * (progress.failed + progress.blocked)) / progress.total}%` }} />
+            </div>
+            <p>
+              <strong>
+                {progress.done} of {progress.total} goals done
+              </strong>
+              {progress.failed > 0 && <> · {progress.failed} failed</>}
+              {progress.blocked > 0 && <> · {progress.blocked} blocked</>} · {usd(progress.cost)} spent
+              {progress.secondsLeft !== undefined && progress.done + progress.failed + progress.blocked < progress.total && (
+                <> · {leftText(progress.secondsLeft)}</>
+              )}
+              {progress.running && <span className="muted"> · now #{progress.running.id}</span>}
+            </p>
+          </div>
+        )}
         {state.queue.length ? (
           <ul className="queue">
             {state.queue.map((i) => (

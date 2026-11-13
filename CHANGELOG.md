@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Budget and progress for a whole queue**: **Budget $** in the queue section (and **Total $** for a new project)
+  caps all the goals a loop runs together (`--max-cost-total`). The latest brief's progress shows above the
+  queue (a bar, goals done, failed and blocked, what it cost, a rough time left) and as "7/23" in the overview,
+  updated live: the loop now records each goal's cost and time in the queue and emits `queue_changed`.
 - **Goals that build on each other**: a split brief says which earlier goals each goal needs. A failed goal is
   tried again one power tier higher (`--retries N`, default 1); if it still fails, the goals that need it are
   marked **blocked** and skipped, independent ones go on, and you get a notification. **Retry** (`orch retry ID`)

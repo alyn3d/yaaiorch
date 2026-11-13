@@ -23,6 +23,7 @@ export function NewProjectDialog({ onCreated, onClose }: { onCreated: (repo: str
   const [setup, setSetup] = useState("");
   const [power, setPower] = useState<Power>("heavy");
   const [maxCost, setMaxCost] = useState("");
+  const [total, setTotal] = useState("");
   const [start, setStart] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -34,6 +35,7 @@ export function NewProjectDialog({ onCreated, onClose }: { onCreated: (repo: str
     setError("");
     try {
       const cap = Number(maxCost);
+      const all = Number(total);
       const repo = await transport.newProject({
         parent: parent.trim(),
         name: name.trim(),
@@ -42,6 +44,7 @@ export function NewProjectDialog({ onCreated, onClose }: { onCreated: (repo: str
         start,
         power,
         maxCost: cap > 0 ? cap : undefined,
+        maxCostTotal: start && all > 0 ? all : undefined,
       });
       try {
         localStorage.setItem(PARENT_KEY, parent.trim());
@@ -107,9 +110,13 @@ export function NewProjectDialog({ onCreated, onClose }: { onCreated: (repo: str
             ))}
           </select>
         </label>
-        <label title="Budget for splitting the spec, and with Start building for each goal (USD). Empty: no limit.">
-          Max $
+        <label title="Budget per goal, and for splitting the spec (USD). Empty: no limit.">
+          Max $ per goal
           <input type="number" min={0} step={0.5} placeholder="none" value={maxCost} onChange={(e) => setMaxCost(e.target.value)} />
+        </label>
+        <label title="With Start building: a budget for all the goals together; the queue stops before the next goal once it is spent (USD). Empty: no limit.">
+          Total $
+          <input type="number" min={0} step={1} placeholder="none" value={total} disabled={!start} onChange={(e) => setTotal(e.target.value)} />
         </label>
         <label className="check" title="Run the queue until it is empty as soon as the goals are queued">
           <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} /> Start building right away

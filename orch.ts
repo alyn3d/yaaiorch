@@ -125,6 +125,9 @@ type Item = {
   /** Times it was retried after failing, and the tier it runs at then. */
   attempts?: number;
   power?: Power;
+  /** What its runs cost and how long they took, all attempts together (for the UI's progress). */
+  cost?: number;
+  seconds?: number;
 };
 type Entry = { name: string; description: string; builtin?: boolean };
 type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string; session?: string };
@@ -2991,6 +2994,7 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     let outcome: "done" | "failed" | "limit" = "failed";
     let resetAt: number | undefined;
     let noRetry = false;
+    const started = Date.now();
     try {
       // With a loop budget, a goal may spend at most what is left of it (and its own --max-cost, if lower).
       const left = o.maxCostTotal === undefined ? undefined : o.maxCostTotal - spentTotal;
@@ -3022,6 +3026,8 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       if (!cur) return;
       // A usage limit is not the goal's fault: put it back and try again after the reset.
       cur.status = outcome === "limit" ? "pending" : outcome;
+      cur.cost = round4((cur.cost ?? 0) + lastGoalCost);
+      cur.seconds = (cur.seconds ?? 0) + Math.round((Date.now() - started) / 1000);
       // A failed goal gets another try, a tier higher, before the goals that build on it are blocked.
       const tier = TIERS.indexOf(cur.power ?? o.power);
       if (outcome === "failed" && !noRetry && (cur.attempts ?? 0) < o.retries) {
@@ -3038,6 +3044,8 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
             ? `usage limit: stopped; resets ${resetAt ? new Date(resetAt).toLocaleString() : "later"}`
             : `usage limit: retrying after ${new Date(until).toLocaleString()}`;
     });
+    // For UIs: the queue on disk changed (status, cost, time), read it again.
+    emit("queue_changed", { id: item.id });
     if (outcome === "limit" && o.onLimit === "stop") {
       console.log(`usage limit reached; goal #${item.id} is pending again. Stopping (--on-limit stop).`);
       process.exit(3);

@@ -126,6 +126,8 @@ Each item should show its effect in the evals before it becomes the default.
   architect, a coverage check when the queue runs dry.
 - [x] **New project in the UI**: **+ New project** (parent folder, name, spec, setup, power, budget, start) runs
   `orch new` in a new tab.
+- [x] **Budget and progress** for a whole queue: **Budget $** (`--max-cost-total`) in the UI, the brief's progress
+  (done, failed, blocked, cost, time left) above the queue and in the overview.
 - [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
 
 ## 0.6: product and packaging

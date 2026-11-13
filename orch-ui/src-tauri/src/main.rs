@@ -208,6 +208,10 @@ fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
         persist(app);
         emit_global(app);
     }
+    // The loop changed queue.json: send the queue again, so statuses and the brief's progress stay current.
+    if matches!(kind, "queue_item" | "queue_changed" | "blocked" | "coverage") {
+        emit_session(app, key);
+    }
     if kind == "queue_item" {
         let pid = {
             let st = app.state::<AppState>();
@@ -553,6 +557,8 @@ fn kill_tree(pid: u32) {
 #[derive(Default)]
 struct Extra {
     max_cost: Option<f64>,
+    /// A loop's budget for all its goals together (--max-cost-total).
+    max_cost_total: Option<f64>,
     /// "architect=opus,be=sonnet"
     models: Option<String>,
     /// "wait" or "stop"
@@ -608,6 +614,10 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if let Some(c) = extra.max_cost.filter(|c| *c > 0.0) {
         v.push("--max-cost".into());
+        v.push(c.to_string());
+    }
+    if let Some(c) = extra.max_cost_total.filter(|c| *c > 0.0) {
+        v.push("--max-cost-total".into());
         v.push(c.to_string());
     }
     if let Some(m) = extra.models.as_deref().filter(|m| valid_model_spec(m)) {
@@ -702,6 +712,7 @@ fn new_project(
     start: Option<bool>,
     power: String,
     max_cost: Option<f64>,
+    max_cost_total: Option<f64>,
     plugins: Option<PluginOpts>,
 ) -> Result<String, String> {
     let ok_name = name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
@@ -746,6 +757,7 @@ fn new_project(
     }
     let extra = Extra {
         max_cost,
+        max_cost_total,
         plugins,
         ..Default::default()
     };
@@ -849,8 +861,10 @@ fn run_goal(
     if goal.trim().is_empty() {
         return Err("goal required".into());
     }
+    // One goal: no loop budget.
     let extra = Extra {
         max_cost,
+        max_cost_total: None,
         models,
         on_limit,
         fast,
@@ -880,6 +894,7 @@ fn run_loop(
     dry_run: Option<bool>,
     until_empty: Option<bool>,
     max_cost: Option<f64>,
+    max_cost_total: Option<f64>,
     models: Option<String>,
     on_limit: Option<String>,
     fast: Option<bool>,
@@ -894,6 +909,7 @@ fn run_loop(
 ) -> Result<(), String> {
     let extra = Extra {
         max_cost,
+        max_cost_total,
         models,
         on_limit,
         fast,

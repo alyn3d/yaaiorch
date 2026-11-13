@@ -7,6 +7,12 @@ export type Item = {
   /** Ids of the goals it needs first. */
   after?: number[];
   attempts?: number;
+  fromSpec?: boolean;
+  /** The brief it came from. */
+  brief?: string;
+  /** Cost and time of its runs so far. */
+  cost?: number;
+  seconds?: number;
 };
 export type Round = { round: number; plan: string; touched: string[]; passed: boolean; failures: string[]; power?: Power; cost?: number };
 /** .orchestrator/last-run.json, written by orch.ts. `checkpoint` is set only while that branch still exists. */

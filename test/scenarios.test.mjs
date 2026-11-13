@@ -819,6 +819,11 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     );
     assert.ok(r.calls.includes("coverage: sawGoals=true missing"));
     assert.equal(r.calls.filter((c) => c.startsWith("coverage:")).length, 2);
+    // Each goal keeps what it cost and how long it took, for the UI's progress.
+    for (const i of JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"))) {
+      assert.equal(i.cost, 0.25, `#${i.id}`);
+      assert.ok(Number.isInteger(i.seconds) && i.seconds >= 0, `#${i.id}`);
+    }
     // Nothing new since the last check: no third one.
     assert.equal(orch(dir, ["loop", "--until-empty"], { FAKE_COVERAGE: "missing" }).ev("coverage").length, 0);
 

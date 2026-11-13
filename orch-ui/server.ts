@@ -182,6 +182,8 @@ function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number
     saveSettings();
     sendGlobal();
   }
+  // The loop changed queue.json: send the queue again, so statuses and the brief's progress stay current.
+  if (["queue_item", "queue_changed", "blocked", "coverage"].includes(ev.type)) sendSession(s);
   if (ev.type === "queue_item" && dailyBudget !== null && spent.usd >= dailyBudget && s.child?.pid) {
     // A queue loop is about to start its next goal with the day's budget used up: stop it now,
     // before the goal's first agent call. The goal stays pending for later.
@@ -341,6 +343,8 @@ const flags = (b: {
   maxRounds?: number;
   dryRun?: boolean;
   maxCost?: number;
+  /** A loop's budget for all its goals together (--max-cost-total). */
+  maxCostTotal?: number;
   models?: string;
   onLimit?: string;
   fast?: boolean;
@@ -359,6 +363,7 @@ const flags = (b: {
   String(b.maxRounds ?? 5),
   ...(b.dryRun ? ["--dry-run"] : []),
   ...(typeof b.maxCost === "number" && b.maxCost > 0 ? ["--max-cost", String(b.maxCost)] : []),
+  ...(typeof b.maxCostTotal === "number" && b.maxCostTotal > 0 ? ["--max-cost-total", String(b.maxCostTotal)] : []),
   ...(typeof b.models === "string" && MODEL_SPEC.test(b.models) ? ["--model", b.models] : []),
   ...(b.onLimit === "wait" || b.onLimit === "stop" ? ["--on-limit", b.onLimit] : []),
   ...(b.fast ? ["--fast"] : []),

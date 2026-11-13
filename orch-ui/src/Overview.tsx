@@ -1,5 +1,6 @@
 import type { Session } from "./useOrch";
 import { baseName, repoStatus, usd } from "./repoStatus";
+import { briefProgress } from "./progress";
 
 const elapsed = (ms: number) => {
   const m = Math.max(0, Math.round(ms / 60_000));
@@ -51,6 +52,7 @@ export function Overview({
               const goal = run?.goal ?? s.state.lastRun?.goal ?? "";
               const cost = run?.cost ?? s.state.lastRun?.cost;
               const pending = s.state.queue.filter((i) => i.status === "pending").length;
+              const brief = briefProgress(s.state.queue);
               const busy = live || !!s.state.queued;
               // The tab's label repeats the goal; here the goal has its own column, so say what phase it is in.
               const phase =
@@ -91,7 +93,13 @@ export function Overview({
                     {cost !== undefined ? usd(cost) : "—"}
                     {run?.maxCost ? <span className="muted"> / {usd(run.maxCost)}</span> : null}
                   </td>
-                  <td className="num">{pending || "—"}</td>
+                  <td
+                    className="num"
+                    title={brief ? `${brief.done} of ${brief.total} goals of the brief done${brief.blocked ? `, ${brief.blocked} blocked` : ""}` : ""}
+                  >
+                    {brief ? `${brief.done}/${brief.total}` : pending || "—"}
+                    {brief?.blocked ? <span className="muted"> ({brief.blocked} blocked)</span> : null}
+                  </td>
                   <td className="actions">
                     <button onClick={() => onOpen(repo)}>Open</button>
                     <button className="danger" disabled={!busy} onClick={() => onStop(repo)}>

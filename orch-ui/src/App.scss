@@ -661,3 +661,24 @@ input.limit {
     }
   }
 }
+
+// Progress of the latest brief, above the queue.
+.progress {
+  margin: 0.4rem 0 0.6rem;
+  .bar {
+    display: flex;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: rgba(127, 127, 127, 0.25);
+    .done {
+      background: $ok;
+    }
+    .failed {
+      background: $bad;
+    }
+  }
+  p {
+    margin: 0.3rem 0 0;
+  }
+}

@@ -223,3 +223,32 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
       assert.equal(n("shop", "g", e), null, e.type);
   });
 });
+
+describe("brief progress (orch-ui/src/progress.ts)", () => {
+  let p;
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    p = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "progress.ts")).href, import.meta.url);
+  });
+  test("counts the newest brief only, with cost and a time guess", () => {
+    const q = [
+      { id: 1, goal: "old", status: "done", brief: "a", cost: 9, seconds: 999 },
+      { id: 2, goal: "x", status: "done", brief: "b", cost: 0.5, seconds: 60 },
+      { id: 3, goal: "y", status: "failed", brief: "b", cost: 1, seconds: 120 },
+      { id: 4, goal: "z", status: "blocked", brief: "b", after: [3] },
+      { id: 5, goal: "w", status: "running", brief: "b" },
+      { id: 6, goal: "v", status: "pending", brief: "b" },
+      { id: 7, goal: "plain", status: "pending" },
+    ];
+    const r = p.briefProgress(q);
+    assert.deepEqual({ ...r, running: r.running.id }, { total: 5, done: 1, failed: 1, blocked: 1, running: 5, cost: 1.5, secondsLeft: 180 });
+    assert.equal(p.briefProgress([{ id: 1, goal: "g", status: "pending" }]), null, "no brief: no progress");
+    assert.equal(p.briefProgress([{ id: 1, goal: "g", status: "pending", brief: "b" }]).secondsLeft, undefined, "nothing finished yet");
+  });
+  test("time left wording", () => {
+    assert.equal(p.leftText(30), "under a minute left");
+    assert.equal(p.leftText(25 * 60), "about 25 min left");
+    assert.equal(p.leftText(3 * 3600), "about 3 h left");
+  });
+});

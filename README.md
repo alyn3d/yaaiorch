@@ -181,6 +181,11 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   `.orchestrator/spec.md`, and every goal's architect reads it, so each goal fits the rest. When the queue runs
   dry, a coverage check compares the brief with the code and queues what is still missing (at most twice per
   brief; `--no-coverage` or `"coverage": false` to skip it).
+- **Budget and progress for a whole queue.** **Budget $** in the queue section caps everything the queue runs
+  together (Process queue, Loop, Queue and start; `--max-cost-total`), next to each goal's own **Max $**; the New
+  project dialog has a **Total $** for the same. Above the queue, the latest brief's progress: a bar, "7 of 23
+  goals done", failed and blocked counts, what it cost, a rough time left and the goal running now; the
+  overview shows "7/23" per repo.
 - **Goals that build on each other.** The split says which earlier goals each one needs (shown as "after 1, 3";
   unsaid means all earlier ones). A failed goal is tried again one power tier higher (`--retries N`, default 1;
   not after the budget ran out); if it still fails, the goals that need it are marked **blocked** and skipped
