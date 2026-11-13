@@ -206,6 +206,23 @@
         gap: 12px;
       }
 
+      .download-meta {
+        margin: 12px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .download-meta a {
+        color: var(--text);
+        text-decoration: underline;
+        text-decoration-color: rgb(255 255 255 / 30%);
+        text-underline-offset: 3px;
+      }
+
+      .download-meta a:hover {
+        text-decoration-color: currentcolor;
+      }
+
       .requirements {
         margin: 20px 0 0;
         color: #7f8aa2;
@@ -717,13 +734,14 @@
             checks pass and QA agrees.
           </p>
           <div class="actions">
-            <a class="button" href="https://github.com/alyn3d/yaaiorch/releases/latest">
-              Get YAAIORCH <span aria-hidden="true">↗</span>
+            <a class="button" id="download" href="https://github.com/alyn3d/yaaiorch/releases/latest">
+              <span id="download-label">Get YAAIORCH</span> <span id="download-icon" aria-hidden="true">↗</span>
             </a>
             <a class="button secondary" href="https://github.com/alyn3d/yaaiorch/blob/main/README.md">
               Read the guide
             </a>
           </div>
+          <p class="download-meta" id="download-meta" hidden></p>
           <p class="requirements">
             Desktop app for Windows and Linux; macOS arrives in 0.6. The CLI runs wherever Node.js 20+ does. Needs
             Claude Code (installed and logged in) and git; the desktop app brings its own Node.js.
@@ -894,5 +912,70 @@
         </nav>
       </div>
     </footer>
+    <script>
+      // "Get YAAIORCH" downloads the latest release's installer for the visitor's OS. Without JavaScript, an
+      // unknown OS, or when the GitHub API does not answer, the button keeps pointing at the releases page.
+      (() => {
+        const RELEASES = "https://github.com/alyn3d/yaaiorch/releases/latest";
+        const ua = navigator.userAgent;
+        const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+        const mobile = /Android|iPhone|iPad|iPod/i.test(ua);
+        const os = mobile ? null : /Win/i.test(platform) ? "windows" : /Mac/i.test(platform) ? "macos" : /Linux/i.test(platform) ? "linux" : null;
+        if (!os) return;
+        const NAMES = { windows: "Windows", macos: "macOS", linux: "Linux" };
+        // In order of preference; the first match is the button, the rest are listed under it.
+        const KINDS = {
+          windows: [/-setup\.exe$/i, /\.msi$/i],
+          macos: [/\.dmg$/i],
+          linux: [/\.AppImage$/i, /\.deb$/i, /\.rpm$/i],
+        };
+        const ext = (name) => (/-setup\.exe$/i.test(name) ? "installer (.exe)" : name.slice(name.lastIndexOf(".")));
+        const mb = (bytes) => `${Math.round(bytes / 1048576)} MB`;
+        const el = (id) => document.getElementById(id);
+        const link = (href, text) => {
+          const a = document.createElement("a");
+          a.href = href;
+          a.textContent = text;
+          return a;
+        };
+
+        const latest = async () => {
+          try {
+            const cached = JSON.parse(sessionStorage.getItem("yaaiorch-latest") || "null");
+            if (cached && Date.now() - cached.at < 3600000) return cached.release;
+          } catch {}
+          const r = await fetch("https://api.github.com/repos/alyn3d/yaaiorch/releases/latest", { headers: { Accept: "application/vnd.github+json" } });
+          if (!r.ok) throw new Error(`GitHub API ${r.status}`);
+          const d = await r.json();
+          const release = { tag: d.tag_name, assets: (d.assets || []).map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size })) };
+          try {
+            sessionStorage.setItem("yaaiorch-latest", JSON.stringify({ at: Date.now(), release }));
+          } catch {}
+          return release;
+        };
+
+        latest()
+          .then(({ tag, assets }) => {
+            const files = KINDS[os].map((re) => assets.find((a) => re.test(a.name))).filter(Boolean);
+            const meta = el("download-meta");
+            meta.hidden = false;
+            if (!files.length) {
+              meta.textContent = `No ${NAMES[os]} app in ${tag} yet. `;
+              meta.append(link(RELEASES, "See all downloads"));
+              return;
+            }
+            const [main, ...others] = files;
+            el("download").href = main.url;
+            el("download-label").textContent = `Download for ${NAMES[os]}`;
+            el("download-icon").textContent = "↓";
+            meta.textContent = `${tag} · ${ext(main.name)} · ${mb(main.size)}`;
+            for (const f of others) meta.append(" · ", link(f.url, ext(f.name)));
+            meta.append(" · ", link(RELEASES, "All downloads"));
+          })
+          .catch(() => {
+            /* keep the releases page link */
+          });
+      })();
+    </script>
   </body>
 </html>
