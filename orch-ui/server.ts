@@ -350,6 +350,7 @@ const flags = (b: {
   reviewers?: string;
   branch?: boolean;
   pr?: boolean;
+  approvePlan?: boolean;
   plugins?: PluginOpts;
 }) => [
   "--power",
@@ -367,6 +368,7 @@ const flags = (b: {
   ...(b.review && typeof b.reviewers === "string" && REVIEWERS.test(b.reviewers) ? ["--reviewers", b.reviewers] : []),
   ...(b.branch ? ["--branch"] : []),
   ...(b.pr ? ["--pr"] : []),
+  ...(b.approvePlan ? ["--approve-plan"] : []),
   ...pluginFlags(b.plugins),
 ];
 
@@ -416,6 +418,16 @@ const addGoal = (s: Session, goal: string) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     ),
   );
+
+/** `orch approve` for a run waiting with --approve-plan: an edited plan goes on stdin, never on the command line. */
+const approvePlan = (s: Session, b: { plan?: unknown; reject?: string }) =>
+  new Promise<void>((ok, fail) => {
+    const args = typeof b.reject === "string" ? ["--reject", b.reject.slice(0, 4000)] : b.plan ? ["--plan-stdin"] : [];
+    const child = execFile(process.execPath, [TSX_CLI, ORCH, "approve", ...args], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    );
+    child.stdin?.end(b.plan && typeof b.reject !== "string" ? JSON.stringify(b.plan) : "");
+  });
 
 const body = (req: http.IncomingMessage) =>
   new Promise<any>((ok, bad) => {
@@ -587,6 +599,10 @@ http
         if (url.pathname === "/api/learn") {
           // `orch learn`: a read-only pass that writes the project brief; a run like any other (slot, budget, log).
           requestStart(s, ["learn", ...flags({ ...b, dryRun: false })], "learn repo");
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/approve") {
+          await approvePlan(s, b);
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/share") {

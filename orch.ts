@@ -31,6 +31,8 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
+  orch approve [--reject "WHY"] [--plan-stdin]   answer a run waiting with --approve-plan: build the plan (edited:
+                        a plan as JSON on stdin), or send it back to the architect with your reason
   orch share [--dry-run]  propose what orch learned (brief and lasting notes) as a CLAUDE.md section, committed
                         on an orchestrator/claude-md-* branch for you to review and merge (--dry-run: print it)
   orch plugins [--json] [--details]  Claude Code plugins installed for this repo (--details: token cost)
@@ -65,6 +67,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   (each goal also gets at most what is left as its --max-cost); also "maxCostTotal" in config
          --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
                   reused across rounds and goals); also "brief": false in config
+         --approve-plan   after planning, wait until you approve the plan ("orch approve", or the UI), edit it or
+                  send it back with a reason; also "approvePlan": true in config
          --branch   run each goal on its own branch, orch/<id>-<slug>, and switch back afterwards: your branch is
                   never changed (the goal's work stays on its branch); also "branch": true in config
          --pr   with --branch: when a goal passes, push its branch to origin and open a pull request with gh
@@ -207,6 +211,9 @@ const RUN_LOCK = join(DIR, "run.lock");
 const QUEUE_LOCK = join(DIR, "queue.lock");
 /** Created by `orch stop-after` or the UI: the loop exits before starting its next goal. */
 const STOP_FILE = join(DIR, "stop-after-goal");
+/** --approve-plan: the plan waiting for a human, and the answer `orch approve` writes. */
+const PLAN_PENDING = join(DIR, "plan-pending.json");
+const PLAN_DECISION = join(DIR, "plan-decision.json");
 const MAX_TASKS = 25;
 const MAX_FILES_PER_TASK = 60;
 
@@ -483,6 +490,7 @@ type Config = {
   review?: boolean | string[];
   branch?: boolean;
   pr?: boolean;
+  approvePlan?: boolean;
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -1412,6 +1420,8 @@ type Opts = {
   branch: boolean;
   /** With branch: push a passed goal's branch and open a pull request (gh). */
   pr: boolean;
+  /** Wait for a human to approve, edit or reject each plan before building. */
+  approvePlan: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1880,6 +1890,57 @@ async function critique(critic: Entry, goal: string, plan: Plan, brief: string |
   }
 }
 
+// ---------- --approve-plan: a human approves, edits or rejects each plan ----------
+type Decision = { round: number; action: "approve" | "reject"; plan?: Plan; note?: string };
+/** Agents that may get tasks, as `orch approve` sees them (it cannot know a run's --reviewers; the run checks again). */
+const taskAgents = (roster: Entry[], extra: string[] = []) => roster.filter((a) => !["architect", "critic", "reviewer", ...extra].includes(a.name));
+
+/** Show the plan and wait (without a time limit) for `orch approve`. `error`: why the previous answer was not usable. */
+async function awaitDecision(goal: string, round: number, plan: Plan, error?: string): Promise<Decision> {
+  if (existsSync(PLAN_DECISION)) unlinkSync(PLAN_DECISION); // an answer left over from an earlier run
+  writeFileAtomic(PLAN_PENDING, JSON.stringify({ goal, round, plan }, null, 2));
+  emit("approval_wait", { round, summary: plan.summary, tasks: plan.tasks.map((t, id) => ({ id, ...t })), ...(error ? { error } : {}) });
+  console.log(
+    `\nwaiting for your approval of the round ${round} plan${error ? ` (${error})` : ""}.\n` +
+      `  build it: orch approve   edit it: change ${PLAN_PENDING}, then orch approve --plan-stdin < ${PLAN_PENDING}\n` +
+      `  send it back: orch approve --reject "why"   (or use the UI)`,
+  );
+  for (;;) {
+    if (existsSync(PLAN_DECISION)) {
+      let d: Decision | undefined;
+      try {
+        d = JSON.parse(readFileSync(PLAN_DECISION, "utf8")) as Decision;
+      } catch {
+        /* being written; try again */
+      }
+      if (d) {
+        unlinkSync(PLAN_DECISION);
+        if (d.round === round) {
+          if (existsSync(PLAN_PENDING)) unlinkSync(PLAN_PENDING);
+          emit("approval", { round, action: d.action, edited: !!d.plan });
+          return d;
+        }
+      }
+    }
+    await sleep(500);
+  }
+}
+
+/** `orch approve`: answer the waiting plan. Checks an edited plan here, so a mistake is reported at once. */
+function approve(values: Record<string, string | boolean | undefined>) {
+  if (!existsSync(PLAN_PENDING)) throw new Error("no plan is waiting for approval in this repo");
+  const pending = JSON.parse(readFileSync(PLAN_PENDING, "utf8")) as { round: number };
+  const d: Decision = { round: pending.round, action: values.reject !== undefined ? "reject" : "approve" };
+  if (d.action === "reject") d.note = String(values.reject).trim().slice(0, 4000);
+  else if (values["plan-stdin"]) {
+    const plan = extractJson<Plan>(readFileSync(0, "utf8"));
+    validate(plan, taskAgents(discoverAgents()));
+    d.plan = plan;
+  }
+  writeFileAtomic(PLAN_DECISION, JSON.stringify(d));
+  console.log(d.action === "reject" ? "plan sent back to the architect" : `plan approved${d.plan ? " (edited)" : ""}`);
+}
+
 /** What a round planned, how each task ended and what changed: the next round's architect builds on it. */
 function previousRound(round: number, plan: Plan, statuses: Map<Task, string>, cp: string): string {
   const tasks = plan.tasks
@@ -1914,6 +1975,7 @@ async function runGoal(goal: string, o: Opts, id?: number): Promise<boolean> {
     usageCap: o.usageCap,
     plugins: o.plugins,
     critic: o.critic,
+    approvePlan: o.approvePlan,
     branch: o.branch,
     pr: o.pr,
   });
@@ -2073,6 +2135,41 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
           revised = true;
         }
         emit("critic", { round, approved: review.approved, issues: review.issues, revised, cost: round4(review.cost) });
+      }
+    }
+    // --approve-plan: a human builds, edits or sends back the plan (any number of times) before anything is built.
+    if (o.approvePlan && !direct && !o.dryRun) {
+      let error: string | undefined;
+      for (;;) {
+        const d = await awaitDecision(goal, round, plan, error);
+        error = undefined;
+        if (d.action === "approve") {
+          if (!d.plan) break;
+          try {
+            validate(d.plan, workers);
+            plan = d.plan;
+            break;
+          } catch (e) {
+            error = `the edited plan was not used: ${msg(e)}`;
+            continue;
+          }
+        }
+        const why = `The person reviewing your plan rejected it:\n${d.note || "(no reason given)"}\nRevise the plan accordingly.`;
+        const again = await makePlan(
+          architect,
+          workers,
+          skills,
+          goal,
+          failures,
+          [note, why].filter(Boolean).join("\n\n"),
+          modelFor(power, models, "architect", "architect"),
+          ctx,
+          previous,
+          brief,
+          notes,
+        );
+        plan = again.plan;
+        planCost += again.cost;
       }
     }
     // After planning, so a brief the architect just wrote reaches this round's agents. The fast path's task has them already.
@@ -2450,6 +2547,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const pr = !!values.pr || cfg.pr === true;
   // A pull request needs a branch of its own.
   const branch = pr || !!values.branch || cfg.branch === true;
+  const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
   return {
     maxRounds,
     power: power as Power,
@@ -2470,6 +2568,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     review,
     branch,
     pr,
+    approvePlan,
     strictFiles,
     maxCostTotal,
   };
@@ -2501,6 +2600,9 @@ async function main() {
       critic: { type: "boolean", default: false },
       "diff-critic": { type: "boolean", default: false },
       branch: { type: "boolean", default: false },
+      "approve-plan": { type: "boolean", default: false },
+      reject: { type: "string" },
+      "plan-stdin": { type: "boolean", default: false },
       pr: { type: "boolean", default: false },
       review: { type: "boolean", default: false },
       reviewers: { type: "string" },
@@ -2568,6 +2670,8 @@ async function main() {
       acquireRunLock("learn");
       return learn(o);
     }
+    case "approve":
+      return approve(values);
     case "share": {
       const o = parseOpts(values);
       acquireRunLock("share");

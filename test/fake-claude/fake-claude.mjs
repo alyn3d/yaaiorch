@@ -176,6 +176,8 @@ if (prompt.includes("Review this change")) {
     if (prompt.includes("previous reply was rejected")) log("architect: got rejection reason");
     if (prompt.includes("Do not repeat the previous plan")) log("architect: got stuck note");
     if (prompt.includes("A reviewer rejected your plan")) log("architect: got critic issues");
+    const human = /The person reviewing your plan rejected it:\n(.*)/.exec(prompt);
+    if (human) log(`architect: got human rejection: ${human[1]}`);
     log(`architect: notes=${prompt.includes("Notes from earlier goals") && prompt.includes("FAKE LESSON") ? "seen" : "none"}`);
     // Context between rounds and the project brief, as the architect sees them.
     if (prompt.includes("may be out of date")) log("architect: brief stale");

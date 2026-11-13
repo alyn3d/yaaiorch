@@ -106,7 +106,8 @@ Each item should show its effect in the evals before it becomes the default.
   `dependsOn` on queue items.
 - [ ] **Queue lifecycle**: show the running goal, retry policy, a `blocked` status for goals that need a
   human, per-item power and max rounds.
-- [ ] **Plan approval gate**: optional pause after planning so a human can approve or edit the plan.
+- [x] **Plan approval gate**: optional pause after planning so a human can approve or edit the plan
+  (`--approve-plan`, `orch approve`, the run panel).
 - [ ] **Worktree per build task** so parallel agents cannot break each other's test runs (Conductor,
   Baton and others isolate this way). Merge back after the phase; exclusive file ownership keeps it
   conflict-free.

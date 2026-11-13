@@ -68,6 +68,8 @@ export type RunView = {
   /** --branch: the goal's branch and where it started (`goal_branch`); --pr: the pull request (`pr`). */
   branch?: { name: string; base: string };
   pr?: { url?: string; error?: string };
+  /** --approve-plan: the plan waiting for an answer (`approval_wait`), cleared by `approval`. */
+  approval?: { round: number; summary: string; tasks: { agent: string; phase: string; task: string; files?: string[] }[]; error?: string };
   maxRounds: number;
   dryRun: boolean;
   status: "running" | "passed" | "failed";

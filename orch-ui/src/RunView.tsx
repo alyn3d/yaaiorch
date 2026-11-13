@@ -66,7 +66,93 @@ const PHASES: { key: TaskView["phase"]; label: string }[] = [
   { key: "verify", label: "Verify" },
 ];
 
-export function RunPanel({ run }: { run: Run }) {
+/** --approve-plan: the waiting plan, with Build it, an editable copy, and Send back with a reason. */
+function Approval({ a, onAnswer }: { a: NonNullable<Run["approval"]>; onAnswer: (body: Record<string, unknown>) => Promise<boolean> }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [bad, setBad] = useState("");
+  const answer = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    const ok = await onAnswer(body);
+    setBusy(false);
+    if (ok) setEditing(false);
+  };
+  const buildEdited = () => {
+    try {
+      const plan = JSON.parse(text);
+      setBad("");
+      return answer({ plan });
+    } catch (e) {
+      setBad(`Not valid JSON: ${(e as Error).message}`);
+    }
+  };
+  return (
+    <div className="approval">
+      <div className="row">
+        <strong>Round {a.round} plan: waiting for you</strong>
+        <span className="badge warn">approval</span>
+      </div>
+      {a.error && <p className="error">{a.error}</p>}
+      <p>{a.summary}</p>
+      {!editing ? (
+        <ul className="plan">
+          {a.tasks.map((t, i) => (
+            <li key={i}>
+              <span className="agent">{t.agent}</span> <span className="muted">[{t.phase}]</span> {t.task}
+              {t.files?.length ? <span className="muted files"> ({t.files.join(", ")})</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <>
+          <textarea className="plan-edit" rows={14} spellCheck={false} value={text} onChange={(e) => setText(e.target.value)} />
+          {bad && <p className="error">{bad}</p>}
+        </>
+      )}
+      <div className="row">
+        {!editing ? (
+          <>
+            <button className="primary" disabled={busy} onClick={() => answer({})}>
+              Build it
+            </button>
+            <button
+              disabled={busy}
+              onClick={() => {
+                // The task ids are for display; the plan itself has none.
+                setText(JSON.stringify({ summary: a.summary, tasks: a.tasks }, (k, v) => (k === "id" ? undefined : v), 2));
+                setEditing(true);
+              }}
+            >
+              Edit plan
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="primary" disabled={busy} onClick={buildEdited}>
+              Build edited plan
+            </button>
+            <button disabled={busy} onClick={() => setEditing(false)}>
+              Cancel edit
+            </button>
+          </>
+        )}
+        <span className="spacer" />
+        <input placeholder="What should change?" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <button
+          disabled={busy || !reason.trim()}
+          title="The architect plans again with your reason; the run waits for you again"
+          onClick={() => answer({ reject: reason.trim() })}
+        >
+          Send back
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record<string, unknown>) => Promise<boolean> }) {
   const now = useNow(run.status === "running");
   return (
     <section className="card">
@@ -85,6 +171,9 @@ export function RunPanel({ run }: { run: Run }) {
       {/* The checkpoint and its rollback offer are shown by App from last-run.json, which stays correct after a rollback. */}
       {run.checkpoint && run.status === "running" && <p className="muted">Checkpoint: {run.checkpoint}</p>}
       {run.error && <p className="error">{run.error}</p>}
+      {run.approval && run.status === "running" && onAnswer && (
+        <Approval key={run.approval.round + run.approval.summary} a={run.approval} onAnswer={onAnswer} />
+      )}
       {run.branch && (
         <p className="muted">
           Branch: {run.branch.name} (from {run.branch.base}, which stays unchanged)

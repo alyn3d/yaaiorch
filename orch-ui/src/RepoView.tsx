@@ -60,6 +60,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     reviewers: settings.reviewers || undefined,
     branch: settings.branch || settings.pr,
     pr: settings.pr,
+    approvePlan: settings.approvePlan,
     plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;
@@ -207,7 +208,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
       </section>
 
       {run ? (
-        <RunPanel run={run} />
+        <RunPanel run={run} onAnswer={(b) => call("approve", b)} />
       ) : (
         <section className="card">
           <div className="row">

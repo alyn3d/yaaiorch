@@ -525,6 +525,58 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(orch(dir, ["run", "w", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH }).last("pr").error, /no "origin" remote/);
   });
 
+  test("--approve-plan: the run waits; a rejection goes back to the architect; an edited plan is built", async () => {
+    const dir = repo();
+    const pending = join(dir, ".orchestrator", "plan-pending.json");
+    const run = orchAsync(dir, ["run", "x", "--max-rounds", "1", "--approve-plan"], { FAKE_QA: "pass" });
+    await until(() => existsSync(pending));
+    assert.equal(JSON.parse(readFileSync(pending, "utf8")).round, 1);
+    assert.ok(!readFileSync(`${dir}.fake.log`, "utf8").includes("call agent=fe"), "nothing is built while waiting");
+
+    // Send it back with a reason: the architect plans again, and the run waits again.
+    const rej = orch(dir, ["approve", "--reject", "split the api task"]);
+    assert.equal(rej.code, 0, rej.out);
+    await until(() => readFileSync(`${dir}.fake.log`, "utf8").includes("architect: got human rejection: split the api task"));
+    await until(() => existsSync(pending) && !existsSync(join(dir, ".orchestrator", "plan-decision.json")));
+
+    // An invalid edit is refused by `orch approve` itself.
+    const plan = JSON.parse(readFileSync(pending, "utf8")).plan;
+    const stdin = (p) =>
+      spawnSync(process.execPath, [TSX, ORCH, "approve", "--plan-stdin"], {
+        cwd: dir,
+        input: JSON.stringify(p),
+        encoding: "utf8",
+        env: { ...process.env, CLAUDE_BIN: FAKE },
+      });
+    const bad = stdin({ ...plan, tasks: [{ agent: "nobody", phase: "build", task: "t", files: ["a"] }, ...plan.tasks] });
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr + bad.stdout, /nobody/);
+
+    // Approve an edited plan: only the be task and QA.
+    const edited = { ...plan, tasks: plan.tasks.filter((t) => t.agent === "be" || t.agent === "qa") };
+    assert.equal(stdin(edited).status, 0);
+    const { code, out } = await run.done;
+    assert.equal(code, 0, out);
+    const events = out
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith("@@ORCH@@ "))
+      .map((l) => JSON.parse(l.slice(9)));
+    assert.deepEqual(
+      events.filter((e) => e.type === "approval").map((e) => [e.action, e.edited]),
+      [
+        ["reject", false],
+        ["approve", true],
+      ],
+    );
+    assert.equal(events.filter((e) => e.type === "approval_wait").length, 2);
+    assert.deepEqual(
+      events.find((e) => e.type === "plan").tasks.map((t) => t.agent),
+      ["be", "qa"],
+    );
+    assert.ok(!existsSync(pending), "the pending plan is removed");
+    assert.match(orch(dir, ["approve"]).out, /no plan is waiting/);
+  });
+
   test("plan critic: a rejected plan goes back to the architect once; off by default", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "1", "--critic"], { FAKE_QA: "pass", FAKE_CRITIC: "reject-once" });

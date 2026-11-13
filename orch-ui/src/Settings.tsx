@@ -41,6 +41,8 @@ export type RunSettings = {
   branch: boolean;
   /** Push a passed goal's branch and open a pull request with gh (--pr). */
   pr: boolean;
+  /** Wait for you to approve, edit or reject each plan before building (--approve-plan). */
+  approvePlan: boolean;
   plugins: PluginSettings;
 };
 
@@ -55,6 +57,7 @@ export const DEFAULT_SETTINGS: RunSettings = {
   reviewers: "",
   branch: false,
   pr: false,
+  approvePlan: false,
   plugins: DEFAULT_PLUGINS,
 };
 
@@ -139,6 +142,12 @@ export function SettingsPanel({ repo, power, settings, onChange }: { repo: strin
           title="A read-only reviewer checks each round's change for bugs and security problems; a rejection fails the round. One extra call per reviewer per round (QA's model)."
         >
           <input type="checkbox" checked={settings.review} onChange={(e) => onChange({ ...settings, review: e.target.checked })} /> Review lens
+        </label>
+        <label
+          className="check"
+          title="After planning, the run waits for you: build the plan, edit it, or send it back to the architect with a reason. Nothing is built until you answer."
+        >
+          <input type="checkbox" checked={settings.approvePlan} onChange={(e) => onChange({ ...settings, approvePlan: e.target.checked })} /> Approve plans
         </label>
         <label
           className="check"

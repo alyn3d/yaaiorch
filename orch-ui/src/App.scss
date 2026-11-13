@@ -587,3 +587,24 @@ input.limit {
     font-family: ui-monospace, monospace;
   }
 }
+
+// --approve-plan: the waiting plan in the run panel.
+.approval {
+  border: 1px solid $warn;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.6rem 0;
+  ul.plan {
+    margin: 0.4rem 0;
+    padding-left: 1.2rem;
+  }
+  .plan-edit {
+    width: 100%;
+    font-family: ui-monospace, monospace;
+    font-size: 0.85em;
+    box-sizing: border-box;
+  }
+  input {
+    min-width: 14rem;
+  }
+}

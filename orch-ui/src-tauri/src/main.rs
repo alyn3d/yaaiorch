@@ -560,6 +560,7 @@ struct Extra {
     reviewers: Option<String>,
     branch: Option<bool>,
     pr: Option<bool>,
+    approve_plan: Option<bool>,
     plugins: Option<PluginOpts>,
 }
 
@@ -632,6 +633,9 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if extra.pr.unwrap_or(false) {
         v.push("--pr".into());
+    }
+    if extra.approve_plan.unwrap_or(false) {
+        v.push("--approve-plan".into());
     }
     if let Some(p) = &extra.plugins {
         if p.off.unwrap_or(false) {
@@ -767,6 +771,7 @@ fn run_goal(
     reviewers: Option<String>,
     branch: Option<bool>,
     pr: Option<bool>,
+    approve_plan: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
@@ -783,6 +788,7 @@ fn run_goal(
         reviewers,
         branch,
         pr,
+        approve_plan,
         plugins,
     };
     let mut args = vec!["run".to_string()];
@@ -811,6 +817,7 @@ fn run_loop(
     reviewers: Option<String>,
     branch: Option<bool>,
     pr: Option<bool>,
+    approve_plan: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     let extra = Extra {
@@ -824,6 +831,7 @@ fn run_loop(
         reviewers,
         branch,
         pr,
+        approve_plan,
         plugins,
     };
     let mut args = vec!["loop".to_string()];
@@ -883,6 +891,38 @@ fn learn_repo(
     let mut args = vec!["learn".to_string()];
     args.extend(flags(&power, max_rounds.unwrap_or(1), false, &extra));
     request_start(&app, &repo, args, "learn repo".into())
+}
+
+/// `orch approve` for a run waiting with --approve-plan: approve (an edited plan goes on stdin) or reject with a reason.
+#[tauri::command(async)]
+fn approve_plan(app: AppHandle, repo: String, plan: Option<Value>, reject: Option<String>) -> Result<(), String> {
+    use std::io::Write;
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let mut args = vec!["approve".to_string()];
+    match (&reject, &plan) {
+        (Some(r), _) => args.extend(["--reject".into(), r.chars().take(4000).collect()]),
+        (None, Some(_)) => args.push("--plan-stdin".into()),
+        _ => {}
+    }
+    let mut child = node_cmd(&app, &dir, &args)?
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if let (None, Some(p), Some(mut stdin)) = (&reject, &plan, child.stdin.take()) {
+        stdin.write_all(p.to_string().as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch approve failed")
+            .to_string());
+    }
+    Ok(())
 }
 
 /// `orch share`: proposes a CLAUDE.md section on an orchestrator/claude-md-* branch (the working tree is untouched).
@@ -1087,6 +1127,7 @@ fn main() {
             rollback,
             learn_repo,
             share_repo,
+            approve_plan,
             stop_after,
             doctor,
             plugins

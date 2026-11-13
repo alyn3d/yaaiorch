@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Plan approval** (`--approve-plan`, **Approve plans** in the run settings): after planning, the run waits for
+  you to build the plan, edit it, or send it back to the architect with a reason. The run panel shows the plan
+  with those three buttons; in a terminal, `orch approve [--reject "why"] [--plan-stdin]`. New `approval_wait`
+  and `approval` events.
 - **A branch and a pull request per goal** (`--branch`, `--pr`; **Branch per goal** and **Open pull request** in
   the run settings): each goal runs on its own `orch/<id>-<slug>` branch and orch switches back afterwards, so
   your branch never changes. With `--pr`, a passed goal is pushed and a pull request opened with `gh`; a
