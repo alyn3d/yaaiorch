@@ -407,8 +407,22 @@
       }
 
       .feature:nth-child(2) .feature-mark,
-      .feature:nth-child(4) .feature-mark {
+      .feature:nth-child(4) .feature-mark,
+      .feature:nth-child(6) .feature-mark {
         color: var(--violet);
+      }
+
+      .feature code {
+        padding: 1px 5px;
+        border: 1px solid #39425e;
+        border-radius: 5px;
+        background: #1a2134;
+        color: var(--text);
+        font:
+          12px ui-monospace,
+          SFMono-Regular,
+          Consolas,
+          monospace;
       }
 
       .feature h3 {
@@ -675,7 +689,10 @@
               Read the guide
             </a>
           </div>
-          <p class="requirements">Runs on Claude Code. Requires Node.js 20+; git is recommended.</p>
+          <p class="requirements">
+            Runs on Claude Code (installed and logged in) and git. The desktop app brings its own Node.js; the CLI needs
+            Node.js 20+.
+          </p>
         </div>
 
         <div class="loop-card" aria-label="The YAAIORCH development loop">
@@ -749,16 +766,35 @@
             <span class="feature-mark" aria-hidden="true">03</span>
             <h3>Built for supervised autonomy</h3>
             <p>
-              Git checkpoints, round-by-round commits, rollback, per-goal budgets, timeouts, and stuck detection help
-              you review and recover work.
+              Git checkpoints, a commit per round, rollback, budgets, timeouts and stuck detection help you review and
+              recover work. Protected paths, a secret scan before every commit and an optional plan approval step keep
+              unattended runs in bounds.
             </p>
           </article>
           <article class="feature">
             <span class="feature-mark" aria-hidden="true">04</span>
             <h3>Use it your way</h3>
             <p>
-              Run the CLI, manage projects in the browser, or use the desktop app. Queue goals, work across repos, and
-              bring your own Claude Code agents and skills.
+              Run the CLI, manage projects in the browser, or use the desktop app, which brings its own Node.js. Queue
+              goals, work across repos, and bring your own Claude Code agents and skills.
+            </p>
+          </article>
+          <article class="feature">
+            <span class="feature-mark" aria-hidden="true">05</span>
+            <h3>Whole projects from one brief</h3>
+            <p>
+              Hand it a spec or a big brief. The architect splits it into goals that build on each other, the queue works
+              through them with retries and one budget, and a coverage check adds what is still missing. Start from an
+              empty folder with <code>orch new</code>.
+            </p>
+          </article>
+          <article class="feature">
+            <span class="feature-mark" aria-hidden="true">06</span>
+            <h3>From issue to pull request</h3>
+            <p>
+              Label a GitHub issue and YAAIORCH picks it up: it works on its own branch, opens a pull request that
+              closes the issue, comments on progress, and tries to fix the pull request's CI when a check fails. You
+              review pull requests, not runs.
             </p>
           </article>
         </div>
@@ -783,7 +819,11 @@
 
 <span class="comment"># Describe the change; cap the spend</span>
 <span class="prompt">$</span> orch run "Add a health endpoint with a test" \
-    --power economy --max-cost 2</pre>
+    --power economy --max-cost 2
+
+<span class="comment"># Or hand it a whole brief and let it work through the goals</span>
+<span class="prompt">$</span> orch split --brief-file BRIEF.md \
+    --start --max-cost-total 20</pre>
         </div>
       </section>
 
