@@ -166,9 +166,11 @@ function Approval({ a, onAnswer }: { a: NonNullable<Run["approval"]>; onAnswer: 
 export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record<string, unknown>) => Promise<boolean> }) {
   const now = useNow(run.status === "running");
   return (
-    <section className="card">
-      <div className="row">
-        <h2>{run.goal.slice(0, 80)}</h2>
+    <section className="card run-card">
+      <div className="card-head">
+        <h3 className="run-title" title={run.goal}>
+          {run.goal.slice(0, 80)}
+        </h3>
         <span className={`badge ${run.status === "running" ? "running" : run.status === "passed" ? "done" : "failed"}`}>
           {run.dryRun && run.status === "passed" ? "plan only" : run.status}
         </span>

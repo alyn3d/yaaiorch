@@ -5,6 +5,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Changed
+- **A new look for the app**: a left sidebar with the repos and their status (Overview, Open repo, New project,
+  and limits, parallel runs and notifications at the bottom), and a cleaner repo page: a goal composer with the run
+  settings folded into one panel, the Big brief in its own card, and from 1180px the run and live output beside
+  the queue. One dark theme built on design tokens, pill badges, switches, status stripes on tasks, a modal for New
+  project, and empty states that say what to do next.
+
 ### Added
 - **orch sees its pull requests through CI**: with `--pr`, orch waits for the pull request's checks; when one
   fails, it runs a fix goal on the PR branch with the failing job's log (up to `--ci-fixes N`, default 2; it may

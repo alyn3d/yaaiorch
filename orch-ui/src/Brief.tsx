@@ -84,7 +84,10 @@ export function BriefBox({
 
   return (
     <details className="brief-box" open={!!goals.length || undefined}>
-      <summary>Big brief</summary>
+      <summary>
+        Big brief
+        <span className="summary-meta">split a whole spec into goals</span>
+      </summary>
       <p className="muted">
         Paste a whole brief or spec. The architect splits it into goals in build order; you edit the list, then queue it. Every goal's architect also reads the
         brief, and when the queue runs dry a coverage check queues what is still missing.

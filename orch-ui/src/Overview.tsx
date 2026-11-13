@@ -23,7 +23,9 @@ export function Overview({
 }) {
   return (
     <section className="card overview">
-      <h2>All repos</h2>
+      <div className="card-head">
+        <h3>All repos</h3>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>
