@@ -15,6 +15,8 @@ export type Item = {
   seconds?: number;
   /** The GitHub issue it came from (orch intake). */
   issue?: number;
+  /** 1 (first) to 9; 3 when not set. */
+  priority?: number;
 };
 export type Round = { round: number; plan: string; touched: string[]; passed: boolean; failures: string[]; power?: Power; cost?: number };
 /** .orchestrator/last-run.json, written by orch.ts. `checkpoint` is set only while that branch still exists. */

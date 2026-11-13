@@ -193,7 +193,9 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   **Import issues** in the queue section): open GitHub issues with a label (read with `gh`) and the unchecked
   `- [ ]` items of a backlog file become goals, each once; your files are not changed. `orch loop --intake
   github:LABEL` (and **Loop (watch)** with a label) keeps pulling new issues in, and with `--pr` each pull request
-  says `Closes #N`. **Anyone who can set that label can direct the agents**: on GitHub that takes triage access,
+  says `Closes #N`. orch comments on the issue when its goal starts, is done (with the pull request), fails (with
+  what was still wrong) or is blocked (`--no-issue-comments` to stay quiet), and labels `p1`-`p9` or
+  `priority: high|low` decide which runnable goal goes first. **Anyone who can set that label can direct the agents**: on GitHub that takes triage access,
   so pick a label only people you trust can set.
 - **Budget and progress for a whole queue.** **Budget $** in the queue section caps everything the queue runs
   together (Process queue, Loop, Queue and start; `--max-cost-total`), next to each goal's own **Max $**; the New

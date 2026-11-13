@@ -1121,6 +1121,61 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(o.ev("secrets").length, 0);
   });
 
+  test("issues: priority labels order the goals; each issue hears when its goal starts, is done, fails or is blocked", () => {
+    const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+    const dir = repo();
+    const ghLog = `${dir}.gh.log`;
+    const env = {
+      FAKE_QA: "pass",
+      GH_BIN: FAKE_GH,
+      FAKE_GH_LOG: ghLog,
+      FAKE_QA_FAIL_GOAL: "Broken thing",
+      FAKE_GH_ISSUES: JSON.stringify([
+        { number: 2, title: "Later thing", body: "", labels: ["orch", "priority: low"] },
+        { number: 3, title: "Broken thing", body: "", labels: ["orch"] },
+        { number: 4, title: "Urgent thing", body: "", labels: ["orch", "p1"] },
+      ]),
+    };
+    const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--retries", "0", "--no-coverage", "--intake", "github:orch"], env);
+    assert.equal(r.code, 0, r.out);
+    const q = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    assert.deepEqual(
+      q.map((i) => [i.issue, i.priority]),
+      [
+        [2, 5],
+        [3, undefined],
+        [4, 1],
+      ],
+    );
+    assert.deepEqual(
+      r.ev("queue_item").map((e) => e.goal),
+      ["Urgent thing", "Broken thing", "Later thing"],
+      "p1 first, then normal, then low",
+    );
+
+    const comments = readFileSync(ghLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((c) => c.args[1] === "comment");
+    const on = (n) => comments.filter((c) => c.args[2] === String(n)).map((c) => c.body.split("\n")[0]);
+    assert.deepEqual(on(4), ["Working on this now (queue goal 3, power heavy).", "Done."]);
+    assert.equal(on(3)[1], "Could not finish this.");
+    assert.match(comments.find((c) => c.args[2] === "3" && c.body.startsWith("Could not")).body, /fake failure for this goal[\s\S]*orch retry 2/);
+    assert.ok(
+      comments.every((c) => c.args.includes("--body-file") && !/#\d/.test(c.body.split("\n")[0])),
+      "no #N that GitHub would link to an issue",
+    );
+
+    const quiet = repo();
+    const q2 = orch(quiet, ["loop", "--until-empty", "--max-rounds", "1", "--no-coverage", "--intake", "github:orch", "--no-issue-comments"], {
+      ...env,
+      FAKE_GH_LOG: `${quiet}.gh.log`,
+    });
+    assert.equal(q2.code, 0, q2.out);
+    assert.ok(!readFileSync(`${quiet}.gh.log`, "utf8").includes('"comment"'));
+  });
+
   test("--max-cost-total: the loop stops before the next goal once its budget is spent", () => {
     const dir = repo();
     for (const g of ["one", "two", "three"]) orch(dir, ["add", g]);

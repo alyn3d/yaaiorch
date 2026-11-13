@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Issues hear back, and priorities count**: a goal from a GitHub issue comments on it when it starts, is done
+  (with the pull request), fails for good (with what was still wrong) or is blocked; `--no-issue-comments` to
+  stay quiet. Labels `p1`-`p9` or `priority: high|low` (and `(p1)` in a backlog item) decide which runnable goal
+  goes first; the queue shows them.
 - **Protected paths**: the config's `protect` list (default `.github/workflows/`; `--protect`) is off limits to
   agents: a plan that lists such a file goes back to the architect, and a change there anyway is reverted and
   fails the round. New `protected` event.

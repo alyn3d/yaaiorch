@@ -259,6 +259,12 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
                   #{i.id} {i.goal}
                   {i.after?.length ? <span className="muted"> (after {i.after.map((d) => `#${d}`).join(", ")})</span> : null}
                   {i.issue ? <span className="muted"> · issue #{i.issue}</span> : null}
+                  {i.priority && i.priority !== 3 ? (
+                    <span className="muted" title="Priority from the issue's labels: p1 runs first">
+                      {" "}
+                      · p{i.priority}
+                    </span>
+                  ) : null}
                 </span>
                 {i.note && <span className="note">{i.note}</span>}
                 {(i.status === "failed" || i.status === "blocked") && (

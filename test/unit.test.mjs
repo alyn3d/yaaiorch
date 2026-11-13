@@ -374,3 +374,15 @@ describe("protected paths and secret formats", () => {
     assert.ok(!o.ENV_FILE.test(".env.example") && !o.ENV_FILE.test("src/env.ts") && !o.ENV_FILE.test(".envrc.sample"));
   });
 });
+
+describe("priority from labels", () => {
+  test("p1-p9, prefixed, and words", () => {
+    assert.equal(o.priorityOf(["bug", "p1"]), 1);
+    assert.equal(o.priorityOf(["orch:p2"]), 2);
+    assert.equal(o.priorityOf(["Priority: High"]), 2);
+    assert.equal(o.priorityOf(["urgent"]), 1);
+    assert.equal(o.priorityOf(["priority/low"]), 5);
+    assert.equal(o.priorityOf(["bug", "enhancement"]), undefined);
+    assert.equal(o.priorityOf(["p0", "p10"]), undefined);
+  });
+});

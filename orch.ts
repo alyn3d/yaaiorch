@@ -86,6 +86,9 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   .github/workflows/; also "protect" in config ([] for none)
          --no-secret-scan   do not check the changes for keys, tokens, private keys and .env files before each commit
                   (by default a finding blocks the commit and fails the round); also "secretScan": false
+         --no-issue-comments   loop: do not comment on the GitHub issue a goal came from (by default: when it starts,
+                  is done, fails or is blocked); also "issueComments": false. Labels p1-p9 or priority: high|low
+                  order the goals (p1 first)
          --retries N   loop: try a failed goal again N times (default 1), one power tier higher each time; after
                   that, goals that build on it are marked blocked ("orch retry ID" runs them again); also "retries"
          --no-coverage   when the queue runs dry after goals from a brief, do not check the brief against the code
@@ -143,6 +146,8 @@ type Item = {
   /** Where it came from (orch intake): a GitHub issue number, or a BACKLOG.md item's key. */
   issue?: number;
   backlog?: string;
+  /** 1 (first) to 9 (last); 3 when not given. From a p1-p9 / priority label, or "(p1)" in a backlog item. */
+  priority?: number;
 };
 type Entry = { name: string; description: string; builtin?: boolean };
 type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string; session?: string };
@@ -543,6 +548,7 @@ type Config = {
   /** Paths no task may change ("dir/", "file", "*.lock", "infra/**"); default [".github/workflows/"]. */
   protect?: string[];
   secretScan?: boolean;
+  issueComments?: boolean;
   /** Installs dependencies (for example "npm install"), run by orch before the checks when a manifest changed. */
   setup?: string;
   /** Files whose change triggers `setup` (default: the usual manifests and lock files). */
@@ -1754,6 +1760,8 @@ type Opts = {
   protect: string[];
   /** Refuse to commit known key formats, private keys and .env files. */
   secretScan: boolean;
+  /** Comment on the GitHub issue a goal came from (start, done, failed, blocked). */
+  issueComments: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -3098,6 +3106,41 @@ async function waitForReset(e: UsageLimit) {
   while (Date.now() < until) await sleep(Math.min(5000, until - Date.now()));
 }
 
+// ---------- priority and issue comments ----------
+const DEFAULT_PRIORITY = 3;
+
+/** A priority from label names: "p1".."p9" (also "orch:p2", "priority:p1"), or "priority: high|medium|low" / "urgent". */
+function priorityOf(labels: string[]): number | undefined {
+  for (const l of labels.map((x) => x.trim().toLowerCase())) {
+    const n = /^(?:orch[:/ -]?|priority[:/ -]?)?p([1-9])$/.exec(l)?.[1];
+    if (n) return Number(n);
+    const word = /^(?:priority[:/ -]?\s*)?(urgent|critical|high|medium|normal|low)$/.exec(l)?.[1];
+    if (word) return { urgent: 1, critical: 1, high: 2, medium: 3, normal: 3, low: 5 }[word];
+  }
+  return undefined;
+}
+
+let ISSUE_COMMENTS = true;
+
+/** A comment on the GitHub issue a goal came from. Never throws: a failed comment is only reported. */
+function commentIssue(issue: number | undefined, body: string) {
+  if (!issue || !ISSUE_COMMENTS) return;
+  try {
+    const gh = resolveCommand(process.env.GH_BIN ?? "gh");
+    if (gh.missing) throw new Error("gh not found");
+    const r = spawnSync(gh.file, [...gh.pre, "issue", "comment", String(issue), "--body-file", "-"], {
+      input: `${body}\n\n<sub>YAAIORCH</sub>\n`,
+      encoding: "utf8",
+      shell: gh.shell,
+      windowsHide: true,
+      timeout: 60_000,
+    });
+    if (r.status !== 0) throw new Error((r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 200));
+  } catch (e) {
+    console.warn(`could not comment on issue #${issue} (${msg(e)})`);
+  }
+}
+
 // ---------- orch intake: goals from GitHub issues with a label, or from a backlog file ----------
 type IntakeSource = { kind: "github"; label: string } | { kind: "backlog"; file: string };
 
@@ -3119,32 +3162,42 @@ function parseIntake(v: unknown): IntakeSource[] {
 }
 
 /** Open issues with the label, oldest first (gh, in this repo). */
-function githubIssues(label: string): { number: number; title: string; body: string }[] {
+function githubIssues(label: string): { number: number; title: string; body: string; priority?: number }[] {
   const gh = resolveCommand(process.env.GH_BIN ?? "gh");
   if (gh.missing) throw new Error("gh (GitHub CLI) was not found; install it and run gh auth login to read issues");
-  const r = spawnSync(gh.file, [...gh.pre, "issue", "list", "--label", label, "--state", "open", "--limit", "100", "--json", "number,title,body"], {
+  const r = spawnSync(gh.file, [...gh.pre, "issue", "list", "--label", label, "--state", "open", "--limit", "100", "--json", "number,title,body,labels"], {
     encoding: "utf8",
     shell: gh.shell,
     windowsHide: true,
     timeout: 60_000,
   });
   if (r.status !== 0) throw new Error(`gh issue list failed: ${(r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 300)}`);
-  const list = JSON.parse(r.stdout || "[]") as { number?: unknown; title?: unknown; body?: unknown }[];
+  const list = JSON.parse(r.stdout || "[]") as { number?: unknown; title?: unknown; body?: unknown; labels?: unknown }[];
   return list
     .filter((i) => Number.isInteger(i.number) && typeof i.title === "string")
-    .map((i) => ({ number: i.number as number, title: (i.title as string).trim(), body: typeof i.body === "string" ? i.body.trim() : "" }))
+    .map((i) => ({
+      number: i.number as number,
+      title: (i.title as string).trim(),
+      body: typeof i.body === "string" ? i.body.trim() : "",
+      priority: priorityOf(Array.isArray(i.labels) ? i.labels.map((l) => String((l as { name?: unknown })?.name ?? l)) : []),
+    }))
     .sort((a, b) => a.number - b.number);
 }
 
 /** Unchecked "- [ ] ..." items of a markdown file, with their indented lines; the key is a hash of the text. */
-function backlogItems(file: string): { key: string; text: string }[] {
+function backlogItems(file: string): { key: string; text: string; priority?: number }[] {
   if (!existsSync(file)) throw new Error(`backlog file ${file} not found`);
-  const out: { key: string; text: string }[] = [];
+  const out: { key: string; text: string; priority?: number }[] = [];
   let cur: string[] | null = null;
   const flush = () => {
     if (cur?.length) {
       const text = cur.join("\n").trim();
-      out.push({ key: createHash("sha256").update(text).digest("hex").slice(0, 16), text });
+      const pr = /^\((p[1-9])\)\s*/i.exec(text);
+      out.push({
+        key: createHash("sha256").update(text).digest("hex").slice(0, 16),
+        text: pr ? text.slice(pr[0].length) : text,
+        ...(pr ? { priority: Number(pr[1].slice(1)) } : {}),
+      });
     }
     cur = null;
   };
@@ -3166,14 +3219,26 @@ function intake(sources: IntakeSource[]): number[] {
   for (const src of sources) {
     const found =
       src.kind === "github"
-        ? githubIssues(src.label).map((i) => ({ goal: `${i.title}${i.body ? `\n\n${i.body.slice(0, 4000)}` : ""}`, issue: i.number, backlog: undefined }))
-        : backlogItems(src.file).map((b) => ({ goal: b.text.slice(0, 4000), issue: undefined, backlog: b.key }));
+        ? githubIssues(src.label).map((i) => ({
+            goal: `${i.title}${i.body ? `\n\n${i.body.slice(0, 4000)}` : ""}`,
+            issue: i.number,
+            backlog: undefined,
+            priority: i.priority,
+          }))
+        : backlogItems(src.file).map((b) => ({ goal: b.text.slice(0, 4000), issue: undefined, backlog: b.key, priority: b.priority }));
     const ids = updateQueue((q) => {
       const made: number[] = [];
       for (const f of found) {
         if (q.some((i) => (f.issue && i.issue === f.issue) || (f.backlog && i.backlog === f.backlog))) continue;
         const id = Math.max(0, ...q.map((i) => i.id)) + 1;
-        q.push({ id, goal: f.goal, status: "pending", ...(f.issue ? { issue: f.issue } : {}), ...(f.backlog ? { backlog: f.backlog } : {}) });
+        q.push({
+          id,
+          goal: f.goal,
+          status: "pending",
+          ...(f.issue ? { issue: f.issue } : {}),
+          ...(f.backlog ? { backlog: f.backlog } : {}),
+          ...(f.priority ? { priority: f.priority } : {}),
+        });
         made.push(id);
       }
       return made;
@@ -3186,10 +3251,18 @@ function intake(sources: IntakeSource[]): number[] {
   return added;
 }
 
+/** Comment on the GitHub issue a queue goal came from, if it came from one. */
+const commitIssueNote = (item: Item, body: string) => commentIssue(item.issue, body);
+
 /** The first pending goal whose goals-it-needs are all done (a goal never waits on a later one). */
 function nextRunnable(q: Item[]): Item | undefined {
   const status = new Map(q.map((i) => [i.id, i.status]));
-  return q.find((i) => i.status === "pending" && (i.after ?? []).every((d) => status.get(d) === "done" || !status.has(d)));
+  const runnable = q.filter((i) => i.status === "pending" && (i.after ?? []).every((d) => status.get(d) === "done" || !status.has(d)));
+  // The most urgent first (p1 before p3), then in queue order; dependencies already decided what may run.
+  return runnable.reduce<Item | undefined>(
+    (best, i) => (!best || (i.priority ?? DEFAULT_PRIORITY) < (best.priority ?? DEFAULT_PRIORITY) ? i : best),
+    undefined,
+  );
 }
 
 /** Mark pending goals that need a failed or blocked one as blocked (repeatedly, down the chain). Returns them. */
@@ -3238,6 +3311,7 @@ function retryGoal(id: number) {
 }
 
 async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
+  ISSUE_COMMENTS = o.issueComments;
   if (o.dryRun) throw new Error("--dry-run cannot be used with loop: the goal would stay pending and be planned again forever");
   // The run lock guarantees one orchestrator per repo, so anything still "running" was interrupted (crash or Stop).
   const stale = updateQueue((q) => {
@@ -3280,6 +3354,8 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     for (const b of blocked) {
       console.warn(`goal #${b.id} is blocked: ${b.note}`);
       emit("blocked", { id: b.id, goal: b.goal, note: b.note });
+      // "#N" would link to issue N on GitHub: say "queue goal N".
+      commitIssueNote(b, `Waiting: this ${(b.note ?? "").replace(/#(\d+)/g, "queue goal $1")}.`);
     }
     if (!item) {
       if (o.intake.length) {
@@ -3300,6 +3376,7 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     }
     console.log(`\n##### goal #${item.id}: ${item.goal}`);
     emit("queue_item", { id: item.id, goal: item.goal });
+    if (!item.attempts && !item.resumeFrom) commitIssueNote(item, `Working on this now (queue goal ${item.id}, power ${item.power ?? o.power}).`);
     /** "budget": the loop's budget (not the goal's own --max-cost) ran out during the goal; it is not the goal's fault. */
     let outcome: "done" | "failed" | "limit" | "budget" = "failed";
     let resetAt: number | undefined;
@@ -3364,6 +3441,20 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
     });
     // For UIs: the queue on disk changed (status, cost, time), read it again.
     emit("queue_changed", { id: item.id });
+    // The issue it came from hears how it ended (not about a retry or a pause: those come back).
+    const final = readQueue().find((i) => i.id === item.id);
+    if (final?.issue && (final.status === "done" || final.status === "failed")) {
+      const last = readJsonFile<LastRun | null>(LAST_RUN, null);
+      const fails = ((last?.state.at(-1) as { failures?: string[] } | undefined)?.failures ?? []).slice(0, 3);
+      commitIssueNote(
+        final,
+        final.status === "done"
+          ? `Done${last?.pr ? `: pull request ${last.pr}` : last?.branch ? ` on branch \`${last.branch}\`` : ""}.`
+          : `Could not finish this${final.attempts ? ` after ${final.attempts + 1} attempts` : ""}.` +
+              (fails.length ? `\n\nWhat was still wrong:\n${fails.map((f) => `- ${f.replace(/\s+/g, " ").slice(0, 300)}`).join("\n")}` : "") +
+              `\n\nAfter a fix, put it back in the queue with \`orch retry ${final.id}\` (or Retry in the UI).`,
+      );
+    }
     // Never pick the same goal again with the few cents left: stop here.
     if (outcome === "budget") {
       console.log(`loop budget of ${usd(o.maxCostTotal!)} used up (${usd(spentTotal)} spent): goal #${item.id} is pending again`);
@@ -3440,6 +3531,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
         ? cfg.protect.map(String)
         : [".github/workflows/"];
   const secretScan = !values["no-secret-scan"] && cfg.secretScan !== false;
+  const issueComments = !values["no-issue-comments"] && cfg.issueComments !== false;
   const retries = Number(values.retries ?? cfg.retries ?? 1);
   if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
   return {
@@ -3468,6 +3560,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     intake,
     protect,
     secretScan,
+    issueComments,
     strictFiles,
     maxCostTotal,
   };
@@ -3513,6 +3606,7 @@ async function main() {
       intake: { type: "string" },
       protect: { type: "string" },
       "no-secret-scan": { type: "boolean", default: false },
+      "no-issue-comments": { type: "boolean", default: false },
       github: { type: "string" },
       backlog: { type: "string" },
       setup: { type: "string" },
@@ -3650,7 +3744,22 @@ async function main() {
 }
 
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
-export { protectRe, protectedBy, SECRETS, ENV_FILE, validate, extractJson, parseReset, failureKey, badPath, normPath, asVerdict, asReview, TRANSIENT_RE };
+export {
+  priorityOf,
+  protectRe,
+  protectedBy,
+  SECRETS,
+  ENV_FILE,
+  validate,
+  extractJson,
+  parseReset,
+  failureKey,
+  badPath,
+  normPath,
+  asVerdict,
+  asReview,
+  TRANSIENT_RE,
+};
 
 if (!process.env.ORCH_NO_MAIN)
   main().catch((e) => {

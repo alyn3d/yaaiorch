@@ -18,10 +18,13 @@ if (process.env.FAKE_GH_FAIL) {
 if (args[0] === "issue" && args[1] === "list") {
   const label = args[args.indexOf("--label") + 1];
   const issues = JSON.parse(process.env.FAKE_GH_ISSUES ?? "[]").filter((i) => !i.labels || i.labels.includes(label));
-  for (const i of issues) delete i.labels;
+  // As gh returns them: labels are objects with a name.
+  for (const i of issues) i.labels = (i.labels ?? []).map((name) => ({ name }));
   console.log(JSON.stringify(issues));
   process.exit(0);
 }
+// `gh issue comment N --body-file -`: logged (args and body) above.
+if (args[0] === "issue" && args[1] === "comment") process.exit(0);
 if (args[0] === "pr" && args[1] === "create") {
   const head = args[args.indexOf("--head") + 1];
   console.log(`https://github.com/example/repo/pull/${head.length}`);
