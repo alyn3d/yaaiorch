@@ -110,7 +110,14 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
     case "unowned":
       return run && upd(run, ev.round, (r) => ({ ...r, unowned: { files: ev.files ?? [], strict: !!ev.strict } }));
     case "approval_wait":
-      return run && { ...run, approval: { round: ev.round, summary: ev.summary, tasks: ev.tasks ?? [], error: ev.error } };
+      // The architect is done; the round now waits for the user, not for planning.
+      return (
+        run &&
+        upd({ ...run, approval: { round: ev.round, summary: ev.summary, tasks: ev.tasks ?? [], error: ev.error } }, ev.round, (r) => ({
+          ...r,
+          architect: "done",
+        }))
+      );
     case "approval":
       return run && { ...run, approval: undefined };
     case "goal_branch":

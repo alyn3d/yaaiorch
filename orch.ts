@@ -33,9 +33,12 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
-  orch new DIR "<spec>" [--spec-file FILE] [--setup CMD]   start a project in a new or empty folder: git, SPEC.md,
-                        a .gitignore, and the spec split into queued goals (scaffold first) with suggested checks
-                        in .orchestrator/config.json; then run "orch loop --until-empty" there
+  orch split "<brief>" [--brief-file FILE] [--start]   split a big brief into queued goals for this repo (kept in
+                        .orchestrator/spec.md, which every goal's architect reads); --start runs the loop right away;
+                        --propose only shows the split; --accept queues {brief, goals} JSON from stdin
+  orch new DIR "<spec>" [--spec-file FILE] [--setup CMD] [--start]   start a project in a new or empty folder: git,
+                        SPEC.md, a .gitignore, and the spec split into queued goals (scaffold first) with suggested
+                        checks in .orchestrator/config.json; --start runs the loop, else "orch loop --until-empty" there
   orch approve [--reject "WHY"] [--plan-stdin]   answer a run waiting with --approve-plan: build the plan (edited:
                         a plan as JSON on stdin), or send it back to the architect with your reason
   orch share [--dry-run]  propose what orch learned (brief and lasting notes) as a CLAUDE.md section, committed
@@ -72,6 +75,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   (each goal also gets at most what is left as its --max-cost); also "maxCostTotal" in config
          --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
                   reused across rounds and goals); also "brief": false in config
+         --no-coverage   when the queue runs dry after goals from a brief, do not check the brief against the code
+                  and queue what is missing (at most twice per brief); also "coverage": false in config
          --approve-plan   after planning, wait until you approve the plan ("orch approve", or the UI), edit it or
                   send it back with a reason; also "approvePlan": true in config
          --branch   run each goal on its own branch, orch/<id>-<slug>, and switch back afterwards: your branch is
@@ -103,7 +108,7 @@ type Verdict = { passed: boolean; failures: string[]; notes?: string[] };
 /** The plan critic's answer. */
 type Review = { approved: boolean; issues: string[] };
 /** `note` says why a pending goal is waiting (for example a usage-limit reset). */
-type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed"; note?: string };
+type Item = { id: number; goal: string; status: "pending" | "running" | "done" | "failed"; note?: string; fromSpec?: boolean };
 type Entry = { name: string; description: string; builtin?: boolean };
 type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string; session?: string };
 
@@ -496,6 +501,7 @@ type Config = {
   branch?: boolean;
   pr?: boolean;
   approvePlan?: boolean;
+  coverage?: boolean;
   /** Installs dependencies (for example "npm install"), run by orch before the checks when a manifest changed. */
   setup?: string;
   /** Files whose change triggers `setup` (default: the usual manifests and lock files). */
@@ -1500,6 +1506,8 @@ type Opts = {
   pr: boolean;
   /** Wait for a human to approve, edit or reject each plan before building. */
   approvePlan: boolean;
+  /** When the queue runs dry, check the brief (spec.md) against the code and queue what is missing. */
+  coverage: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1599,6 +1607,7 @@ async function makePlan(
           `words: stack, layout, conventions, how to run the checks).\n`
         : "") +
     (notes ? `\nNotes from earlier goals in this repo (pitfalls and decisions; follow them unless this goal says otherwise):\n${notes}\n` : "") +
+    specForPrompt() +
     (previous ? `\n${previous}\n` : "") +
     (failures.length ? `\nPrevious QA failures to fix:\n- ${failures.join("\n- ")}\n` : "") +
     (note ? `\n${note}\n` : "") +
@@ -1968,22 +1977,154 @@ async function critique(critic: Entry, goal: string, plan: Plan, brief: string |
   }
 }
 
-// ---------- orch new: start a project from a spec ----------
+// ---------- big briefs: orch split (an existing repo) and orch new (an empty folder) ----------
+/** The whole brief a queue was split from; every goal's architect reads it (MAX_SPEC_PROMPT of it). */
+const SPEC_FILE = join(DIR, "spec.md");
+/** Coverage passes per brief, and which goals they have seen (see coverageCheck). */
+const SPEC_STATE = join(DIR, "spec-state.json");
+const MAX_SPEC = 100_000;
+const MAX_SPEC_PROMPT = 15_000;
+const MAX_GOALS = 30;
+const COVERAGE_PASSES = 2;
+
 const GOALS_FORMAT = `
 
 ## Reply format
 Do not create or edit any file. Reply with exactly one JSON object and nothing else:
-{"goals": ["<goal 1: the scaffold>", "<goal 2>", ...], "checks": {"<name>": "<shell command>"}}`;
+{"goals": ["<goal 1>", "<goal 2>", ...], "checks": {"<name>": "<shell command>"}}
+"checks" only for a new project; leave it out otherwise.`;
+
+const readSpec = (): string => (existsSync(SPEC_FILE) ? readFileSync(SPEC_FILE, "utf8").trim() : "");
+
+/** The spec as the architect of one goal sees it: the start and, for a long one, a note that it goes on. */
+function specForPrompt(): string {
+  const spec = readSpec();
+  if (!spec) return "";
+  const cut = spec.length > MAX_SPEC_PROMPT;
+  return (
+    `\nThe user's brief this goal is part of (build only this goal, but keep the rest in mind so its design fits what comes later` +
+    `${cut ? `; the brief is cut here, the whole of it is in ${SPEC_FILE}` : ""}):\n${spec.slice(0, MAX_SPEC_PROMPT)}\n`
+  );
+}
+
+/** Goals from a splitter reply: non-empty strings, at most MAX_GOALS, each at most 3000 characters. */
+function asGoals(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((g): g is string => typeof g === "string" && !!g.trim())
+    .map((g) => g.trim().slice(0, 3000))
+    .slice(0, MAX_GOALS);
+}
+
+/**
+ * One read-only architect call that splits a brief into goals in build order. `fresh`: an empty project, whose first
+ * goal sets it up and which also gets suggested checks. Emits `split_proposal` (goals, checks, cost).
+ */
+async function splitBrief(brief: string, o: Opts, fresh: boolean, setup?: string) {
+  const roster = discoverAgents();
+  const architect = roster.find((a) => a.name === "architect")!;
+  writeBuiltins(roster);
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  writeAgentSettings(cfg, loadChecks(cfg), o.plugins);
+  const ctx: RunCtx = {
+    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+    timeoutMs: o.agentTimeoutMs,
+    usageCap: o.usageCap,
+    onLimit: o.onLimit,
+  };
+  const prompt =
+    `${fresh ? "A new project" : "This repository"} is to be built ${fresh ? "from" : "further according to"} the brief below by an ` +
+    `automated loop: each goal is planned by an architect, built by agents in parallel, then verified by running the ` +
+    `project's checks and by QA. Split the brief into goals, in the order they should be built:\n` +
+    (fresh
+      ? `- Goal 1 sets up the project: the manifest with its dependencies (${setup ? `the orchestrator installs them with \`${setup}\`` : "prefer none: nothing will install them"}), ` +
+        `the folder layout, a test runner with one passing test, the scripts or commands the checks use, and a README.\n`
+      : `- Read the repository first where you need to (README, layout, the code the brief touches), so the goals fit what exists ` +
+        `and skip what is already done.\n`) +
+    `- Each goal is one feature or slice, small enough for one plan of at most 10 tasks, and says what to build, where, and ` +
+    `how it is tested. A goal may build on earlier ones, never on later ones.\n` +
+    `- Each goal must make sense on its own: its agents see that goal, the brief and the code. Begin it with the part of the ` +
+    `brief it covers in brackets, e.g. "[Auth] Add ...".\n- Cover the whole brief, in at most ${MAX_GOALS} goals.\n` +
+    (fresh
+      ? `Also suggest "checks": the shell commands the orchestrator runs after every build to judge it (tests, then typecheck or ` +
+        `lint if the stack has them), at most 4, each using only what goal 1 sets up.\n`
+      : "") +
+    `\nBrief:\n${brief.slice(0, MAX_SPEC)}` +
+    GOALS_FORMAT;
+  const r = await run(architect, modelFor(o.power, o.models, "architect", "architect"), prompt, ctx, true);
+  const reply = extractJson<{ goals?: unknown; checks?: unknown }>(r.text);
+  const goals = asGoals(reply.goals);
+  if (!goals.length) throw new Error("the architect returned no goals");
+  const checks = Object.fromEntries(
+    Object.entries(fresh && reply.checks && typeof reply.checks === "object" ? (reply.checks as Record<string, unknown>) : {})
+      .filter(([n, c]) => /^[\w-]{1,30}$/.test(n) && typeof c === "string" && c.trim() && c.length < 300)
+      .slice(0, 4) as [string, string][],
+  );
+  emit("split_proposal", { goals, ...(fresh ? { checks } : {}), cost: round4(ctx.budget.spent) });
+  return { goals, checks, cost: ctx.budget.spent };
+}
+
+/** Keep the brief and queue its goals (marked as coming from it, for the coverage check). Returns their ids. */
+function acceptSplit(brief: string, goals: string[]): number[] {
+  if (!brief.trim()) throw new Error("the brief is empty");
+  if (!goals.length) throw new Error("no goals to queue");
+  mkdirSync(DIR, { recursive: true });
+  writeFileAtomic(SPEC_FILE, brief.trim().slice(0, MAX_SPEC) + "\n");
+  writeFileAtomic(SPEC_STATE, JSON.stringify({ passes: 0, checkedUpTo: 0 }));
+  const ids = updateQueue((q) =>
+    goals.map((goal) => {
+      const id = Math.max(0, ...q.map((i) => i.id)) + 1;
+      q.push({ id, goal, status: "pending", fromSpec: true });
+      return id;
+    }),
+  );
+  console.log(`queued ${ids.length} goal(s) from the brief (kept in ${SPEC_FILE}):\n${goals.map((g, i) => `  #${ids[i]} ${g}`).join("\n")}`);
+  return ids;
+}
+
+/** A brief from --brief-file (deleted afterwards with --brief-file-temp, as the UI's backends pass it) or the words. */
+function briefFrom(values: Record<string, string | boolean | undefined>, words: string[]): string {
+  const file = values["brief-file"] ?? values["spec-file"];
+  if (!file) return words.join(" ");
+  const text = readFileSync(String(file), "utf8");
+  if (values["brief-file-temp"]) rmSync(String(file), { force: true });
+  return text;
+}
+
+/**
+ * `orch split "<brief>"`: split a big brief into queued goals for this repo. `--propose` only shows the split (the UI
+ * edits it); `--accept` queues goals given on stdin as {brief, goals}; neither: both at once. `--start` then runs the
+ * loop until the queue is empty.
+ */
+async function split(values: Record<string, string | boolean | undefined>, words: string[]) {
+  const o = { ...parseOpts(values), park: true };
+  if (values.accept) {
+    const input = JSON.parse(readFileSync(0, "utf8")) as { brief?: unknown; goals?: unknown };
+    const goals = asGoals(input.goals);
+    acquireRunLock("split");
+    acceptSplit(typeof input.brief === "string" ? input.brief : "", goals);
+  } else {
+    const brief = briefFrom(values, words);
+    if (!brief.trim()) throw new Error('usage: orch split "<brief>"  (or --brief-file FILE)');
+    acquireRunLock("split");
+    console.log("asking the architect to split the brief into goals...");
+    const { goals, cost } = await splitBrief(brief, o, false);
+    console.log(`cost: ${usd(cost)}`);
+    if (values.propose) return console.log(`\nproposed ${goals.length} goal(s):\n${goals.map((g, i) => `  ${i + 1}. ${g}`).join("\n")}`);
+    acceptSplit(brief, goals);
+  }
+  if (values.start) return loop(o, Number(values.poll), true);
+  console.log(`\nReview the queue ("orch status"), then: orch loop --until-empty`);
+}
 
 /** Ignored from the first commit: orch's state and the usual dependency and build folders. */
 const NEW_GITIGNORE = [".orchestrator/", "node_modules/", ".venv/", "venv/", "__pycache__/", "dist/", "build/", "target/", ".env", ""].join("\n");
 
 /**
- * `orch new DIR "<spec>"`: a git repo in a new or empty folder with SPEC.md and a .gitignore, the spec as the first
- * project brief, and one architect call that splits the spec into queued goals (the scaffold first) and suggests
- * checks for .orchestrator/config.json. Builds nothing: review the queue and config, then run the loop.
+ * `orch new DIR "<spec>"`: a git repo in a new or empty folder with SPEC.md and a .gitignore, then the spec split into
+ * queued goals (the scaffold first) with suggested checks for .orchestrator/config.json. With --start the loop runs.
  */
-async function newProject(dir: string, spec: string, o: Opts, setup?: string) {
+async function newProject(dir: string, spec: string, o: Opts, setup: string | undefined, start: boolean, poll: number) {
   if (!spec.trim()) throw new Error('usage: orch new DIR "<spec>"  (or --spec-file FILE)');
   const target = resolve(dir);
   if (existsSync(target) && readdirSync(target).length) throw new Error(`${target} is not empty; orch new starts a project in a new or empty folder`);
@@ -1996,57 +2137,15 @@ async function newProject(dir: string, spec: string, o: Opts, setup?: string) {
   commitAll("orch: new project (spec)");
   acquireRunLock("new");
   writeBrief(
-    `This is a new project, built by an automated loop from the spec in SPEC.md (the first goal sets it up). ` +
-      `Until the scaffold exists, follow the spec:\n\n${spec.trim()}`,
+    `This is a new project, built by an automated loop from the spec in SPEC.md; the first goal sets it up. ` +
+      `Until the scaffold exists there is nothing else to read.`,
     true,
   );
   if (setup) writeFileAtomic(CONFIG_FILE, JSON.stringify({ setup }, null, 2));
-
-  const roster = discoverAgents();
-  const architect = roster.find((a) => a.name === "architect")!;
-  writeBuiltins(roster);
-  writeAgentSettings({}, {}, o.plugins);
-  const ctx: RunCtx = {
-    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
-    timeoutMs: o.agentTimeoutMs,
-    usageCap: o.usageCap,
-    onLimit: o.onLimit,
-  };
-  const prompt =
-    `A new project is to be built from the spec below by an automated loop: each goal is planned by an architect, built ` +
-    `by agents in parallel, then verified by running the project's checks and by QA. Split the spec into goals, in order:\n` +
-    `- Goal 1 sets up the project: the manifest with its dependencies (${setup ? `the orchestrator installs them with \`${setup}\`` : "prefer none: nothing will install them"}), ` +
-    `the folder layout, a test runner with one passing test, the scripts or commands the checks below use, and a README.\n` +
-    `- Then one goal per feature or slice, each small enough for one plan of at most 10 tasks, each saying what to build, ` +
-    `where, and how it is tested. Each goal must make sense on its own: the agents of a goal see only that goal, the spec ` +
-    `summary and the code.\n- At most 12 goals.\n` +
-    `Also suggest "checks": the shell commands the orchestrator runs after every build to judge it (tests, then typecheck or ` +
-    `lint if the stack has them), at most 4, each using only what goal 1 sets up.\n\nSpec:\n${spec.trim()}` +
-    GOALS_FORMAT;
   console.log(`project created at ${target}; asking the architect to split the spec into goals...`);
-  const r = await run(architect, modelFor(o.power, o.models, "architect", "architect"), prompt, ctx, true);
-  const reply = extractJson<{ goals?: unknown; checks?: unknown }>(r.text);
-  const goals = Array.isArray(reply.goals) ? reply.goals.filter((g): g is string => typeof g === "string" && !!g.trim()).map((g) => g.trim()) : [];
-  if (!goals.length) throw new Error("the architect returned no goals");
-  const checks = Object.fromEntries(
-    Object.entries(reply.checks && typeof reply.checks === "object" ? (reply.checks as Record<string, unknown>) : {})
-      .filter(([n, c]) => /^[\w-]{1,30}$/.test(n) && typeof c === "string" && c.trim() && c.length < 300)
-      .slice(0, 4) as [string, string][],
-  );
+  const { goals, checks, cost } = await splitBrief(spec, o, true, setup);
   writeFileAtomic(CONFIG_FILE, JSON.stringify({ ...(Object.keys(checks).length ? { checks } : {}), ...(setup ? { setup } : {}) }, null, 2));
-  const ids = updateQueue((q) =>
-    goals.slice(0, 12).map((goal) => {
-      const id = Math.max(0, ...q.map((i) => i.id)) + 1;
-      q.push({ id, goal, status: "pending" });
-      return id;
-    }),
-  );
-  console.log(
-    `\nqueued ${ids.length} goal(s):\n${goals
-      .slice(0, 12)
-      .map((g, i) => `  #${ids[i]} ${g}`)
-      .join("\n")}`,
-  );
+  acceptSplit(spec, goals);
   console.log(
     `\nchecks (${CONFIG_FILE}): ${
       Object.entries(checks)
@@ -2054,8 +2153,61 @@ async function newProject(dir: string, spec: string, o: Opts, setup?: string) {
         .join(", ") || "none suggested"
     }` +
       (setup ? `\nsetup: ${setup} (runs before the checks whenever a manifest changes)` : "") +
-      `\ncost: ${usd(ctx.budget.spent)}\n\nReview them, then: cd "${target}" && orch loop --until-empty`,
+      `\ncost: ${usd(cost)}`,
   );
+  if (start) return loop({ ...o, park: true }, poll, true);
+  console.log(`\nReview them, then: cd "${target}" && orch loop --until-empty`);
+}
+
+/**
+ * After the queue runs dry: compare the brief with the code once more and queue what is still missing (at most 5
+ * goals, at most COVERAGE_PASSES times per brief, and only after new goals from it have finished). Returns its cost,
+ * or -1 when nothing was queued.
+ */
+async function coverageCheck(o: Opts): Promise<{ queued: number; cost: number }> {
+  const spec = readSpec();
+  if (!spec) return { queued: 0, cost: 0 };
+  const state = readJsonFile<{ passes?: number; checkedUpTo?: number }>(SPEC_STATE, {});
+  const passes = state.passes ?? 0;
+  const q = readQueue();
+  const mine = q.filter((i) => i.fromSpec);
+  const last = Math.max(0, ...mine.map((i) => i.id));
+  if (passes >= COVERAGE_PASSES || !mine.length || last <= (state.checkedUpTo ?? 0) || mine.some((i) => i.status === "pending" || i.status === "running"))
+    return { queued: 0, cost: 0 };
+  const roster = discoverAgents();
+  const architect = roster.find((a) => a.name === "architect")!;
+  writeBuiltins(roster);
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  writeAgentSettings(cfg, loadChecks(cfg), o.plugins);
+  const ctx: RunCtx = {
+    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+    timeoutMs: o.agentTimeoutMs,
+    usageCap: o.usageCap,
+    onLimit: o.onLimit,
+  };
+  let missing: string[] = [];
+  try {
+    const prompt =
+      `The goals below were run to build what the brief asks. Read the repository and list what the brief asks that is not ` +
+      `done yet (missing, or clearly broken), as at most 5 new goals in the same style. Ignore polish the brief does not ask for. ` +
+      `An empty list means the brief is covered.\n\nGoals run:\n${mine.map((i) => `- [${i.status}] ${i.goal.slice(0, 300)}`).join("\n")}\n\n` +
+      `Brief:\n${spec.slice(0, MAX_SPEC)}` +
+      GOALS_FORMAT;
+    const r = await run(architect, modelFor(o.power, o.models, "architect", "architect"), prompt, ctx, true);
+    missing = asGoals(extractJson<{ goals?: unknown }>(r.text).goals).slice(0, 5);
+  } catch (e) {
+    if (isFatal(e)) throw e;
+    console.warn(`coverage check failed (${msg(e)}); not checked`);
+  }
+  writeFileAtomic(SPEC_STATE, JSON.stringify({ passes: passes + 1, checkedUpTo: last }));
+  emit("coverage", { pass: passes + 1, missing, cost: round4(ctx.budget.spent) });
+  if (!missing.length) console.log("coverage check: the brief looks covered");
+  else
+    updateQueue((qq) => {
+      for (const goal of missing) qq.push({ id: Math.max(0, ...qq.map((i) => i.id)) + 1, goal, status: "pending", fromSpec: true });
+    });
+  if (missing.length) console.log(`coverage check: queued ${missing.length} goal(s) for what is missing:\n- ${missing.join("\n- ")}`);
+  return { queued: missing.length, cost: ctx.budget.spent };
 }
 
 // ---------- --approve-plan: a human approves, edits or rejects each plan ----------
@@ -2643,6 +2795,11 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       return next && { ...next };
     });
     if (!item) {
+      if (o.coverage) {
+        const c = await coverageCheck(o);
+        spentTotal += c.cost;
+        if (c.queued) continue;
+      }
       if (untilEmpty) break;
       await sleep(pollSec * 1000);
       continue;
@@ -2738,6 +2895,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   // A pull request needs a branch of its own.
   const branch = pr || !!values.branch || cfg.branch === true;
   const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
+  const coverage = !values["no-coverage"] && cfg.coverage !== false;
   return {
     maxRounds,
     power: power as Power,
@@ -2759,6 +2917,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     branch,
     pr,
     approvePlan,
+    coverage,
     strictFiles,
     maxCostTotal,
   };
@@ -2794,6 +2953,12 @@ async function main() {
       reject: { type: "string" },
       "plan-stdin": { type: "boolean", default: false },
       "spec-file": { type: "string" },
+      "brief-file": { type: "string" },
+      "brief-file-temp": { type: "boolean", default: false },
+      propose: { type: "boolean", default: false },
+      accept: { type: "boolean", default: false },
+      start: { type: "boolean", default: false },
+      "no-coverage": { type: "boolean", default: false },
       setup: { type: "string" },
       pr: { type: "boolean", default: false },
       review: { type: "boolean", default: false },
@@ -2867,9 +3032,11 @@ async function main() {
     case "new": {
       const [dir, ...words] = rest;
       if (!dir) throw new Error('usage: orch new DIR "<spec>"  (or --spec-file FILE)');
-      const spec = values["spec-file"] ? readFileSync(String(values["spec-file"]), "utf8") : words.join(" ");
-      return newProject(dir, spec, parseOpts(values), values.setup ? String(values.setup) : undefined);
+      const spec = briefFrom(values, words);
+      return newProject(dir, spec, parseOpts(values), values.setup ? String(values.setup) : undefined, !!values.start, Number(values.poll));
     }
+    case "split":
+      return split(values, rest);
     case "share": {
       const o = parseOpts(values);
       acquireRunLock("share");

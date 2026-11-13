@@ -121,6 +121,8 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **`orch new DIR "<spec>"`**: git, SPEC.md, the spec as brief, goals queued, checks suggested.
 - [x] **Checks read every round**, so files the agents create are checked; **`setup`** installs on manifest change.
 - [x] **Eval case** `greenfield-inventory` (empty repo, scaffold goal, feature goal).
+- [x] **Big briefs**: `orch split`, the **Big brief** box (edit the split, queue, queue and start), spec.md for every
+  architect, a coverage check when the queue runs dry.
 - [ ] **New project in the UI**: a folder picker and a spec box that run `orch new` and open the repo.
 - [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
 

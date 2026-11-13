@@ -9,7 +9,7 @@ import http from "node:http";
 import { spawn, execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, createReadStream, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve, join, extname, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -167,7 +167,7 @@ const sendGlobal = () => {
 };
 
 /** Every agent call reports its cost once: the plan (architect, critic), each task_end, diff reviews, learn, notes tidy, share. */
-const COST_EVENTS = new Set(["plan", "task_end", "review", "learn_end", "notes_tidy", "share_end"]);
+const COST_EVENTS = new Set(["plan", "task_end", "review", "learn_end", "notes_tidy", "share_end", "split_proposal", "coverage"]);
 function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number; until?: number; reason?: string } & Partial<Record<Window, Reading>>) {
   if (ev.type === "usage") {
     // The windows are per account, so the latest reading from any repo holds for all of them.
@@ -262,7 +262,7 @@ function startNext() {
  * at most what is left today (their own --max-cost, if lower).
  */
 function withBudget(args: string[]): string[] {
-  if (!["run", "loop", "learn", "share"].includes(args[0])) return args;
+  if (!["run", "loop", "learn", "share", "split"].includes(args[0])) return args;
   const caps = (["fiveHour", "week"] as Window[]).filter((w) => usageCap[w] !== null).map((w) => `${WINDOW_CLI[w]}=${usageCap[w]}`);
   if (caps.length && !args.includes("--usage-cap")) args = [...args, "--usage-cap", caps.join(",")];
   const left = budgetLeft();
@@ -418,6 +418,15 @@ const addGoal = (s: Session, goal: string) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     ),
   );
+
+/** `orch split --accept`: queue the (edited) goals of a split brief; brief and goals go on stdin. */
+const acceptSplit = (s: Session, b: { brief?: unknown; goals?: unknown }) =>
+  new Promise<void>((ok, fail) => {
+    const child = execFile(process.execPath, [TSX_CLI, ORCH, "split", "--accept"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    );
+    child.stdin?.end(JSON.stringify({ brief: b.brief, goals: b.goals }));
+  });
 
 /** `orch approve` for a run waiting with --approve-plan: an edited plan goes on stdin, never on the command line. */
 const approvePlan = (s: Session, b: { plan?: unknown; reject?: string }) =>
@@ -599,6 +608,19 @@ http
         if (url.pathname === "/api/learn") {
           // `orch learn`: a read-only pass that writes the project brief; a run like any other (slot, budget, log).
           requestStart(s, ["learn", ...flags({ ...b, dryRun: false })], "learn repo");
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/split") {
+          // A brief can be long: it goes to orch in a temporary file, which orch deletes once read (--brief-file-temp).
+          if (typeof b.brief !== "string" || !b.brief.trim()) return json(400, { error: "brief required" });
+          const file = join(tmpdir(), `yaaiorch-brief-${process.pid}-${Date.now()}.md`);
+          writeFileSync(file, b.brief);
+          requestStart(s, ["split", "--propose", "--brief-file", file, "--brief-file-temp", ...flags({ ...b, dryRun: false })], "split brief");
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/split-accept") {
+          await acceptSplit(s, b);
+          sendSession(s);
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/approve") {

@@ -21,7 +21,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, review, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
+architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, review, split_proposal, coverage, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
 in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
 process exits without `goal_end`.
 
@@ -33,7 +33,7 @@ process exits without `goal_end`.
 - `npm run build`: typecheck + Vite build
 - `npm run lint` (ESLint, whole repo, config `orch-ui/eslint.config.mjs`), `npm run format` / `format:check` (Prettier, printWidth 160, `.prettierignore` at the root: code only, never eval fixtures). CI fails on either.
 - Rust: `cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings` (`rustfmt.toml`: max_width 160)
-- `npm test`: 61 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers and `claude-bin.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 63 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers and `claude-bin.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
@@ -45,6 +45,7 @@ process exits without `goal_end`.
 - Global state (both backends, `global` / `orch-global` event): a usage limit in any repo holds new starts everywhere until the reset ("Try now" clears it); the optional daily budget sums `cost` from `plan`/`task_end` events, caps each run's `--max-cost` to what is left, holds starts and kills a loop at `queue_item` when used up. Persisted with the repos.
 - `.orchestrator/` (queue.json, last-run.json, builtin-agents.json) lives in the target repo and is never committed by the orchestrator. State files go through `writeFileAtomic`; queue edits through `updateQueue` (queue.lock); `run`/`loop`/`learn`/`rollback` take `run.lock` (`acquireRunLock`). Never write queue.json directly, from orch or a backend (the browser server adds goals via `orch add`). `validate()` rejects plan paths outside the repo, in `.git`/`.orchestrator`, or through a link (`badPath`).
 - Notifications: `orch-ui/src/notifyText.ts` (pure, unit-tested) picks the events, `notify.ts` sends them (Tauri `tauri-plugin-notification`, capability `notification:default`, or the browser Notification API); called from `useOrch.ts` for live events only.
+- Big briefs: `orch split` (`splitBrief` / `acceptSplit`, `--propose`, `--accept` from stdin, `--start`) and `orch new` share one splitter; the brief lives in `.orchestrator/spec.md` (read by every architect via `specForPrompt`), queue items from it carry `fromSpec`, and `coverageCheck` runs when the loop's queue is empty (two passes per brief, `.orchestrator/spec-state.json`). UI: `Brief.tsx`, the proposal comes from the `split_proposal` event (`Session.proposal`).
 - Greenfield: `orch new` (`newProject`) creates the repo, seeds the brief and queues the architect's goals; checks are re-read every round (`refreshChecks`); config `setup` runs in `runSetup` before the checks when a manifest changed (hash in `.orchestrator/setup-state.json`), new untracked dirs go to `.git/info/exclude`. Agents never install.
 - Plan approval (`--approve-plan`): `awaitDecision` writes `.orchestrator/plan-pending.json` and polls `plan-decision.json`, which only `orch approve` writes (backends call it; an edited plan goes on stdin). A rejection re-plans with the human's reason.
 - Branch per goal (`--branch`, `--pr`): `startGoalBranch` / `finishGoalBranch` / `openPullRequest`; the base branch never moves, the checkpoint is deleted at the end, `gh` is resolved with `resolveCommand` (`GH_BIN`, fake in `test/fake-gh/`) and gets the PR body on stdin.

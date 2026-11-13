@@ -174,7 +174,14 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   problems, the built-in one or your own agents (`--reviewers security-reviewer,backend-reviewer`). They run
   next to QA, as independent opinions, and a rejection fails the round; when a check already failed they are
   skipped. One extra call each per round.
-- **New projects** (`orch new DIR "<spec>"`, or `--spec-file SPEC.md`): creates the folder with git, `SPEC.md` and a
+- **Big briefs** (**Big brief** in each repo, or `orch split "<brief>"` / `--brief-file BRIEF.md`): one read-only
+  architect call reads the repo and splits the brief into goals in build order. In the UI you edit the list
+  (reorder, change, remove, add), then **Queue** it or **Queue and start** the loop; on the command line it is
+  queued at once (`--propose` only shows it, `--start` runs the loop). The whole brief is kept in
+  `.orchestrator/spec.md`, and every goal's architect reads it, so each goal fits the rest. When the queue runs
+  dry, a coverage check compares the brief with the code and queues what is still missing (at most twice per
+  brief; `--no-coverage` or `"coverage": false` to skip it).
+- **New projects** (`orch new DIR "<spec>"`, or `--spec-file SPEC.md`; `--start` runs the loop right away): creates the folder with git, `SPEC.md` and a
   `.gitignore`, uses the spec as the first project brief, and has the architect split it into queued goals (the
   scaffold first, then one goal per feature) with suggested checks in `.orchestrator/config.json`. Nothing is
   built until you run `orch loop --until-empty` there, so you can review the queue and the checks first. Checks

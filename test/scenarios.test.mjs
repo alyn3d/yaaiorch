@@ -617,16 +617,17 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(b.last("round_end").failures[0], /check "setup" failed/);
   });
 
-  test("orch new: a repo with SPEC.md, the spec as brief, goals queued, checks suggested; then the loop builds it", () => {
+  test("orch new: a repo with SPEC.md, the spec kept for the architects, goals queued, checks suggested; then the loop builds it", () => {
     const parent = repo({ git: false });
     assert.match(orch(parent, ["new", "app"]).out, /usage: orch new DIR/);
     const r = orch(parent, ["new", "app", "A todo CLI in Node", "--setup", "node -e 0"]);
     assert.equal(r.code, 0, r.out);
-    assert.ok(r.calls.includes("new: spec=A todo CLI in Node setup=true"), r.calls.join("\n"));
+    assert.ok(r.calls.includes("split: fresh=true brief=A todo CLI in Node setup=true"), r.calls.join("\n"));
     const app = join(parent, "app");
     assert.equal(git(app, "rev-parse", "--abbrev-ref", "HEAD"), "main");
     assert.deepEqual(git(app, "ls-files").split("\n").sort(), [".gitignore", "SPEC.md"]);
-    assert.match(readFileSync(join(app, ".orchestrator", "brief.md"), "utf8"), /new project.*A todo CLI in Node/s);
+    assert.match(readFileSync(join(app, ".orchestrator", "brief.md"), "utf8"), /new project/);
+    assert.equal(readFileSync(join(app, ".orchestrator", "spec.md"), "utf8"), "A todo CLI in Node\n");
     assert.deepEqual(JSON.parse(readFileSync(join(app, ".orchestrator", "config.json"), "utf8")), {
       checks: { test: 'node -e "process.exit(0)"' },
       setup: "node -e 0",
@@ -647,6 +648,79 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
       [true, true],
     );
     assert.ok(loop.ev("checks").every((e) => e.results.some((c) => c.name === "test" && c.ok)));
+    assert.ok(loop.calls.includes("architect: saw the brief"), "each goal's architect reads the spec");
+    assert.deepEqual(
+      loop.ev("coverage").map((e) => e.missing),
+      [[]],
+      "one coverage check once the queue ran dry",
+    );
+  });
+
+  test("orch split: a big brief becomes queued goals; --propose only shows them, --accept queues edited ones", () => {
+    const dir = repo();
+    assert.match(orch(dir, ["split"]).out, /usage: orch split/);
+    const prop = orch(dir, ["split", "--propose", "Build part A and part B"]);
+    assert.equal(prop.code, 0, prop.out);
+    assert.ok(prop.calls.includes("split: fresh=false brief=Build part A and part B setup=false"), prop.calls.join("\n"));
+    assert.ok(
+      prop.calls.some((c) => /^call agent=architect mode=default /.test(c)),
+      "read-only",
+    );
+    assert.deepEqual(prop.last("split_proposal").goals, ["[A] Build part A", "[B] Build part B"], "junk entries dropped");
+    assert.equal(prop.last("split_proposal").cost, 0.05);
+    assert.ok(!existsSync(join(dir, ".orchestrator", "queue.json")), "nothing queued");
+
+    // The UI's path: edited goals and the brief on stdin.
+    const acc = spawnSync(process.execPath, [TSX, ORCH, "split", "--accept"], {
+      cwd: dir,
+      input: JSON.stringify({ brief: "Build part A and part B", goals: ["[A] Build part A, carefully", "[B] Build part B"] }),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_BIN: FAKE },
+    });
+    assert.equal(acc.status, 0, acc.stderr);
+    const q = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
+    assert.deepEqual(
+      q.map((i) => [i.goal, i.fromSpec]),
+      [
+        ["[A] Build part A, carefully", true],
+        ["[B] Build part B", true],
+      ],
+    );
+    assert.equal(readFileSync(join(dir, ".orchestrator", "spec.md"), "utf8"), "Build part A and part B\n");
+
+    // A brief from a file the backends wrote for it is deleted after reading.
+    const file = join(dir, "..", `${dir.split(/[\\/]/).pop()}-brief.md`);
+    writeFileSync(file, "Build part A and part B");
+    const f = orch(dir, ["split", "--brief-file", file, "--brief-file-temp"]);
+    assert.equal(f.code, 0, f.out);
+    assert.ok(!existsSync(file));
+    assert.equal(JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8")).length, 4);
+  });
+
+  test("orch split --start builds the goals, then a coverage check queues what is missing (at most twice)", () => {
+    const dir = repo();
+    const r = orch(dir, ["split", "--start", "--max-rounds", "1", "Build part A and part B"], { FAKE_QA: "pass", FAKE_COVERAGE: "missing-once" });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("queue_item").map((e) => e.goal),
+      ["[A] Build part A", "[B] Build part B", "[C] Build the part that was missed"],
+    );
+    assert.deepEqual(
+      r.ev("coverage").map((e) => [e.pass, e.missing.length]),
+      [
+        [1, 1],
+        [2, 0],
+      ],
+    );
+    assert.ok(r.calls.includes("coverage: sawGoals=true missing"));
+    assert.equal(r.calls.filter((c) => c.startsWith("coverage:")).length, 2);
+    // Nothing new since the last check: no third one.
+    assert.equal(orch(dir, ["loop", "--until-empty"], { FAKE_COVERAGE: "missing" }).ev("coverage").length, 0);
+
+    const off = orch(repo(), ["split", "--start", "--no-coverage", "--max-rounds", "1", "brief"], { FAKE_QA: "pass", FAKE_COVERAGE: "missing" });
+    assert.equal(off.code, 0, off.out);
+    assert.equal(off.ev("coverage").length, 0);
+    assert.equal(off.ev("goal_end").length, 2);
   });
 
   test("plan critic: a rejected plan goes back to the architect once; off by default", () => {

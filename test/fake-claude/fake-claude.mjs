@@ -25,6 +25,7 @@
 //   FAKE_NO_SESSION=1        a call with --resume fails like the real CLI when the session is gone
 //   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
 //   FAKE_TIDY=bad            the notes tidy call returns no usable notes
+//   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
 //   FAKE_BAD_PLAN_ONCE=1     the first plan is not JSON
@@ -155,10 +156,24 @@ if (prompt.includes("Review this change")) {
   const reject = (env.FAKE_REVIEW_REJECT ?? "").split(",").includes(agent);
   log(`review: agent=${agent} lens=${lens} patch=${prompt.includes("The change") && prompt.includes("diff --git")} ${reject ? "rejected" : "approved"}`);
   reply(reject ? `{"approved": false, "issues": ["${agent} found a bug in src/api.ts"]}` : '{"approved": true, "issues": []}');
-} else if (prompt.includes("Split the spec into goals")) {
-  // orch new: two goals and a check that always passes.
-  log(`new: spec=${/Spec:\n([^\n]*)/.exec(prompt)?.[1] ?? ""} setup=${prompt.includes("the orchestrator installs them with")}`);
-  reply(JSON.stringify({ goals: ["Set up the project", "Add the first feature"], checks: { test: 'node -e "process.exit(0)"', "bad name!": "x" } }));
+} else if (prompt.includes("Split the brief into goals")) {
+  // orch new / orch split: two goals (and, for a new project, a check that always passes).
+  const fresh = prompt.includes("A new project");
+  log(`split: fresh=${fresh} brief=${/Brief:\n([^\n]*)/.exec(prompt)?.[1] ?? ""} setup=${prompt.includes("the orchestrator installs them with")}`);
+  reply(
+    JSON.stringify(
+      fresh
+        ? { goals: ["Set up the project", "Add the first feature"], checks: { test: 'node -e "process.exit(0)"', "bad name!": "x" } }
+        : { goals: ["[A] Build part A", "[B] Build part B", 42, ""] },
+    ),
+  );
+} else if (prompt.includes("that is not done yet")) {
+  // Coverage check: FAKE_COVERAGE=missing-once reports one missing goal the first time, then none.
+  const flag = ".orchestrator/fake-coverage-done";
+  const missing = env.FAKE_COVERAGE === "missing" || (env.FAKE_COVERAGE === "missing-once" && !existsSync(flag));
+  if (env.FAKE_COVERAGE === "missing-once") writeFileSync(flag, "1");
+  log(`coverage: sawGoals=${prompt.includes("[done] [A] Build part A")} ${missing ? "missing" : "covered"}`);
+  reply(JSON.stringify({ goals: missing ? ["[C] Build the part that was missed"] : [] }));
 } else if (prompt.includes("Tidy these lessons")) {
   // notes.md past its size limit: FAKE_TIDY=bad returns something unusable.
   log(`tidy: called sawLessons=${prompt.includes("FAKE LESSON")}`);
@@ -180,6 +195,7 @@ if (prompt.includes("Review this change")) {
     if (prompt.includes("previous reply was rejected")) log("architect: got rejection reason");
     if (prompt.includes("Do not repeat the previous plan")) log("architect: got stuck note");
     if (prompt.includes("A reviewer rejected your plan")) log("architect: got critic issues");
+    if (prompt.includes("The user's brief this goal is part of")) log("architect: saw the brief");
     const human = /The person reviewing your plan rejected it:\n(.*)/.exec(prompt);
     if (human) log(`architect: got human rejection: ${human[1]}`);
     log(`architect: notes=${prompt.includes("Notes from earlier goals") && prompt.includes("FAKE LESSON") ? "seen" : "none"}`);

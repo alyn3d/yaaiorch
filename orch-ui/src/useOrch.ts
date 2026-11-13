@@ -6,15 +6,21 @@ import { notify } from "./notify";
 import { notificationFor } from "./notifyText";
 import { baseName } from "./repoStatus";
 
+/** The architect's split of a big brief (`split_proposal`), waiting to be edited and queued. */
+export type Proposal = { goals: string[]; at: number };
 /** Everything the UI knows about one repo. */
-export type Session = { state: State; log: string[]; run: RunView | null };
+export type Session = { state: State; log: string[]; run: RunView | null; proposal?: Proposal };
+
+const proposalOf = (e: OrchEvent): Proposal | undefined =>
+  e.type === "split_proposal" && Array.isArray(e.goals) ? { goals: e.goals.filter((g: unknown) => typeof g === "string"), at: e.t } : undefined;
 
 const stopped = (): OrchEvent => ({ type: "stopped", t: Date.now() });
 const MAX_LOG = 5000;
 
 function fromInit(s: SessionInit): Session {
   const replayed = (s.events as OrchEvent[]).reduce<RunView | null>(reduce, null);
-  return { state: s.state, log: s.log, run: s.state.running ? replayed : reduce(replayed, stopped()) };
+  const proposal = (s.events as OrchEvent[]).map(proposalOf).filter(Boolean).at(-1);
+  return { state: s.state, log: s.log, run: s.state.running ? replayed : reduce(replayed, stopped()), proposal };
 }
 
 /** Sessions for every open repo, keyed by repo path, plus the order of the tabs. */
@@ -55,7 +61,8 @@ export function useOrch() {
           if (e.type === "goal_start" && typeof e.goal === "string") goals.current.set(repo, e.goal);
           const n = notificationFor(baseName(repo), goals.current.get(repo), e);
           if (n) void notify(n);
-          setSessions((all) => (all[repo] ? { ...all, [repo]: { ...all[repo], run: reduce(all[repo].run, e) } } : all));
+          const proposal = proposalOf(e);
+          setSessions((all) => (all[repo] ? { ...all, [repo]: { ...all[repo], run: reduce(all[repo].run, e), ...(proposal ? { proposal } : {}) } } : all));
         },
         onGlobal: setGlobal,
         onConnection: setConnected,

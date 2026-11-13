@@ -18,7 +18,7 @@ export interface Transport {
   /** Desktop: a native folder picker. Browser: the user types a path. */
   canPickRepo: boolean;
   subscribe(h: Handlers): () => void;
-  /** A repo command (run, add, loop, learn, share, approve, stop, clear-log, rollback); body carries `repo`. */
+  /** A repo command (run, add, loop, learn, share, approve, split, split-accept, stop, clear-log, rollback); body carries `repo`. */
   call(path: string, body?: Record<string, unknown>): Promise<void>;
   /** Open a repo in a new tab: a picked folder (desktop) or the given path (browser). */
   addRepo(path?: string): Promise<void>;
@@ -142,6 +142,8 @@ const COMMANDS: Record<string, string> = {
   learn: "learn_repo",
   share: "share_repo",
   approve: "approve_plan",
+  split: "split_brief",
+  "split-accept": "accept_split",
   "stop-after": "stop_after",
 };
 

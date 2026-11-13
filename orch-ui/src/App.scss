@@ -608,3 +608,35 @@ input.limit {
     min-width: 14rem;
   }
 }
+
+// Big brief: the brief, then the proposed goals to edit and queue.
+.brief-box {
+  margin-top: 0.6rem;
+  summary {
+    cursor: pointer;
+  }
+  textarea {
+    width: 100%;
+    box-sizing: border-box;
+    font: inherit;
+  }
+  .proposal ol {
+    list-style: none;
+    padding-left: 0;
+    .num {
+      min-width: 1.6rem;
+      padding-top: 0.3rem;
+      text-align: right;
+    }
+    li {
+      display: flex;
+      gap: 0.4rem;
+      align-items: flex-start;
+      margin: 0.3rem 0;
+    }
+    .moves {
+      display: flex;
+      gap: 0.2rem;
+    }
+  }
+}

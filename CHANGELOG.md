@@ -6,6 +6,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Big briefs**: `orch split "<brief>"` (or `--brief-file`, `--start`) and a **Big brief** box per repo: the
+  architect splits a long brief into goals in build order, you edit the list and queue it, or queue it and start
+  the loop. The brief is kept in `.orchestrator/spec.md` and read by every goal's architect, and when the queue
+  runs dry a coverage check queues what is still missing (at most twice; `--no-coverage`). `orch new` uses the
+  same splitter, takes `--start`, and queues up to 30 goals. New `split_proposal` and `coverage` events.
 - **New projects**: `orch new DIR "<spec>"` (or `--spec-file`) creates a git repo with `SPEC.md`, uses the spec as
   the project brief, and queues the architect's goals (scaffold first) with suggested checks; run `orch loop`
   there to build it.

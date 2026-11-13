@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { pluginOpts } from "./Plugins";
 import type { Power } from "./types";
 import { RunPanel } from "./RunView";
+import { BriefBox } from "./Brief";
 import { SettingsPanel, modelSpec, useRepoSettings } from "./Settings";
 import { transport } from "./transport";
 import { useFindings, type Session } from "./useOrch";
@@ -171,6 +172,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           </button>
         </div>
         <SettingsPanel repo={repo} power={power} settings={settings} onChange={setSettings} />
+        <BriefBox repo={repo} busy={busy} disabled={badSettings} proposal={session.proposal} call={call} opts={opts} />
         {error && <p className="error">{error}</p>}
       </section>
 

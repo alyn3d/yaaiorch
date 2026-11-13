@@ -190,7 +190,12 @@ fn emit_global<R: Runtime>(app: &AppHandle<R>) {
 fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
     let kind = ev["type"].as_str().unwrap_or("");
     let cost = ev["cost"].as_f64().filter(|c| *c > 0.0);
-    if let Some(cost) = cost.filter(|_| matches!(kind, "plan" | "task_end" | "review" | "learn_end" | "notes_tidy" | "share_end")) {
+    if let Some(cost) = cost.filter(|_| {
+        matches!(
+            kind,
+            "plan" | "task_end" | "review" | "learn_end" | "notes_tidy" | "share_end" | "split_proposal" | "coverage"
+        )
+    }) {
         {
             let st = app.state::<AppState>();
             let mut g = st.0.lock().unwrap();
@@ -405,7 +410,7 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
 /// Run and loop get the global limits: --usage-cap from the caps (`caps`, "" for none), and with a daily
 /// budget a --max-cost of at most what is left today (their own --max-cost, if lower).
 fn with_budget(mut args: Vec<String>, left: Option<f64>, caps: &str) -> Vec<String> {
-    if !matches!(args.first().map(String::as_str), Some("run" | "loop" | "learn" | "share")) {
+    if !matches!(args.first().map(String::as_str), Some("run" | "loop" | "learn" | "share" | "split")) {
         return args;
     }
     if !caps.is_empty() && !args.iter().any(|a| a == "--usage-cap") {
@@ -893,6 +898,77 @@ fn learn_repo(
     request_start(&app, &repo, args, "learn repo".into())
 }
 
+/// `orch split --propose`: the architect splits a big brief into goals (a run like learn: slot, budget, log). The
+/// brief goes to orch in a temporary file, which orch deletes once read.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn split_brief(
+    app: AppHandle,
+    repo: String,
+    brief: String,
+    power: String,
+    max_cost: Option<f64>,
+    models: Option<String>,
+    on_limit: Option<String>,
+    plugins: Option<PluginOpts>,
+) -> Result<(), String> {
+    if brief.trim().is_empty() {
+        return Err("brief required".into());
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let file = std::env::temp_dir().join(format!("yaaiorch-brief-{}-{nanos}.md", std::process::id()));
+    std::fs::write(&file, brief).map_err(|e| e.to_string())?;
+    let extra = Extra {
+        max_cost,
+        models,
+        on_limit,
+        plugins,
+        ..Default::default()
+    };
+    let mut args = vec![
+        "split".to_string(),
+        "--propose".into(),
+        "--brief-file".into(),
+        file.to_string_lossy().into_owned(),
+        "--brief-file-temp".into(),
+    ];
+    args.extend(flags(&power, 1, false, &extra));
+    request_start(&app, &repo, args, "split brief".into())
+}
+
+/// `orch split --accept`: queue the (edited) goals of a split brief; the brief and goals go on stdin.
+#[tauri::command(async)]
+fn accept_split(app: AppHandle, repo: String, brief: String, goals: Vec<String>) -> Result<(), String> {
+    use std::io::Write;
+    let key = key_of(Path::new(&repo));
+    let dir = repo_of(&app, &key)?;
+    let mut child = node_cmd(&app, &dir, &["split".into(), "--accept".into()])?
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(json!({ "brief": brief, "goals": goals }).to_string().as_bytes())
+            .map_err(|e| e.to_string())?;
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch split failed")
+            .to_string());
+    }
+    emit_session(&app, &key);
+    Ok(())
+}
+
 /// `orch approve` for a run waiting with --approve-plan: approve (an edited plan goes on stdin) or reject with a reason.
 #[tauri::command(async)]
 fn approve_plan(app: AppHandle, repo: String, plan: Option<Value>, reject: Option<String>) -> Result<(), String> {
@@ -1129,6 +1205,8 @@ fn main() {
             learn_repo,
             share_repo,
             approve_plan,
+            split_brief,
+            accept_split,
             stop_after,
             doctor,
             plugins
