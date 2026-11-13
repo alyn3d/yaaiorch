@@ -1,0 +1,3 @@
+#!/bin/sh
+# POSIX launcher for the fake gh (see fake-gh.mjs). On Windows use gh.cmd.
+exec node "$(dirname "$0")/fake-gh.mjs" "$@"

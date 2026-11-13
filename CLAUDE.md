@@ -21,7 +21,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, review, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
+architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, review, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
 in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
 process exits without `goal_end`.
 
@@ -33,7 +33,7 @@ process exits without `goal_end`.
 - `npm run build`: typecheck + Vite build
 - `npm run lint` (ESLint, whole repo, config `orch-ui/eslint.config.mjs`), `npm run format` / `format:check` (Prettier, printWidth 160, `.prettierignore` at the root: code only, never eval fixtures). CI fails on either.
 - Rust: `cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings` (`rustfmt.toml`: max_width 160)
-- `npm test`: 54 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers and `claude-bin.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 57 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers and `claude-bin.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
@@ -44,6 +44,7 @@ process exits without `goal_end`.
 - Usage caps: agents run with `stream-json`; orch reads the CLI's `rate_limit_event` (5-hour and weekly `utilization`, undocumented) into `usage` events and, with `--usage-cap 5h=N,week=M` (config `usageCap`), pauses before an agent call (or stops, with `--on-limit stop`) while a reading is over a cap. The backends pass their global caps to every run and hold new starts too.
 - Global state (both backends, `global` / `orch-global` event): a usage limit in any repo holds new starts everywhere until the reset ("Try now" clears it); the optional daily budget sums `cost` from `plan`/`task_end` events, caps each run's `--max-cost` to what is left, holds starts and kills a loop at `queue_item` when used up. Persisted with the repos.
 - `.orchestrator/` (queue.json, last-run.json, builtin-agents.json) lives in the target repo and is never committed by the orchestrator. State files go through `writeFileAtomic`; queue edits through `updateQueue` (queue.lock); `run`/`loop`/`learn`/`rollback` take `run.lock` (`acquireRunLock`). Never write queue.json directly, from orch or a backend (the browser server adds goals via `orch add`). `validate()` rejects plan paths outside the repo, in `.git`/`.orchestrator`, or through a link (`badPath`).
+- Branch per goal (`--branch`, `--pr`): `startGoalBranch` / `finishGoalBranch` / `openPullRequest`; the base branch never moves, the checkpoint is deleted at the end, `gh` is resolved with `resolveCommand` (`GH_BIN`, fake in `test/fake-gh/`) and gets the PR body on stdin.
 - Git: a run refuses a dirty tree, creates `orchestrator/checkpoint-*`, and commits each round on the current branch. On pass the checkpoint is deleted, but only if everything got committed (a failed commit keeps it). Parking commits (`moveWorkAside`, side branches only) use `--no-verify` so hooks never block recovery; round commits respect hooks. On failure in `loop`, the work moves to `orchestrator/failed-*` and the branch is reset to the checkpoint. `orch rollback` (and the UI button) resets to the checkpoint and keeps the discarded work on `orchestrator/discarded-*`; `orch prune` deletes old `orchestrator/*` branches.
 - Headless agents get no shell unless allowed: `claude -p` with `acceptEdits` refuses every Bash/PowerShell call. So orch.ts runs the repo's checks itself (`.orchestrator/config.json` `checks`, else package.json `typecheck`/`lint`/`test`/`build`) and a non-zero exit fails the round. Agents get an allow-list for those commands via `--settings`.
 - Read-only roles (architect, verifiers) run with `--permission-mode default` and `readonly-settings.json` (edit tools denied). Deny rules alone are not enough: under `acceptEdits` an agent writes files with a shell redirect instead.

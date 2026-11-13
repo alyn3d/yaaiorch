@@ -73,6 +73,10 @@ export function shimTarget(shim: string): string | undefined {
   return found.at(-1);
 }
 
+/** How to start any CLI found this way (for example `gh`); the same rules as for claude. */
+export const resolveCommand = (bin: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): ClaudeCmd =>
+  resolveClaude(bin, env, platform);
+
 /** How to start `bin` (CLAUDE_BIN or "claude") on this platform. */
 export function resolveClaude(bin: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): ClaudeCmd {
   if (platform !== "win32") return { file: bin, pre: [], shell: false, via: bin };

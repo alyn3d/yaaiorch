@@ -58,6 +58,8 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     diffCritic: settings.diffCritic,
     review: settings.review,
     reviewers: settings.reviewers || undefined,
+    branch: settings.branch || settings.pr,
+    pr: settings.pr,
     plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;

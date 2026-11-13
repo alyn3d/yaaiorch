@@ -85,6 +85,20 @@ export function RunPanel({ run }: { run: Run }) {
       {/* The checkpoint and its rollback offer are shown by App from last-run.json, which stays correct after a rollback. */}
       {run.checkpoint && run.status === "running" && <p className="muted">Checkpoint: {run.checkpoint}</p>}
       {run.error && <p className="error">{run.error}</p>}
+      {run.branch && (
+        <p className="muted">
+          Branch: {run.branch.name} (from {run.branch.base}, which stays unchanged)
+        </p>
+      )}
+      {run.pr?.url && (
+        <p>
+          Pull request:{" "}
+          <a href={run.pr.url} target="_blank" rel="noreferrer">
+            {run.pr.url}
+          </a>
+        </p>
+      )}
+      {run.pr?.error && <p className="note">No pull request: {run.pr.error}</p>}
       {run.rounds.map((r) => (
         <div key={r.round} className="round">
           <div className="row">

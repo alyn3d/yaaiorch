@@ -109,6 +109,10 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       );
     case "unowned":
       return run && upd(run, ev.round, (r) => ({ ...r, unowned: { files: ev.files ?? [], strict: !!ev.strict } }));
+    case "goal_branch":
+      return run && { ...run, branch: { name: ev.branch, base: ev.base } };
+    case "pr":
+      return run && { ...run, pr: { url: ev.url, error: ev.error } };
     case "review":
       return (
         run &&

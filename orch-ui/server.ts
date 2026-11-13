@@ -348,6 +348,8 @@ const flags = (b: {
   diffCritic?: boolean;
   review?: boolean;
   reviewers?: string;
+  branch?: boolean;
+  pr?: boolean;
   plugins?: PluginOpts;
 }) => [
   "--power",
@@ -363,6 +365,8 @@ const flags = (b: {
   ...(b.diffCritic ? ["--diff-critic"] : []),
   ...(b.review ? ["--review"] : []),
   ...(b.review && typeof b.reviewers === "string" && REVIEWERS.test(b.reviewers) ? ["--reviewers", b.reviewers] : []),
+  ...(b.branch ? ["--branch"] : []),
+  ...(b.pr ? ["--pr"] : []),
   ...pluginFlags(b.plugins),
 ];
 

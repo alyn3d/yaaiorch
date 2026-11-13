@@ -37,6 +37,10 @@ export type RunSettings = {
   review: boolean;
   /** Your own reviewer agents instead of the built-in one, comma-separated (--reviewers). */
   reviewers: string;
+  /** Each goal on its own orch/<id>-<slug> branch (--branch). */
+  branch: boolean;
+  /** Push a passed goal's branch and open a pull request with gh (--pr). */
+  pr: boolean;
   plugins: PluginSettings;
 };
 
@@ -49,6 +53,8 @@ export const DEFAULT_SETTINGS: RunSettings = {
   diffCritic: false,
   review: false,
   reviewers: "",
+  branch: false,
+  pr: false,
   plugins: DEFAULT_PLUGINS,
 };
 
@@ -133,6 +139,24 @@ export function SettingsPanel({ repo, power, settings, onChange }: { repo: strin
           title="A read-only reviewer checks each round's change for bugs and security problems; a rejection fails the round. One extra call per reviewer per round (QA's model)."
         >
           <input type="checkbox" checked={settings.review} onChange={(e) => onChange({ ...settings, review: e.target.checked })} /> Review lens
+        </label>
+        <label
+          className="check"
+          title="Each goal runs on its own branch (orch/<id>-<slug>) and orch switches back afterwards, so your branch never changes; the goal's work waits on its branch for you."
+        >
+          <input
+            type="checkbox"
+            checked={settings.branch || settings.pr}
+            disabled={settings.pr}
+            onChange={(e) => onChange({ ...settings, branch: e.target.checked })}
+          />{" "}
+          Branch per goal
+        </label>
+        <label
+          className="check"
+          title="When a goal passes, push its branch to origin and open a pull request against your branch with gh (GitHub CLI, logged in). Needs Branch per goal."
+        >
+          <input type="checkbox" checked={settings.pr} onChange={(e) => onChange({ ...settings, pr: e.target.checked })} /> Open pull request
         </label>
         {settings.review && (
           <label title="Your own reviewer agents (from .claude/agents), comma-separated. Empty: the built-in reviewer.">

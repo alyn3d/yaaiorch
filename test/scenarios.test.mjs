@@ -452,6 +452,79 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(next, /^# My project\n\nHand-written rules\./);
   });
 
+  test("--branch: the goal runs on its own branch; the starting branch never changes", () => {
+    const dir = repo();
+    const main = git(dir, "rev-parse", "main");
+    const r = orch(dir, ["run", "Add a CSV export!", "--max-rounds", "1", "--branch"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    const gb = r.last("goal_branch");
+    assert.match(gb.branch, /^orch\/[0-9a-z]+-add-a-csv-export$/);
+    assert.equal(gb.base, "main");
+    assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "main", "back on main");
+    assert.equal(git(dir, "rev-parse", "main"), main, "main unchanged");
+    assert.match(git(dir, "log", "--format=%s", gb.branch), /orch: Add a CSV export! \(round 1\)/);
+    assert.deepEqual(branches(dir), [], "no checkpoint left");
+    assert.equal(lastRun(dir).branch, gb.branch);
+    assert.equal(lastRun(dir).checkpoint, undefined);
+
+    // A failed goal keeps its work on its branch too; main is still untouched.
+    const f = orch(dir, ["run", "x", "--max-rounds", "1", "--branch"], { FAKE_QA: "fail" });
+    assert.equal(f.code, 1);
+    assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+    assert.equal(git(dir, "rev-parse", "main"), main);
+    assert.match(git(dir, "log", "--format=%s", f.last("goal_branch").branch), /orch: x \(round 1\)/);
+
+    // A detached HEAD has no branch to come back to.
+    git(dir, "checkout", "-q", "--detach");
+    assert.match(orch(dir, ["run", "x", "--branch"]).out, /--branch needs a checked-out branch/);
+  });
+
+  test("--branch in a loop: each goal branches from the starting branch, not from the goal before", () => {
+    const dir = repo();
+    orch(dir, ["add", "first goal"]);
+    orch(dir, ["add", "second goal"]);
+    const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--branch"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("goal_branch").map((e) => e.branch),
+      ["orch/1-first-goal", "orch/2-second-goal"],
+    );
+    assert.equal(git(dir, "rev-parse", "orch/2-second-goal~1"), git(dir, "rev-parse", "main"));
+  });
+
+  test("--pr: a passed goal's branch is pushed and a pull request opened with gh; problems are reported, not fatal", () => {
+    const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+    const dir = repo();
+    const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
+    dirs.push(origin);
+    git(origin, "init", "-q", "--bare");
+    git(dir, "remote", "add", "origin", origin);
+    const ghLog = `${dir}.gh.log`;
+    const r = orch(dir, ["run", "Add a CSV export", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH, FAKE_GH_LOG: ghLog });
+    assert.equal(r.code, 0, r.out);
+    const { branch } = r.last("goal_branch");
+    assert.match(git(origin, "branch", "--list", branch), new RegExp(branch.replace(/[/-]/g, "\\$&")), "pushed");
+    const [call] = readFileSync(ghLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    assert.deepEqual(call.args, ["pr", "create", "--base", "main", "--head", branch, "--title", "Add a CSV export", "--body-file", "-"]);
+    assert.match(call.body, /^Add a CSV export\n\n## What YAAIORCH did\n- Round 1: fake plan \(passed; \$0\.25\)/);
+    assert.equal(r.last("pr").url, `https://github.com/example/repo/pull/${branch.length}`);
+    assert.equal(lastRun(dir).pr, r.last("pr").url);
+
+    // gh missing or failing: the branch is still pushed and the goal still passes.
+    const noGh = orch(dir, ["run", "y", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: join(dir, "no-such-gh") });
+    assert.equal(noGh.code, 0, noGh.out);
+    assert.match(noGh.last("pr").error, /gh \(GitHub CLI\) was not found/);
+    const ghFails = orch(dir, ["run", "z", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH, FAKE_GH_FAIL: "1" });
+    assert.equal(ghFails.code, 0);
+    assert.match(ghFails.last("pr").error, /gh auth login/);
+    // No origin: nothing pushed, reported.
+    git(dir, "remote", "remove", "origin");
+    assert.match(orch(dir, ["run", "w", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH }).last("pr").error, /no "origin" remote/);
+  });
+
   test("plan critic: a rejected plan goes back to the architect once; off by default", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "1", "--critic"], { FAKE_QA: "pass", FAKE_CRITIC: "reject-once" });

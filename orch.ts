@@ -20,7 +20,7 @@ import { homedir, hostname } from "node:os";
 import { join, basename, dirname, resolve, relative, isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { BUILTIN_AGENTS } from "./orch-agents";
-import { resolveClaude, type ClaudeCmd } from "./claude-bin";
+import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 
 const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root.
   orch run "<goal>"     one goal, loops architect -> build -> QA until QA passes
@@ -65,6 +65,10 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   (each goal also gets at most what is left as its --max-cost); also "maxCostTotal" in config
          --no-brief   do not use or write .orchestrator/brief.md (the architect's notes on the repo,
                   reused across rounds and goals); also "brief": false in config
+         --branch   run each goal on its own branch, orch/<id>-<slug>, and switch back afterwards: your branch is
+                  never changed (the goal's work stays on its branch); also "branch": true in config
+         --pr   with --branch: when a goal passes, push its branch to origin and open a pull request with gh
+                  (GitHub CLI) against your branch; also "pr": true in config
          --no-resume   fix rounds start every implementer cold (default: an agent that worked on the same
                   files in the round before continues its session); also "resume": false in config
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
@@ -477,6 +481,8 @@ type Config = {
   resume?: boolean;
   diffCritic?: boolean;
   review?: boolean | string[];
+  branch?: boolean;
+  pr?: boolean;
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -1182,6 +1188,118 @@ function rollback(branch?: string) {
   console.log(saved ? `rolled back; the discarded work is kept on branch ${saved}` : "nothing to discard; checkpoint removed");
 }
 
+// ---------- --branch / --pr: a branch per goal, and a pull request when it passes ----------
+type GoalBranch = { branch: string; base: string };
+
+/** orch/<id>-<slug>: the queue id (or a time stamp for `orch run`) and the goal's first words. */
+function goalBranchName(goal: string, id?: number): string {
+  const slug =
+    goal
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40)
+      .replace(/-+$/, "") || "goal";
+  const name = `orch/${id ?? Date.now().toString(36)}-${slug}`;
+  let n = 1;
+  while (branchExists(n === 1 ? name : `${name}-${n}`)) n++;
+  return n === 1 ? name : `${name}-${n}`;
+}
+
+/** Switch to a new branch for the goal, starting at the current commit. Needs a branch, not a detached HEAD. */
+function startGoalBranch(goal: string, id?: number): GoalBranch {
+  let base: string;
+  try {
+    base = git("symbolic-ref", "--quiet", "--short", "HEAD");
+  } catch {
+    throw new Error("--branch needs a checked-out branch to start from (HEAD is detached)");
+  }
+  const branch = goalBranchName(goal, id);
+  git("switch", "-q", "-c", branch);
+  console.log(`goal branch: ${branch} (from ${base}, which this goal does not change)`);
+  emit("goal_branch", { branch, base });
+  return { branch, base };
+}
+
+/**
+ * After a goal on its own branch: commit what is left, switch back to where it started and drop the checkpoint
+ * (the base branch never moved). The goal's work stays on its branch; an empty one is deleted. On pass with --pr,
+ * push it and open a pull request. If the work cannot be committed, stay on the goal branch and keep the checkpoint.
+ */
+function finishGoalBranch(cp: string, gb: GoalBranch, goal: string, passed: boolean, o: Opts, lr: LastRun) {
+  try {
+    tryCommit(`orch: ${short(goal)} (unfinished)`);
+    const left = dirtyFiles();
+    if (left) {
+      console.warn(`warning: the goal's work is not fully committed, so orch stays on ${gb.branch} and keeps ${cp}:\n${left}`);
+      return;
+    }
+    git("switch", "-q", gb.base);
+    git("branch", "-D", cp);
+    if (Number(git("rev-list", "--count", `${gb.base}..${gb.branch}`)) === 0) {
+      git("branch", "-D", gb.branch);
+      console.log(`back on ${gb.base}; the goal changed nothing, so ${gb.branch} was deleted`);
+      lr.branch = undefined;
+      return;
+    }
+    console.log(`back on ${gb.base} (unchanged); the goal's work is on branch ${gb.branch}`);
+    if (passed && o.pr) lr.pr = openPullRequest(gb, goal, lr);
+  } catch (e) {
+    console.warn(`warning: could not finish the goal branch (${msg(e)}); you may still be on ${gb.branch}`);
+  }
+}
+
+/** The pull request's description: the goal, what each round did, the checks, the cost. */
+function prBody(goal: string, lr: LastRun): string {
+  const rounds = lr.state as { round: number; plan: string; passed: boolean; checks?: { name: string; ok: boolean }[]; cost: number }[];
+  const lines = rounds.map(
+    (r) =>
+      `- Round ${r.round}: ${r.plan} (${r.passed ? "passed" : "failed"}` +
+      (r.checks?.length ? `; checks: ${r.checks.map((c) => `${c.name} ${c.ok ? "ok" : "failed"}`).join(", ")}` : "") +
+      `; $${r.cost.toFixed(2)})`,
+  );
+  return (
+    `${goal}\n\n## What YAAIORCH did\n${lines.join("\n")}\n\n` +
+    `QA passed in round ${rounds.length}; agent calls cost $${lr.cost.toFixed(2)} in total.\n\n` +
+    `Opened by [YAAIORCH](https://github.com/alyn3d/yaaiorch). Review it like any other pull request.\n`
+  );
+}
+
+/** Push the goal branch to origin and open a pull request with gh. Returns its URL; failures are reported, never thrown. */
+function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun): string | undefined {
+  let url: string | undefined;
+  let error: string | undefined;
+  try {
+    if (!git("remote").split("\n").includes("origin")) throw new Error('no "origin" remote to push to');
+    // Never wait for a credential prompt: an unattended run would hang.
+    execFileSync("git", ["push", "-q", "-u", "origin", gb.branch], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      timeout: 120_000,
+    });
+    const gh = resolveCommand(process.env.GH_BIN ?? "gh");
+    if (gh.missing) throw new Error(`pushed ${gb.branch}, but gh (GitHub CLI) was not found; open the pull request yourself`);
+    // The title is the only goal text on a command line; strip what a shell fallback could misread.
+    const title = (gh.shell ? goal.replace(/[^\w .,:()/+-]/g, "") : goal).replace(/\s+/g, " ").trim().slice(0, 72) || "YAAIORCH goal";
+    const r = spawnSync(gh.file, [...gh.pre, "pr", "create", "--base", gb.base, "--head", gb.branch, "--title", title, "--body-file", "-"], {
+      input: prBody(goal, lr),
+      encoding: "utf8",
+      shell: gh.shell,
+      windowsHide: true,
+      timeout: 120_000,
+    });
+    if (r.status !== 0) throw new Error(`gh pr create failed: ${(r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 300)}`);
+    url = /https?:\/\/\S+/.exec(r.stdout)?.[0];
+    console.log(`pull request: ${url ?? r.stdout.trim()}`);
+  } catch (e) {
+    error = msg(e);
+    console.warn(`warning: no pull request (${error})`);
+  }
+  emit("pr", { branch: gb.branch, base: gb.base, url, error });
+  return url;
+}
+
 /** Delete orchestrator/* branches whose timestamp is older than `days`. Never touches the current branch. */
 function prune(days: number) {
   if (!isGitRepo()) throw new Error("not a git repo");
@@ -1290,6 +1408,10 @@ type Opts = {
   diffCritic: boolean;
   /** Reviewers for bugs and security: null = off, [] = the built-in reviewer, else these agents. */
   review: string[] | null;
+  /** Each goal on its own orch/<id>-<slug> branch; the starting branch is never changed. */
+  branch: boolean;
+  /** With branch: push a passed goal's branch and open a pull request (gh). */
+  pr: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1448,7 +1570,17 @@ const failureKey = (fs: string[]) =>
     .sort()
     .join("\n");
 
-type LastRun = { goal: string; status: "running" | "passed" | "failed"; checkpoint?: string; cost: number; state: unknown[] };
+type LastRun = {
+  goal: string;
+  status: "running" | "passed" | "failed";
+  checkpoint?: string;
+  cost: number;
+  state: unknown[];
+  /** --branch: the goal's branch and the one it started from; --pr: the pull request's URL. */
+  branch?: string;
+  base?: string;
+  pr?: string;
+};
 
 /** First line of brief.md: the commit the brief describes, so a brief can tell when it has gone stale. */
 const BRIEF_STAMP = /^<!-- orch: written at commit ([0-9a-f]{7,40}) -->\r?\n?/;
@@ -1770,7 +1902,7 @@ const writeLastRun = (lr: LastRun) => writeFileAtomic(LAST_RUN, JSON.stringify(l
 let lastGoalCost = 0;
 /** QA's notes for the goal being run, written to notes.md when it ends. */
 let goalNotes: string[] = [];
-async function runGoal(goal: string, o: Opts): Promise<boolean> {
+async function runGoal(goal: string, o: Opts, id?: number): Promise<boolean> {
   emit("goal_start", {
     goal,
     maxRounds: o.maxRounds,
@@ -1782,6 +1914,8 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
     usageCap: o.usageCap,
     plugins: o.plugins,
     critic: o.critic,
+    branch: o.branch,
+    pr: o.pr,
   });
   const ctx: RunCtx = {
     budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
@@ -1792,10 +1926,16 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
   const lr: LastRun = { goal, status: "running", cost: 0, state: [] };
   goalNotes = [];
   let cp = "";
+  let gb: GoalBranch | undefined;
   let passed = false;
   let interrupted = false;
   try {
     cp = o.dryRun ? "" : prepareGit();
+    if (cp && o.branch) {
+      gb = startGoalBranch(goal, id);
+      lr.branch = gb.branch;
+      lr.base = gb.base;
+    }
     lr.checkpoint = cp || undefined;
     if (!o.dryRun) writeLastRun(lr); // the UI offers rollback from this even if the run is killed in round 1
     passed = await runGoalInner(goal, o, cp, ctx, lr);
@@ -1824,7 +1964,8 @@ async function runGoal(goal: string, o: Opts): Promise<boolean> {
     throw e;
   } finally {
     lastGoalCost = ctx.budget.spent;
-    if (cp) finishGit(cp, goal, passed, o.park || (interrupted && o.onLimit === "wait"), interrupted);
+    if (cp && gb) finishGoalBranch(cp, gb, goal, passed, o, lr);
+    else if (cp) finishGit(cp, goal, passed, o.park || (interrupted && o.onLimit === "wait"), interrupted);
     console.log(`cost: ${usd(ctx.budget.spent)}${o.maxCost !== undefined ? ` of ${usd(o.maxCost)}` : ""}`);
     if (!o.dryRun) {
       lr.status = passed ? "passed" : "failed";
@@ -2229,7 +2370,7 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       const goalOpts = left === undefined ? o : { ...o, maxCost: Math.min(o.maxCost ?? Infinity, left) };
       lastGoalCost = 0;
       try {
-        outcome = (await runGoal(item.goal, goalOpts)) ? "done" : "failed";
+        outcome = (await runGoal(item.goal, goalOpts, item.id)) ? "done" : "failed";
       } finally {
         spentTotal += lastGoalCost;
       }
@@ -2306,6 +2447,9 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const fromCfg = Array.isArray(cfg.review) ? cfg.review.map(String) : [];
   const review = named.length ? named : values.review || cfg.review === true ? [] : fromCfg.length ? fromCfg : null;
   for (const a of review ?? []) if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(a)) throw new Error(`--reviewers: "${a}" is not an agent name`);
+  const pr = !!values.pr || cfg.pr === true;
+  // A pull request needs a branch of its own.
+  const branch = pr || !!values.branch || cfg.branch === true;
   return {
     maxRounds,
     power: power as Power,
@@ -2324,6 +2468,8 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     resume,
     diffCritic,
     review,
+    branch,
+    pr,
     strictFiles,
     maxCostTotal,
   };
@@ -2354,6 +2500,8 @@ async function main() {
       "no-resume": { type: "boolean", default: false },
       critic: { type: "boolean", default: false },
       "diff-critic": { type: "boolean", default: false },
+      branch: { type: "boolean", default: false },
+      pr: { type: "boolean", default: false },
       review: { type: "boolean", default: false },
       reviewers: { type: "string" },
       details: { type: "boolean", default: false },

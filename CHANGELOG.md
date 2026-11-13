@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **A branch and a pull request per goal** (`--branch`, `--pr`; **Branch per goal** and **Open pull request** in
+  the run settings): each goal runs on its own `orch/<id>-<slug>` branch and orch switches back afterwards, so
+  your branch never changes. With `--pr`, a passed goal is pushed and a pull request opened with `gh`; a
+  missing remote or `gh` is reported without failing the goal. New `goal_branch` and `pr` events.
 - **Diff critic** (`--diff-critic`, **Diff critic** in the run settings): the critic also reviews each round's
   change against the goal, next to QA; a rejection fails the round.
 - **Review lens** (`--review`, **Review lens**): a read-only reviewer checks each round's change for bugs and

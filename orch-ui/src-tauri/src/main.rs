@@ -558,6 +558,8 @@ struct Extra {
     review: Option<bool>,
     /// "security-reviewer,backend-reviewer": the user's agents instead of the built-in reviewer
     reviewers: Option<String>,
+    branch: Option<bool>,
+    pr: Option<bool>,
     plugins: Option<PluginOpts>,
 }
 
@@ -624,6 +626,12 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
         if let Some(r) = extra.reviewers.as_deref().filter(|r| valid_reviewers(r)) {
             v.extend(["--reviewers".into(), r.into()]);
         }
+    }
+    if extra.branch.unwrap_or(false) {
+        v.push("--branch".into());
+    }
+    if extra.pr.unwrap_or(false) {
+        v.push("--pr".into());
     }
     if let Some(p) = &extra.plugins {
         if p.off.unwrap_or(false) {
@@ -757,6 +765,8 @@ fn run_goal(
     diff_critic: Option<bool>,
     review: Option<bool>,
     reviewers: Option<String>,
+    branch: Option<bool>,
+    pr: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
@@ -771,6 +781,8 @@ fn run_goal(
         diff_critic,
         review,
         reviewers,
+        branch,
+        pr,
         plugins,
     };
     let mut args = vec!["run".to_string()];
@@ -797,6 +809,8 @@ fn run_loop(
     diff_critic: Option<bool>,
     review: Option<bool>,
     reviewers: Option<String>,
+    branch: Option<bool>,
+    pr: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     let extra = Extra {
@@ -808,6 +822,8 @@ fn run_loop(
         diff_critic,
         review,
         reviewers,
+        branch,
+        pr,
         plugins,
     };
     let mut args = vec!["loop".to_string()];

@@ -65,6 +65,9 @@ export type RoundView = {
 };
 export type RunView = {
   goal: string;
+  /** --branch: the goal's branch and where it started (`goal_branch`); --pr: the pull request (`pr`). */
+  branch?: { name: string; base: string };
+  pr?: { url?: string; error?: string };
   maxRounds: number;
   dryRun: boolean;
   status: "running" | "passed" | "failed";
