@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Changed
+- Development: ESLint, Prettier, rustfmt and clippy run in CI (`npm run lint`, `npm run format:check`);
+  the code was formatted once (that commit is in `.git-blame-ignore-revs`).
 - Windows: `claude` is started without cmd.exe. orch finds it on PATH once: the native `claude.exe` runs
   directly, and npm's `claude.cmd` is unwrapped to node and the script it starts. This removes cmd.exe's
   quoting rules from every agent call (a `CLAUDE_BIN` path with `&`, `%` or `^` works) and Node's `DEP0190`

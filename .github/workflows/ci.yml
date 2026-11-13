@@ -34,6 +34,12 @@ jobs:
       - name: Install
         working-directory: orch-ui
         run: npm ci
+      - name: Lint
+        working-directory: orch-ui
+        run: npm run lint
+      - name: Format check
+        working-directory: orch-ui
+        run: npm run format:check
       - name: Typecheck and build the UI
         working-directory: orch-ui
         run: npm run build
@@ -66,6 +72,8 @@ jobs:
           cache: npm
           cache-dependency-path: orch-ui/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: orch-ui/src-tauri
@@ -79,9 +87,15 @@ jobs:
         timeout-minutes: 10
         working-directory: orch-ui
         run: npm test
-      - name: cargo check
+      - name: rustfmt
         working-directory: orch-ui/src-tauri
-        run: cargo check --locked
+        run: cargo fmt --check
+      - name: clippy (also type-checks)
+        working-directory: orch-ui/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Rust unit tests
+        working-directory: orch-ui/src-tauri
+        run: cargo test --locked
       - name: Rust spawn test (desktop backend runs orch.mjs with the fake claude)
         working-directory: orch-ui/src-tauri
         shell: pwsh

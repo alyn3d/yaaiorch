@@ -47,7 +47,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   agents, `--wait-on-limit` and `--resume` in the eval runner. **good first issue**
 - [x] **Unit tests** for `validate`, `extractJson`, `parseReset`, `failureKey`, `badPath` and more in `orch.ts`
   (`test/unit.test.mjs`); `reduce.ts` still has none. **good first issue**
-- [ ] **Lint and format**: ESLint + Prettier for TS, `rustfmt` + `clippy` for Rust, wired into CI.
+- [x] **Lint and format**: ESLint + Prettier for TS, `rustfmt` + `clippy` for Rust, wired into CI.
   **good first issue**
 
 ### Correctness and safety

@@ -31,7 +31,8 @@ process exits without `goal_end`.
 - `npm run build && npm start`: browser mode at http://localhost:4317; `ORCH_REPO=<repo>` or `ORCH_REPOS` opens repos (more via the UI, remembered in `~/.yaaiorch/ui.json`)
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
-- Rust check: `cd src-tauri && cargo check`
+- `npm run lint` (ESLint, whole repo, config `orch-ui/eslint.config.mjs`), `npm run format` / `format:check` (Prettier, printWidth 160, `.prettierignore` at the root: code only, never eval fixtures). CI fails on either.
+- Rust: `cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings` (`rustfmt.toml`: max_width 160)
 - `npm test`: 48 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers and `claude-bin.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
@@ -67,4 +68,4 @@ process exits without `goal_end`.
 - GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
-0.3.0 shipped reliability (locks, retries, path checks, loop budget, server guard) and repo memory (brief, notes, `orch learn`, critic). Still open from 0.3 in `TODO.md`: the eval baseline, measuring the memory features on the series cases, and lint/format in CI; then 0.4.
+0.3.0 shipped reliability (locks, retries, path checks, loop budget, server guard) and repo memory (brief, notes, `orch learn`, critic). Still open from 0.3 in `TODO.md`: the eval baseline, and measuring the memory features on the series cases; then 0.4.

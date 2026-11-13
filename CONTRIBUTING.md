@@ -45,15 +45,20 @@ summary for humans too.
 
 ## Checks before you open a PR
 
+Formatting commits are listed in `.git-blame-ignore-revs`; run
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` once so `git blame` skips them.
+
 Run what your change touches:
 
 ```bash
 cd orch-ui
+npm run lint                  # ESLint over the whole repo (CI fails on any finding)
+npm run format                # Prettier, printWidth 160 (CI runs format:check)
 npm run build                 # typecheck + build the UI (also typechecks server.ts)
 npm run build:orch            # bundle orch.ts; fails on syntax errors
 npm test                      # scenario tests with the fake claude
 npx tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext --types node --skipLibCheck ../orch.ts
-cd src-tauri && cargo check   # if you touched main.rs
+cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings   # if you touched main.rs
 cd ../..
 node evals/run.ts --reference # if you touched evals/
 ```
