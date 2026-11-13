@@ -33,6 +33,7 @@ npm install
 |---|---|
 | `orch.ts` | the orchestrator CLI: loop, git handling, limits, events |
 | `orch-agents.ts` | built-in agent prompts |
+| `claude-bin.ts` | finds the `claude` executable so it starts without a shell on Windows |
 | `orch-ui/src/` | React UI shared by the browser and desktop builds |
 | `orch-ui/server.ts` | browser-mode backend (HTTP + SSE) |
 | `orch-ui/src-tauri/` | desktop backend (Tauri v2, Rust) |
@@ -101,8 +102,8 @@ node evals/run.ts --cases node-chunk-bug,api-post,py-roman --power economy --rep
 - **Keep the backends in sync.** A new action needs a route in `server.ts`, a command in `main.rs` and
   an entry in `transport.ts`. Put the logic in `orch.ts` as a subcommand where you can, so both
   backends only spawn it.
-- **Windows first.** Test paths with spaces and backslashes; `claude` runs through a shell on Windows,
-  so pass anything complicated through stdin or a file, never as a quoted argument.
+- **Windows first.** Test paths with spaces and backslashes. Start `claude` only through `spawnClaude` /
+  `claudeSync` (no shell); pass anything long or complicated through stdin or a file anyway.
 - **Trust exit codes and diffs, not agent reports.** New features that judge success should follow
   the same rule.
 - Small, focused PRs with a clear description of what changed and how you checked it. Update the

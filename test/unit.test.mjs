@@ -3,7 +3,7 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -121,5 +121,68 @@ describe("failureKey, verdicts and reviews", () => {
       assert.ok(o.TRANSIENT_RE.test(t), t);
     for (const t of ["You've hit your 5-hour limit", "be timed out after 30 min", "be: CLI returned error_during_execution: 500 tests failed", "budget of $1.00 used up"])
       assert.ok(!o.TRANSIENT_RE.test(t), t);
+  });
+});
+
+describe("claude-bin: start claude without a shell on Windows", () => {
+  let cb, dir;
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    cb = await tsImport(pathToFileURL(join(root, "claude-bin.ts")).href, import.meta.url);
+    dir = mkdtempSync(join(tmpdir(), "yaaiorch-bin-"));
+  });
+  const env = (d) => ({ PATH: d, PATHEXT: ".COM;.EXE;.BAT;.CMD" });
+  const file = (p, text = "") => (mkdirSync(dirname(p), { recursive: true }), writeFileSync(p, text));
+
+  test("other platforms spawn the name as given", () => {
+    assert.deepEqual(cb.resolveClaude("claude", {}, "linux"), { file: "claude", pre: [], shell: false, via: "claude" });
+  });
+  test("an .exe on PATH runs directly", () => {
+    const d = join(dir, "exe");
+    file(join(d, "claude.exe"));
+    file(join(d, "claude")); // npm's POSIX shim is never picked on Windows
+    const c = cb.resolveClaude("claude", env(d), "win32");
+    assert.equal(c.file, join(d, "claude.exe"));
+    assert.equal(c.shell, false);
+  });
+  test("npm's .cmd shim is unwrapped to node + its script", () => {
+    const d = join(dir, "npm");
+    const cli = join(d, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
+    file(cli);
+    file(join(d, "claude"));
+    file(join(d, "claude.cmd"),
+      '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n' +
+      'IF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n)\r\n' +
+      'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n');
+    const c = cb.resolveClaude("claude", env(d), "win32");
+    assert.deepEqual([c.file, c.pre, c.shell], [process.execPath, [cli], false]);
+  });
+  test("a %~dp0 shim given as a path with spaces and & is unwrapped", () => {
+    const d = join(dir, "a b&c");
+    file(join(d, "fake.mjs"));
+    file(join(d, "claude.cmd"), '@node "%~dp0fake.mjs" %*\r\n');
+    const c = cb.resolveClaude(join(d, "claude.cmd"), {}, "win32");
+    assert.deepEqual([c.file, c.pre, c.shell], [process.execPath, [join(d, "fake.mjs")], false]);
+  });
+  test("an unknown shim falls back to cmd.exe, quoted; a missing claude is reported", () => {
+    const d = join(dir, "odd dir");
+    file(join(d, "claude.cmd"), "@echo hi\r\n");
+    const c = cb.resolveClaude("claude", env(d), "win32");
+    assert.deepEqual([c.file, c.shell], [`"${join(d, "claude.cmd")}"`, true]);
+    assert.match(c.via, /unrecognised shim/);
+    // Not found: never spawned (cmd.exe and Node would both look in the current directory first).
+    assert.deepEqual(cb.resolveClaude("claude", env(join(dir, "none")), "win32").missing, true);
+  });
+  test("the current directory is not searched", () => {
+    const d = join(dir, "cwd");
+    file(join(d, "claude.cmd"), '@node "%~dp0x.mjs" %*\r\n');
+    const prev = process.cwd();
+    process.chdir(d);
+    try {
+      assert.equal(cb.findOnPath("claude", env(join(dir, "none"))), undefined);
+    } finally {
+      process.chdir(prev);
+    }
   });
 });

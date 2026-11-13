@@ -59,7 +59,7 @@ Still open, moved to the next release:
 - A full eval baseline across tiers, a default tier chosen from it, and the numbers published (pass
   rate, false passes, cost per tier): the claim "measured" needs public data.
 - Measuring the 0.4 features above on the series cases before they stay on by default.
-- Lint and format in CI, and spawning `claude` without a shell on Windows.
+- Lint and format in CI (spawning `claude` without a shell on Windows: done).
 
 ## 0.4: better results per dollar
 

@@ -61,8 +61,8 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   goals). Today Stop kills the process tree.
 - [x] **Ownership enforcement**: after the build phase, files changed outside every task's list go to QA,
   and fail the round with `--strict-files`.
-- [ ] **Spawn `claude` without a shell on Windows** (resolve the executable once) to drop the
-  `DEP0190` warning and the quoting risk.
+- [x] **Spawn `claude` without a shell on Windows** (resolve the executable once) to drop the
+  `DEP0190` warning and the quoting risk (`claude-bin.ts`).
 
 ## 0.4: better results per dollar
 

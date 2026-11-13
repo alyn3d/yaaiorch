@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { resolveClaude } from "../claude-bin.ts";
 
 /** `goals`: a series, run one after another on the same repo and graded once at the end. */
 type Case = { id: string; fixture: string; kind: string; difficulty: string; goal?: string; goals?: string[]; grade: string };
@@ -213,8 +214,9 @@ function runOrch(dir: string, goal: string, power: string): Promise<{ exit: numb
 
 // ---------- single-agent control: one `claude -p` call with the same goal, permissions, budget and checks ----------
 const CLAUDE = a["claude-bin"] ?? process.env.CLAUDE_BIN ?? "claude";
-/** cmd.exe joins the command line unquoted, so quote a path with spaces (as orch.ts does). */
-const shellCmd = (cmd: string) => (process.platform === "win32" && /\s/.test(cmd) && !cmd.startsWith('"') ? `"${cmd}"` : cmd);
+/** Started the same way orch.ts starts it: no shell on Windows (see claude-bin.ts). */
+const CLAUDE_CMD = resolveClaude(CLAUDE);
+if (CLAUDE_CMD.missing && a.single) throw new Error(`"${CLAUDE}" not found on PATH; install Claude Code or pass --claude-bin`);
 
 /** The repo's check commands, found the same way orch.ts finds them. */
 function checksIn(dir: string): Record<string, string> {
@@ -250,8 +252,8 @@ function runSingle(dir: string, goal: string, model: string): Promise<SingleResu
   ];
   return new Promise((resolve) => {
     const start = Date.now();
-    const p = spawn(shellCmd(CLAUDE), args, {
-      cwd: dir, shell: process.platform === "win32", windowsHide: true, detached: process.platform !== "win32",
+    const p = spawn(CLAUDE_CMD.file, [...CLAUDE_CMD.pre, ...args], {
+      cwd: dir, shell: CLAUDE_CMD.shell, windowsHide: true, detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
     const log = join(dir, "..", `${dir.split(/[\\/]/).pop()}.single.log`);

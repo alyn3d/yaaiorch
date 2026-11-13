@@ -1,11 +1,12 @@
 #!/usr/bin/env tsx
 // YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root. Usage: see USAGE below.
-import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, execFileSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, unlinkSync, openSync, closeSync, statSync, utimesSync, realpathSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, basename, dirname, resolve, relative, isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { BUILTIN_AGENTS } from "./orch-agents";
+import { resolveClaude, type ClaudeCmd } from "./claude-bin";
 
 const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root.
   orch run "<goal>"     one goal, loops architect -> build -> QA until QA passes
@@ -137,15 +138,24 @@ function bumpAliases(m: Models): Models {
 }
 
 const CLAUDE = process.env.CLAUDE_BIN ?? "claude";
-/**
- * On Windows `claude` is spawned through cmd.exe (so .cmd shims resolve), which joins the command line
- * unquoted: a CLAUDE_BIN like "C:\Program Files\...\claude.cmd" must be quoted or cmd splits it.
- */
-const shellCmd = (cmd: string) => (process.platform === "win32" && /\s/.test(cmd) && !cmd.startsWith('"') ? `"${cmd}"` : cmd);
+/** How claude is started, resolved once: no shell on Windows unless its .cmd shim cannot be read (see claude-bin.ts). */
+let claudeCmd: ClaudeCmd | undefined;
+const claudeBin = () => (claudeCmd ??= resolveClaude(CLAUDE));
+const notFound = () => `"${CLAUDE}" not found on PATH; install Claude Code or set CLAUDE_BIN`;
+function spawnClaude(args: string[], opts: SpawnOptions = {}) {
+  const c = claudeBin();
+  if (c.missing) throw new Error(notFound());
+  return spawn(c.file, [...c.pre, ...args], { ...opts, shell: c.shell, windowsHide: true });
+}
+function claudeSync(args: string[]) {
+  const c = claudeBin();
+  if (c.missing) return { status: null, stdout: "", stderr: notFound() };
+  return spawnSync(c.file, [...c.pre, ...args], { encoding: "utf8", shell: c.shell, windowsHide: true, timeout: 30_000 });
+}
 const DIR = ".orchestrator";
 const QUEUE = join(DIR, "queue.json");
 const LAST_RUN = join(DIR, "last-run.json");
-// Relative, forward slashes, no spaces: safe to pass through the Windows shell.
+// Relative, forward slashes, no spaces: safe even when claude has to go through cmd.exe.
 const BUILTIN_FILE = `${DIR}/builtin-agents.json`;
 /** The architect's notes on the repo (stack, layout, conventions, commands), reused by later rounds and goals. */
 const BRIEF_FILE = join(DIR, "brief.md");
@@ -457,7 +467,7 @@ type Plugin = { id: string; name: string; scope: string; enabled: boolean; token
 
 /** `claude plugin list --json`, run in the repo so project-scoped plugins are included. */
 function listPlugins(): Plugin[] {
-  const r = cli(CLAUDE, ["plugin", "list", "--json"]);
+  const r = claudeSync(["plugin", "list", "--json"]);
   if (r.status !== 0) throw new Error(`"claude plugin list --json" failed: ${(r.stderr || r.stdout || "").trim().slice(0, 200)}`);
   const raw = JSON.parse(r.stdout) as { id?: string; scope?: string; enabled?: boolean; projectEnabled?: boolean }[];
   return raw
@@ -471,7 +481,7 @@ async function pluginTokens(plugins: Plugin[]): Promise<void> {
     plugins.map(
       (p) =>
         new Promise<void>((resolve) => {
-          const c = spawn(shellCmd(CLAUDE), ["plugin", "details", p.id], { shell: process.platform === "win32", windowsHide: true });
+          const c = spawnClaude(["plugin", "details", p.id]);
           let out = "";
           c.stdout?.setEncoding("utf8").on("data", (d: string) => (out += d));
           const timer = setTimeout(() => killTree(c), 30_000);
@@ -769,7 +779,7 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
     ];
     let p: ChildProcess & { stdout: NonNullable<ChildProcess["stdout"]>; stdin: NonNullable<ChildProcess["stdin"]> };
     try {
-      p = spawn(shellCmd(CLAUDE), args, { stdio: ["pipe", "pipe", "inherit"], shell: process.platform === "win32", windowsHide: true });
+      p = spawnClaude(args, { stdio: ["pipe", "pipe", "inherit"] }) as typeof p;
     } catch (e) {
       settle(0);
       return reject(e);
@@ -1102,8 +1112,7 @@ function prune(days: number) {
 type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };
 
 function cli(cmd: string, args: string[]) {
-  // shell on Windows so claude.cmd shims resolve; arguments here are fixed and safe
-  return spawnSync(shellCmd(cmd), args, { encoding: "utf8", shell: process.platform === "win32", windowsHide: true, timeout: 30_000 });
+  return spawnSync(cmd, args, { encoding: "utf8", windowsHide: true, timeout: 30_000 });
 }
 
 function doctor(): Finding[] {
@@ -1111,11 +1120,12 @@ function doctor(): Finding[] {
   const major = Number(process.versions.node.split(".")[0]);
   f.push({ name: "node", level: major >= 20 ? "ok" : "fail", detail: `v${process.versions.node}${major >= 20 ? "" : " (need 20 or newer)"}` });
 
-  const ver = cli(CLAUDE, ["--version"]);
+  const ver = claudeSync(["--version"]);
   const claudeOk = ver.status === 0;
-  f.push({ name: "claude", level: claudeOk ? "ok" : "fail", detail: claudeOk ? ver.stdout.trim() : `"${CLAUDE} --version" failed; install Claude Code or set CLAUDE_BIN` });
+  const via = claudeBin().shell ? ` (through ${claudeBin().via})` : "";
+  f.push({ name: "claude", level: claudeOk ? "ok" : "fail", detail: claudeOk ? `${ver.stdout.trim()}${via}` : `"${CLAUDE} --version" failed${via}; install Claude Code or set CLAUDE_BIN` });
   if (claudeOk) {
-    const auth = cli(CLAUDE, ["auth", "status", "--json"]);
+    const auth = claudeSync(["auth", "status", "--json"]);
     let loggedIn: boolean | undefined;
     try {
       loggedIn = JSON.parse(auth.stdout).loggedIn;

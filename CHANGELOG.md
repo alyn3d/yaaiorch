@@ -5,6 +5,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Changed
+- Windows: `claude` is started without cmd.exe. orch finds it on PATH once: the native `claude.exe` runs
+  directly, and npm's `claude.cmd` is unwrapped to node and the script it starts. This removes cmd.exe's
+  quoting rules from every agent call (a `CLAUDE_BIN` path with `&`, `%` or `^` works) and Node's `DEP0190`
+  warning. The current directory is no longer searched, so a target repo cannot plant a `claude.cmd`.
+  A shim orch cannot read still goes through cmd.exe, and `orch doctor` says so.
+
 ## [0.3.0] - 2026-11-13
 
 Reliability and memory: the orchestrator learns a repo (project brief, notes between goals, `orch learn`),

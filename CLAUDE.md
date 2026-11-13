@@ -12,6 +12,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Layout
 - `orch.ts`: orchestrator CLI. Must sit next to `orch-ui/` (the UI looks for `../orch.ts`).
+- `claude-bin.ts`: finds the `claude` executable once (Windows: an .exe directly, an npm .cmd shim unwrapped to node + its script), shared by `orch.ts` and `evals/run.ts`.
 - `orch-agents.ts`: built-in agent prompts, bundled into `orch.mjs`. Written to `.orchestrator/builtin-agents.json` at run time and passed to `claude --agents`. Reply formats are appended to prompts by `orch.ts`, not stored here.
 - `orch-ui/src`: React + TypeScript + SCSS. `transport.ts` picks HTTP/SSE (browser) or Tauri invoke/events.
 - `orch-ui/src/reduce.ts`: folds structured events into the run view.
@@ -31,11 +32,11 @@ process exits without `goal_end`.
 - `npm run dev`: browser dev (Vite + server)
 - `npm run build`: typecheck + Vite build
 - Rust check: `cd src-tauri && cargo check`
-- `npm test`: 47 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 48 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers and `claude-bin.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
-- Windows is the primary target. `orch.ts` spawns `claude` through a shell on win32; children use `windowsHide`.
+- Windows is the primary target. `claude` is spawned without a shell (`spawnClaude` / `claudeSync` in orch.ts, `resolveClaude` in `claude-bin.ts`); cmd.exe only as a fallback for a .cmd shim it cannot read. PATH is searched, never the current directory. Children use `windowsHide`.
 - Browser-mode server guard: `refuse()` in `server.ts` checks a local `Host` and `Origin` and a per-process token (`x-orch-token`, or `?token=` for SSE) on every `/api` call; the UI gets it from `/api/token` (`transport.ts`). Any new route is covered automatically; never add an `/api` route before the guard.
 - Multi-repo UI: both backends keep one session per repo (process, log, events), tag every message with its `repo`, and run at most `maxParallel` repos at once (start queue). One run per repo. Keep `server.ts`, `main.rs` and `transport.ts` in sync. Stop kills that repo's process tree (taskkill on Windows).
 - Plugins: headless agents load the user's Claude Code plugins and hooks. `--plugins off` / `--disable-plugins` / `--no-hooks` (config `plugins`) write `enabledPlugins: {id: false}` and `disableAllHooks` into the agents' `--settings` files (not `--bare`, which drops the OAuth login). `orch plugins --json --details` lists them via `claude plugin list --json` and `claude plugin details`.
@@ -51,7 +52,7 @@ process exits without `goal_end`.
 - `orch doctor --json` is the first-run check both UIs show as a banner.
 - Usage limit ("You've hit your … limit · resets …"): ends the goal as `UsageLimit` (never a task failure or stuck round). `--on-limit wait` (default; config `onLimit`): the work goes to `orchestrator/interrupted-*`, orch waits for the reset and retries (`run` and `loop`). `--on-limit stop`: the goal stays pending and orch exits 3. The eval runner always passes `--on-limit stop` and never records such runs: it stops (or waits with `--wait-on-limit`), and `--resume <stamp>` finishes later.
 - Models: `modelFor()` resolves per-agent override > per-role override (`--model`, then config `models`) > power tier. Roles: architect, impl, heavy, qa, dev. On stuck escalation alias overrides step up (haiku → sonnet → opus); full IDs stay. `round_start` carries the effective `models`. The UI's `Settings.tsx` mirrors the tier table for placeholders; keep it in sync with `POWER`.
-- Testing without spending tokens: `CLAUDE_BIN=test/fake-claude/claude` (`claude.cmd` on Windows); switches are documented at the top of `fake-claude.mjs`. On Windows `claude` is spawned through cmd.exe, so `shellCmd()` quotes a `CLAUDE_BIN` with spaces; keep that for any new spawn of it.
+- Testing without spending tokens: `CLAUDE_BIN=test/fake-claude/claude` (`claude.cmd` on Windows); switches are documented at the top of `fake-claude.mjs`. Spawn `claude` only through `spawnClaude` / `claudeSync` (or `resolveClaude`), never with `shell: true`.
 
 ## Evals (`evals/`, see its README)
 - `node evals/run.ts --reference`: checks every case's hidden tests fail on the fixture and pass with the reference. Run after editing a case.
@@ -66,4 +67,4 @@ process exits without `goal_end`.
 - GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
-0.3.0 shipped reliability (locks, retries, path checks, loop budget, server guard) and repo memory (brief, notes, `orch learn`, critic). Still open from 0.3 in `TODO.md`: the eval baseline, measuring the memory features on the series cases, lint/format in CI, and spawning `claude` without a shell on Windows; then 0.4.
+0.3.0 shipped reliability (locks, retries, path checks, loop budget, server guard) and repo memory (brief, notes, `orch learn`, critic). Still open from 0.3 in `TODO.md`: the eval baseline, measuring the memory features on the series cases, and lint/format in CI; then 0.4.

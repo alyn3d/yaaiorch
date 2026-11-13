@@ -763,6 +763,23 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(bad.out, /FAIL\s+repo: uncommitted changes/);
   });
 
+  test("claude in a folder with spaces, & and % starts and runs a goal (no cmd.exe on Windows)", () => {
+    const dir = repo();
+    const bin = mkdtempSync(join(tmpdir(), "yaaiorch odd & %PATH% "));
+    dirs.push(bin);
+    for (const f of ["claude", "claude.cmd", "fake-claude.mjs"]) writeFileSync(join(bin, f), readFileSync(join(dirname(FAKE), f)));
+    if (process.platform !== "win32") chmodSync(join(bin, "claude"), 0o755);
+    const claudeBin = join(bin, process.platform === "win32" ? "claude.cmd" : "claude");
+    const doc = orch(dir, ["doctor", "--json"], { CLAUDE_BIN: claudeBin });
+    const findings = JSON.parse(doc.out.trim().split(/\r?\n/).at(-1));
+    const claude = findings.find((f) => f.name === "claude");
+    assert.equal(claude.level, "ok", doc.out);
+    assert.doesNotMatch(claude.detail, /cmd\.exe/);
+    const r = orch(dir, ["run", "add a feature"], { CLAUDE_BIN: claudeBin });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.last("goal_end").passed, true);
+  });
+
   test("rejects bad input", () => {
     const dir = repo();
     for (const [args, message] of [
