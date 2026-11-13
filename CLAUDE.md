@@ -77,4 +77,4 @@ process exits without `goal_end`.
 - GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
-0.3.0 shipped reliability (locks, retries, path checks, loop budget, server guard) and repo memory (brief, notes, `orch learn`, critic). Still open from 0.3 in `TODO.md`: the eval baseline, and measuring the memory features on the series cases; then 0.4.
+0.4.0 shipped whole projects (big briefs, `orch new`, goal dependencies, retries, a shared brief branch and PR, queue budget and progress) and better rounds (session resume, diff critic, review lens, notes tidy and share, plan approval, notifications). Still open in `TODO.md`: measuring all of it on the evals (series, greenfield, multi-round cases) and the baseline; then the rest of 0.5 (backlog intake, worktrees, sandboxing).

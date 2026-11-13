@@ -64,7 +64,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
 - [x] **Spawn `claude` without a shell on Windows** (resolve the executable once) to drop the
   `DEP0190` warning and the quoting risk (`claude-bin.ts`).
 
-## 0.4: better results per dollar
+## 0.4: better results per dollar (0.4.0 released; measuring carries over)
 
 Each item should show its effect in the evals before it becomes the default.
 

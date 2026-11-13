@@ -5,6 +5,14 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
+From one goal at a time to whole projects: give orch a big brief (or a spec for a new project) and it splits it
+into goals that build on each other, runs them unattended with a budget, retries and progress, and opens one
+pull request for the lot. Also better results per round (session resume, diff critic, review lens, tidier
+memory), a plan approval gate, notifications, and `claude` started without a shell on Windows. Tested end to
+end with the fake claude and in a real smoke run; the new features are not measured by the evals yet.
+
 ### Added
 - **Budget and progress for a whole queue**: **Budget $** in the queue section (and **Total $** for a new project)
   caps all the goals a loop runs together (`--max-cost-total`). The latest brief's progress shows above the
@@ -255,7 +263,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/alyn3d/yaaiorch/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/alyn3d/yaaiorch/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/alyn3d/yaaiorch/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/alyn3d/yaaiorch/releases/tag/v0.1.0

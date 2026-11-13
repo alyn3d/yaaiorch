@@ -1,6 +1,6 @@
 [package]
 name = "yaaiorch"
-version = "0.3.0"
+version = "0.4.0"
 description = "YAAIORCH - Yet Another AI Orchestrator"
 license = "GPL-3.0-only"
 repository = "https://github.com/alyn3d/yaaiorch"

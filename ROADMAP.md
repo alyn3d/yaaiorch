@@ -61,18 +61,20 @@ Still open, moved to the next release:
 - Measuring the 0.4 features above on the series cases before they stay on by default.
 - Lint and format in CI, and spawning `claude` without a shell on Windows (both done).
 
-## 0.4: better results per dollar
+## 0.4: better results per dollar, and whole projects (released 0.4.0)
 
-Fewer rounds and cheaper rounds for the same pass rate, each change backed by eval numbers.
+Shipped in 0.4.0: session resume for fix rounds, a diff critic and a review lens, tidied notes and `orch share`
+(a CLAUDE.md section), lint and format in CI, `claude` without a shell on Windows. From 0.5, ahead of
+schedule: a branch and a pull request per goal (one per brief), a plan approval gate, notifications, goal
+dependencies with retries and blocked goals. New: big briefs (`orch split`, the **Big brief** box), new
+projects (`orch new`, **+ New project**), dependency setup, a queue budget and progress.
 
-- A plan critic: a separate read-only agent reviews the plan (and later the diff) before work goes on,
-  seeing only artifacts (plan, diff, check output), never the other agents' reasoning.
-- A project brief reused across rounds and goals.
-- Richer context for fix rounds (previous plan, diff, check output) and resumed implementer sessions.
-- Memory between goals (tidied when it grows, and shareable as a CLAUDE.md section), an optional review
-  lens, and per-task escalation. All built; what is left of 0.4 is measuring them.
+Still open, moved to the next release:
 
-## 0.5: autonomy
+- Measuring the 0.3 and 0.4 features on the eval cases (series, greenfield, multi-round) before they stay on
+  by default, and a full baseline across tiers with the numbers published.
+
+## 0.5: autonomy (partly shipped in 0.4.0)
 
 From "run this goal" to "work through this backlog".
 
