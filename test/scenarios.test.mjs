@@ -964,6 +964,34 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(clean.ev("unowned").length, 0);
   });
 
+  test("a goal cut short by the usage limit resumes from its parked work instead of starting over", () => {
+    for (const branchMode of [false, true]) {
+      const dir = repo();
+      orch(dir, ["add", "build it"]);
+      const extra = branchMode ? ["--branch"] : [];
+      // Calls: 1 architect, 2-4 implementers, 5 QA: the limit hits just before QA, after the work was committed.
+      const first = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--on-limit", "stop", ...extra], { FAKE_QA: "pass", FAKE_LIMIT_ON: "5" });
+      assert.equal(first.code, 3, first.out);
+      const item = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"))[0];
+      assert.equal(item.status, "pending");
+      assert.ok(item.resumeFrom, `the parked work is remembered (${branchMode ? "goal branch" : "interrupted-*"})`);
+      assert.ok(branches(dir, item.resumeFrom).length === 1, item.resumeFrom);
+
+      const again = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", ...extra], { FAKE_QA: "pass" });
+      assert.equal(again.code, 0, again.out);
+      assert.deepEqual(again.last("resumed")?.commits, ["orch: build it (round 1)"], again.out);
+      assert.ok(again.calls.includes("architect: resumed with 1 commit(s)"), again.calls.join("\n"));
+      assert.equal(again.last("goal_end").passed, true);
+      assert.deepEqual(branches(dir, item.resumeFrom), [], "the parked branch is used up");
+      const done = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"))[0];
+      assert.equal(done.status, "done");
+      assert.equal(done.resumeFrom, undefined);
+      // The first attempt's commit is part of the finished goal, under the second attempt's.
+      const where = branchMode ? again.last("goal_branch").branch : "main";
+      assert.deepEqual(git(dir, "log", "--format=%s", where).split("\n").slice(0, 3), ["orch: build it (round 1)", "orch: build it (round 1)", "init"]);
+    }
+  });
+
   test("--max-cost-total: the loop stops before the next goal once its budget is spent", () => {
     const dir = repo();
     for (const g of ["one", "two", "three"]) orch(dir, ["add", g]);
@@ -1240,7 +1268,9 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(r.out, /usage limit reached; goal #1 is pending again/);
     assert.equal(r.ev("waiting").length, 1);
     assert.match(orch(dir, ["status"]).out, /#1 \[done\] goal one[\s\S]*#2 \[done\] goal two/);
-    assert.equal(branches(dir, "orchestrator/interrupted-*").length, 1);
+    // The interrupted attempt's work was brought back into the retry, so its branch is used up.
+    assert.equal(r.ev("resumed").length, 1);
+    assert.equal(branches(dir, "orchestrator/interrupted-*").length, 0);
     const queue = JSON.parse(readFileSync(join(dir, ".orchestrator", "queue.json"), "utf8"));
     assert.ok(
       queue.every((i) => !i.note),
@@ -1302,7 +1332,12 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.ev("waiting").length, 1);
     assert.equal(r.ev("goal_start").length, 2, "the goal is retried after the wait");
     assert.equal(r.last("goal_end").passed, true);
-    assert.equal(branches(dir, "orchestrator/interrupted-*").length, 1, "the first attempt's work is kept aside");
+    // The first attempt's work was set aside, then brought back into the retry.
+    assert.deepEqual(
+      r.ev("resumed").map((e) => e.commits.length),
+      [1],
+    );
+    assert.equal(branches(dir, "orchestrator/interrupted-*").length, 0);
     assert.notEqual(git(dir, "rev-parse", "HEAD"), base);
     assert.equal(dirty(dir), "");
   });

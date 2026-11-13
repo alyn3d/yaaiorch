@@ -128,6 +128,8 @@ type Item = {
   /** What its runs cost and how long they took, all attempts together (for the UI's progress). */
   cost?: number;
   seconds?: number;
+  /** A usage limit cut it short: its work so far is on this branch, and the next attempt starts from it. */
+  resumeFrom?: string;
 };
 type Entry = { name: string; description: string; builtin?: boolean };
 type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string; session?: string };
@@ -1272,6 +1274,7 @@ function finishGit(cp: string, goal: string, passed: boolean, park: boolean, int
       return;
     }
     const saved = moveWorkAside(cp, interrupted ? "interrupted" : "failed", `orch: ${short(goal)} (unfinished)`);
+    if (interrupted && saved) lastParked = saved;
     if (saved) console.log(`goal ${interrupted ? "interrupted" : "failed"}; its work is on branch ${saved}, working tree reset to the checkpoint`);
     git("branch", "-D", cp);
   } catch (e) {
@@ -1347,12 +1350,13 @@ function startGoalBranch(goal: string, id?: number, brief?: string): GoalBranch 
  * (the base branch never moved). The goal's work stays on its branch; an empty one is deleted. On pass with --pr,
  * push it and open a pull request. If the work cannot be committed, stay on the goal branch and keep the checkpoint.
  */
-function finishGoalBranch(cp: string, gb: GoalBranch, goal: string, passed: boolean, o: Opts, lr: LastRun) {
+function finishGoalBranch(cp: string, gb: GoalBranch, goal: string, passed: boolean, o: Opts, lr: LastRun, interrupted = false) {
   try {
     // On a brief's shared branch a failed goal must not stay under the next goals: park it, reset to the checkpoint.
     if (gb.shared && !passed) {
-      const saved = moveWorkAside(cp, "failed", `orch: ${short(goal)} (unfinished)`);
-      if (saved) console.log(`goal failed; its work is on branch ${saved}, and ${gb.branch} is back where the goal started`);
+      const saved = moveWorkAside(cp, interrupted ? "interrupted" : "failed", `orch: ${short(goal)} (unfinished)`);
+      if (saved) console.log(`goal ${interrupted ? "interrupted" : "failed"}; its work is on branch ${saved}, and ${gb.branch} is back where the goal started`);
+      if (interrupted && saved) lastParked = saved;
     } else tryCommit(`orch: ${short(goal)} (unfinished)`);
     const left = dirtyFiles();
     if (left) {
@@ -1368,6 +1372,7 @@ function finishGoalBranch(cp: string, gb: GoalBranch, goal: string, passed: bool
       return;
     }
     console.log(`back on ${gb.base} (unchanged); the goal's work is on branch ${gb.branch}`);
+    if (interrupted && !gb.shared) lastParked = gb.branch;
     if (passed && o.pr) lr.pr = gb.shared ? briefPullRequest(gb, lr) : openPullRequest(gb, goal, lr);
   } catch (e) {
     console.warn(`warning: could not finish the goal branch (${msg(e)}); you may still be on ${gb.branch}`);
@@ -1460,6 +1465,46 @@ function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: strin
   }
   emit("pr", { branch: gb.branch, base: gb.base, url, error });
   return url;
+}
+
+/** Where the last interrupted goal's work was put (finishGit / finishGoalBranch), for its next attempt. */
+let lastParked: string | undefined;
+
+/**
+ * Bring an interrupted attempt's commits back onto the current branch: a fast-forward when nothing moved since,
+ * else a cherry-pick. Returns their subjects, or null (nothing there, or it does not apply; the goal starts fresh).
+ * The parked branch is deleted once its work is back.
+ */
+function applyParked(branch: string): string[] | null {
+  if (!branchExists(branch)) return null;
+  const base = git("merge-base", "HEAD", branch);
+  const commits = git("rev-list", "--reverse", `${base}..${branch}`).split("\n").filter(Boolean);
+  if (!commits.length) return null;
+  try {
+    if (git("rev-parse", "HEAD") === base) git("merge", "-q", "--ff-only", branch);
+    else {
+      let identity: string[] = [];
+      try {
+        git("config", "user.email");
+      } catch {
+        identity = ["-c", "user.name=orchestrator", "-c", "user.email=orchestrator@localhost"];
+      }
+      git(...identity, "cherry-pick", "--allow-empty", ...commits);
+    }
+  } catch (e) {
+    try {
+      git("cherry-pick", "--abort");
+    } catch {
+      /* nothing to abort */
+    }
+    console.warn(`could not bring back the interrupted work from ${branch} (${msg(e)}); starting the goal fresh, the branch is kept`);
+    return null;
+  }
+  const subjects = git("log", "--format=%s", `-n${commits.length}`, "HEAD").split("\n").filter(Boolean).reverse();
+  git("branch", "-D", branch);
+  console.log(`resuming: brought back ${commits.length} commit(s) of the interrupted attempt from ${branch}`);
+  emit("resumed", { branch, commits: subjects });
+  return subjects;
 }
 
 /** Delete orchestrator/* branches whose timestamp is older than `days`. Never touches the current branch. */
@@ -2409,7 +2454,7 @@ const writeLastRun = (lr: LastRun) => writeFileAtomic(LAST_RUN, JSON.stringify(l
 let lastGoalCost = 0;
 /** QA's notes for the goal being run, written to notes.md when it ends. */
 let goalNotes: string[] = [];
-async function runGoal(goal: string, o: Opts, id?: number, brief?: string): Promise<boolean> {
+async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resumeFrom?: string): Promise<boolean> {
   emit("goal_start", {
     goal,
     maxRounds: o.maxRounds,
@@ -2435,6 +2480,7 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string): Prom
   goalNotes = [];
   let cp = "";
   let gb: GoalBranch | undefined;
+  lastParked = undefined;
   let passed = false;
   let interrupted = false;
   try {
@@ -2449,7 +2495,9 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string): Prom
         });
     lr.checkpoint = cp || undefined;
     if (!o.dryRun) writeLastRun(lr); // the UI offers rollback from this even if the run is killed in round 1
-    passed = await runGoalInner(goal, o, cp, ctx, lr);
+    // An attempt cut short by the usage limit left its work on a branch: carry on from it instead of redoing it.
+    const resumed = cp && resumeFrom ? applyParked(resumeFrom) : null;
+    passed = await runGoalInner(goal, o, cp, ctx, lr, resumed);
     if (o.notes && !o.dryRun) {
       const rounds = lr.state as { failures: string[] }[];
       appendNotes(goal, passed, rounds.length, goalNotes, rounds[0]?.failures ?? [], rounds.at(-1)?.failures ?? []);
@@ -2475,7 +2523,7 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string): Prom
     throw e;
   } finally {
     lastGoalCost = ctx.budget.spent;
-    if (cp && gb) finishGoalBranch(cp, gb, goal, passed, o, lr);
+    if (cp && gb) finishGoalBranch(cp, gb, goal, passed, o, lr, interrupted);
     else if (cp) finishGit(cp, goal, passed, o.park || (interrupted && o.onLimit === "wait"), interrupted);
     console.log(`cost: ${usd(ctx.budget.spent)}${o.maxCost !== undefined ? ` of ${usd(o.maxCost)}` : ""}`);
     if (!o.dryRun) {
@@ -2487,7 +2535,7 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string): Prom
   }
 }
 
-async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: LastRun): Promise<boolean> {
+async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: LastRun, resumed: string[] | null = null): Promise<boolean> {
   const roster = discoverAgents();
   const byName = new Map(roster.map((a) => [a.name, a]));
   const architect = byName.get("architect")!; // always present: built-in unless overridden
@@ -2537,7 +2585,11 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   for (const agent of Object.keys(models.agents))
     if (!byName.has(agent)) throw new Error(`model override for unknown agent "${agent}" (known: ${[...byName.keys()].join(", ")})`);
   let failures: string[] = [];
-  let note = "";
+  let note = resumed?.length
+    ? `An earlier attempt at this goal was cut short by the Claude usage limit, not by a failure. Its work is already ` +
+      `committed here:\n- ${resumed.join("\n- ")}\nRead what it did (the code and the tests) and plan only what remains. ` +
+      `If it looks complete, plan just the verify task.`
+    : "";
   let stuck = 0;
   let previous = "";
   /** Per-task escalation: agents moved up on their own after a stuck round (tier, and models with aliases stepped up). */
@@ -3008,7 +3060,7 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       };
       lastGoalCost = 0;
       try {
-        outcome = (await runGoal(item.goal, goalOpts, item.id, item.brief)) ? "done" : "failed";
+        outcome = (await runGoal(item.goal, goalOpts, item.id, item.brief, item.resumeFrom)) ? "done" : "failed";
       } finally {
         spentTotal += lastGoalCost;
       }
@@ -3033,6 +3085,9 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
       cur.status = outcome === "limit" || outcome === "budget" ? "pending" : outcome;
       if (outcome === "budget") cur.note = "the queue's budget ran out during this goal; raise it and process the queue again";
       cur.cost = round4((cur.cost ?? 0) + lastGoalCost);
+      // Where an interrupted attempt left its work; any other outcome used it up (or its branch is gone).
+      if (outcome === "limit" && lastParked) cur.resumeFrom = lastParked;
+      else delete cur.resumeFrom;
       cur.seconds = (cur.seconds ?? 0) + Math.round((Date.now() - started) / 1000);
       // A failed goal gets another try, a tier higher, before the goals that build on it are blocked.
       const tier = TIERS.indexOf(cur.power ?? o.power);
@@ -3202,13 +3257,16 @@ async function main() {
       {
         const o = parseOpts(values);
         acquireRunLock("run");
+        let resumeFrom: string | undefined;
         for (;;) {
           try {
-            process.exit((await runGoal(goal, o)) ? 0 : 1);
+            process.exit((await runGoal(goal, o, undefined, undefined, resumeFrom)) ? 0 : 1);
           } catch (e) {
-            // The interrupted work was moved to orchestrator/interrupted-*, so the retry starts clean.
-            if (e instanceof UsageLimit && o.onLimit === "wait") await waitForReset(e);
-            else throw e;
+            // The interrupted work was moved to orchestrator/interrupted-*; the retry carries on from it.
+            if (e instanceof UsageLimit && o.onLimit === "wait") {
+              resumeFrom = lastParked;
+              await waitForReset(e);
+            } else throw e;
           }
         }
       }

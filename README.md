@@ -2,6 +2,8 @@
 
 # YAAIORCH — Yet Another AI Orchestrator
 
+[Project site](https://alyn3d.github.io/yaaiorch/) · [Releases](https://github.com/alyn3d/yaaiorch/releases)
+
 YAAIORCH turns a goal into working code by looping AI agents until the code passes your checks.
 An **architect** agent plans the work, **implementer** agents build it in parallel, the orchestrator
 runs your repo's own checks (tests, typecheck, build), and a **QA** agent reviews the result. If

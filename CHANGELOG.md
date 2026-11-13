@@ -69,6 +69,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   A shim orch cannot read still goes through cmd.exe, and `orch doctor` says so.
 
 ### Fixed
+- A goal cut short by the usage limit started over after the reset, redoing (and paying for) the work it had
+  already committed. The next attempt now brings that work back from where it was parked and tells the
+  architect, which plans only what remains. New `resumed` event.
 - A goal stopped because the queue's budget (`--max-cost-total`, **Budget $**) ran out was marked failed, which
   now also blocked every goal that needs it. It stays pending with a note instead, the loop stops, and a run
   with more budget carries on. A goal over its own `--max-cost` still fails.

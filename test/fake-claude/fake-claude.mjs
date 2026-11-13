@@ -206,6 +206,7 @@ if (prompt.includes("Review this change")) {
     if (prompt.includes("Do not repeat the previous plan")) log("architect: got stuck note");
     if (prompt.includes("A reviewer rejected your plan")) log("architect: got critic issues");
     if (prompt.includes("The user's brief this goal is part of")) log("architect: saw the brief");
+    if (prompt.includes("cut short by the Claude usage limit")) log(`architect: resumed with ${(prompt.match(/^- orch: /gm) ?? []).length} commit(s)`);
     const human = /The person reviewing your plan rejected it:\n(.*)/.exec(prompt);
     if (human) log(`architect: got human rejection: ${human[1]}`);
     log(`architect: notes=${prompt.includes("Notes from earlier goals") && prompt.includes("FAKE LESSON") ? "seen" : "none"}`);
