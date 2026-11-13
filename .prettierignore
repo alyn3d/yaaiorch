@@ -1,0 +1,18 @@
+# Prettier formats the code only: TypeScript, test and fake-claude scripts, styles.
+# Markdown, YAML and JSON are written by hand.
+*
+!*/
+!*.ts
+!*.tsx
+!*.mjs
+!*.scss
+
+**/node_modules/
+orch-ui/dist/
+orch-ui/src-tauri/
+release/
+# Eval fixtures, hidden tests and reference solutions are test data (references are diffs against fixtures).
+evals/fixtures/
+evals/hidden/
+evals/reference/
+evals/results/

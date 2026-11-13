@@ -238,7 +238,7 @@ function acquireRunLock(cmd: string) {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 3) throw e;
       let holder: Partial<LockInfo> = {};
-      let age = 0;
+      let age: number;
       try {
         holder = JSON.parse(readFileSync(RUN_LOCK, "utf8"));
         age = Date.now() - statSync(RUN_LOCK).mtimeMs;
@@ -251,6 +251,7 @@ function acquireRunLock(cmd: string) {
         throw new Error(
           `another orch is already running in this repo (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}${sameHost ? "" : ` on ${holder.host}`}, ` +
             `since ${holder.since ? new Date(holder.since).toLocaleString() : "?"}). Wait for it, stop it, or delete ${RUN_LOCK} if you are sure it is gone.`,
+          { cause: e },
         );
       console.warn(`taking over a stale lock (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}): ${sameHost ? "its process is gone" : "not touched for 2 minutes"}`);
       try {
@@ -299,7 +300,7 @@ function updateQueue<T>(edit: (q: Item[]) => T): T {
       } catch {
         /* released meanwhile */
       }
-      if (Date.now() > deadline) throw new Error(`the queue is locked (${QUEUE_LOCK}); try again`);
+      if (Date.now() > deadline) throw new Error(`the queue is locked (${QUEUE_LOCK}); try again`, { cause: e });
       sleepSync(50);
     }
   }
@@ -433,7 +434,7 @@ function readJsonFile<T>(path: string, fallback: T): T {
   try {
     return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as T) : fallback;
   } catch (e) {
-    throw new Error(`cannot parse ${path}: ${msg(e)}`);
+    throw new Error(`cannot parse ${path}: ${msg(e)}`, { cause: e });
   }
 }
 
@@ -848,6 +849,7 @@ const normPath = (f: string) => {
 function badPath(f: string): string | null {
   const p = f.trim();
   if (!p) return "is empty";
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
   if (/[\u0000-\u001f]/.test(p)) return "contains control characters";
   if (isAbsolute(p) || /^[A-Za-z]:/.test(p) || /^[\\/]/.test(p) || p.startsWith("~")) return "must be a path relative to the repo root";
   const parts = p.replace(/\\/g, "/").split("/").filter((x) => x && x !== ".");
@@ -1709,7 +1711,7 @@ function readQueue(): Item[] {
   try {
     q = JSON.parse(readFileSync(QUEUE, "utf8"));
   } catch (e) {
-    throw new Error(`${QUEUE} is not valid JSON (${msg(e)}). Nothing was changed; fix or move the file.`);
+    throw new Error(`${QUEUE} is not valid JSON (${msg(e)}). Nothing was changed; fix or move the file.`, { cause: e });
   }
   if (!Array.isArray(q) || !q.every((i) => i && typeof i.id === "number" && typeof i.goal === "string" && typeof i.status === "string"))
     throw new Error(`${QUEUE} is not a list of {id, goal, status} goals. Nothing was changed; fix or move the file.`);
@@ -1956,7 +1958,7 @@ async function main() {
       const findings = doctor();
       if (values.json) console.log(JSON.stringify(findings));
       else for (const x of findings) console.log(`${x.level === "ok" ? "ok  " : x.level === "warn" ? "warn" : "FAIL"}  ${x.name}: ${x.detail}`);
-      process.exit(findings.some((x) => x.level === "fail") ? 1 : 0);
+      return process.exit(findings.some((x) => x.level === "fail") ? 1 : 0);
     }
     case "rollback":
       acquireRunLock("rollback");

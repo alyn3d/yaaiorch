@@ -147,7 +147,7 @@ async function tauriInvoke<T = void>(cmd: string, args: Record<string, unknown> 
   try {
     return await invoke<T>(cmd, args); // JS camelCase keys map to Rust snake_case args
   } catch (e) {
-    throw new Error(String(e));
+    throw new Error(String(e), { cause: e });
   }
 }
 

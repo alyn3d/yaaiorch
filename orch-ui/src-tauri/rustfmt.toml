@@ -1,0 +1,2 @@
+# Wide lines, like the TypeScript (Prettier printWidth 160).
+max_width = 160
