@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Finding, Global, OrchEvent, RunView, State } from "./types";
 import { reduce } from "./reduce";
 import { transport, type SessionInit } from "./transport";
+import { notify } from "./notify";
+import { notificationFor } from "./notifyText";
+import { baseName } from "./repoStatus";
 
 /** Everything the UI knows about one repo. */
 export type Session = { state: State; log: string[]; run: RunView | null };
@@ -27,6 +30,9 @@ export function useOrch() {
     usageCap: { fiveHour: null, week: null },
   });
 
+  /** The goal each repo is running, for notification texts (live events only; replays never notify). */
+  const goals = useRef(new Map<string, string>());
+
   useEffect(
     () =>
       transport.subscribe({
@@ -45,7 +51,12 @@ export function useOrch() {
           }),
         onLog: (repo, line) =>
           setSessions((all) => (all[repo] ? { ...all, [repo]: { ...all[repo], log: [...all[repo].log.slice(-(MAX_LOG - 1)), line] } } : all)),
-        onEvent: (repo, e) => setSessions((all) => (all[repo] ? { ...all, [repo]: { ...all[repo], run: reduce(all[repo].run, e) } } : all)),
+        onEvent: (repo, e) => {
+          if (e.type === "goal_start" && typeof e.goal === "string") goals.current.set(repo, e.goal);
+          const n = notificationFor(baseName(repo), goals.current.get(repo), e);
+          if (n) void notify(n);
+          setSessions((all) => (all[repo] ? { ...all, [repo]: { ...all[repo], run: reduce(all[repo].run, e) } } : all));
+        },
         onGlobal: setGlobal,
         onConnection: setConnected,
       }),

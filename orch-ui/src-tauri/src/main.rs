@@ -1047,6 +1047,7 @@ fn clear_log(app: AppHandle, state: State<AppState>, repo: String) {
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState(Mutex::new(Inner::default())))
         .setup(|app| {
             if let Ok(dir) = app.path().app_config_dir() {

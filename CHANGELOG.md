@@ -6,6 +6,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Notifications** (**Notify** in the header): a desktop notification when a goal passes or fails, a plan
+  waits for approval, or a run waits for the usage limit or your cap, while the window is not in front. The
+  desktop app uses the Tauri notification plugin, browser mode the browser's notifications.
 - **Plan approval** (`--approve-plan`, **Approve plans** in the run settings): after planning, the run waits for
   you to build the plan, edit it, or send it back to the architect with a reason. The run panel shows the plan
   with those three buttons; in a terminal, `orch approve [--reject "why"] [--plan-stdin]`. New `approval_wait`

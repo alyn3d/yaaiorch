@@ -113,7 +113,8 @@ Each item should show its effect in the evals before it becomes the default.
   conflict-free.
 - [ ] **Sandboxed runs** (optional): run the agents in a container or VM for repos you do not fully
   trust them with.
-- [ ] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri).
+- [x] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri; the browser's in
+  browser mode; **Notify** in the header).
 
 ## 0.6: product and packaging
 

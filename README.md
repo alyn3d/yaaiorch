@@ -174,6 +174,10 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   problems, the built-in one or your own agents (`--reviewers security-reviewer,backend-reviewer`). They run
   next to QA, as independent opinions, and a rejection fails the round; when a check already failed they are
   skipped. One extra call each per round.
+- **Notifications** (**Notify** in the header, off until you turn it on): a desktop notification when a goal
+  passes or fails, a plan waits for your approval, or a run waits for the usage limit or your usage cap, only
+  while the window is not in front. The desktop app uses the system's notifications; the browser asks for
+  permission when you turn it on.
 - **Plan approval** (optional, **Approve plans** in the run settings, `--approve-plan`): after planning, the
   run waits for you. The run panel shows the plan with **Build it**, **Edit plan** (as JSON, checked before it
   is used) and **Send back** with a reason, which the architect plans again with. In a terminal: `orch approve`,

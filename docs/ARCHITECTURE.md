@@ -159,6 +159,8 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `waiting` | reason (`usage_limit` between goals, or `usage_cap` before an agent call, with `window`), until |
 | `usage` | fiveHour?, week? (each {pct, resetsAt epoch ms}): the subscription's usage after an agent call |
 
+The UI turns some live events into desktop notifications (`notifyText.ts`: goal_end, approval_wait, waiting, loop_stop with reason budget; replayed events never notify), through the Tauri notification plugin in the desktop app or the browser's Notification API, when **Notify** is on and the window is not focused.
+
 Costs are USD from the CLI's `total_cost_usd`, rounded to 4 decimals. Agents run with `--output-format stream-json
 --verbose`: orch takes the final `result` line, and reads the subscription's usage from the CLI's
 `rate_limit_event` lines (`rate_limit_info.unifiedWindows.five_hour` / `seven_day`, `utilization` 0-1). That field is

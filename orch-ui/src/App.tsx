@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { notifyOn as notifyOnSaved, setNotifyOn } from "./notify";
 import { useOrch } from "./useOrch";
 import { RepoView } from "./RepoView";
 import { transport } from "./transport";
@@ -11,6 +12,7 @@ const ACTIVE_KEY = "yaaiorch.activeRepo";
 const OVERVIEW = "*overview";
 export function App() {
   const { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
+  const [notifyOn, setNotifyOnState] = useState(notifyOnSaved);
   // Re-render every 30 s so the usage-limit banner disappears when its reset time passes.
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -89,6 +91,12 @@ export function App() {
           onBudget={(v) => guard(() => transport.setDailyBudget(v))}
           onCap={(w, v) => guard(() => transport.setUsageCap({ ...global.usageCap, [w]: v }))}
         />
+        <label
+          className="check"
+          title="A desktop notification when a goal passes or fails, a plan waits for your approval, or a run waits for the usage limit (only while this window is not in front)"
+        >
+          <input type="checkbox" checked={notifyOn} onChange={(e) => void setNotifyOn(e.target.checked).then(setNotifyOnState)} /> Notify
+        </label>
         <span className={`dot ${connected ? "on" : ""}`} title={connected ? "connected" : "disconnected"} />
       </header>
 
