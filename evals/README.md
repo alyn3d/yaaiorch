@@ -129,3 +129,10 @@ git-ignored elsewhere, so add it with `git add -f`.
 
 `greenfield-inventory` starts from an almost empty repo (`fixtures/empty`): its first goal sets up a Node project, its
 second builds a module in it. It measures building from nothing, including checks the agents create themselves.
+
+`api-patch-contract` and `lib-retry-lint` (kind `multi-round`) are built to need a fix round: their fixtures have
+house rules that only the repo's own checks enforce (`node-api-strict`: a route registry, an API doc table and test
+names, checked by `test/contract.test.js`; `node-lib-strict`: JSDoc tags, no console calls and a test per module,
+checked by `npm run lint`). A first attempt that misses one fails its checks, so these are the cases that show what
+session resume, the diff critic, the review lens and per-task escalation are worth
+(`--power economy,economy+noresume,economy+diffcritic`).

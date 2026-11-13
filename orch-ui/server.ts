@@ -269,10 +269,13 @@ function withBudget(args: string[]): string[] {
   if (caps.length && !args.includes("--usage-cap")) args = [...args, "--usage-cap", caps.join(",")];
   const left = budgetLeft();
   if (left === undefined) return args;
-  const i = args.indexOf("--max-cost");
+  // A loop (or a new project that starts building) gets what is left today as its budget for all goals together,
+  // so the goal it runs out in stays pending instead of failing; a single call or goal gets it as its own cap.
+  const key = args[0] === "loop" || (args[0] === "new" && args.includes("--start")) ? "--max-cost-total" : "--max-cost";
+  const i = args.indexOf(key);
   const own = i >= 0 ? Number(args[i + 1]) : Infinity;
   const rest = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
-  return [...rest, "--max-cost", Math.min(own, left).toFixed(2)];
+  return [...rest, key, Math.min(own, left).toFixed(2)];
 }
 
 function startNow(s: Session, rawArgs: string[], label: string) {

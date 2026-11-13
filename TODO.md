@@ -46,7 +46,7 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   round, a commit hook that fails (done); still open: a pre-existing `.orchestrator/config.json` allow-list reaching the
   agents, `--wait-on-limit` and `--resume` in the eval runner. **good first issue**
 - [x] **Unit tests** for `validate`, `extractJson`, `parseReset`, `failureKey`, `badPath` and more in `orch.ts`
-  (`test/unit.test.mjs`); `reduce.ts` still has none. **good first issue**
+  (`test/unit.test.mjs`), and the UI's `reduce.ts`, `progress.ts` and `notifyText.ts`.
 - [x] **Lint and format**: ESLint + Prettier for TS, `rustfmt` + `clippy` for Rust, wired into CI.
   **good first issue**
 
@@ -128,6 +128,7 @@ Each item should show its effect in the evals before it becomes the default.
   `orch new` in a new tab.
 - [x] **Budget and progress** for a whole queue: **Budget $** (`--max-cost-total`) in the UI, the brief's progress
   (done, failed, blocked, cost, time left) above the queue and in the overview.
+- [x] **Multi-round eval cases**: `api-patch-contract`, `lib-retry-lint` (house rules only the checks enforce).
 - [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
 
 ## 0.6: product and packaging

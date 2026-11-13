@@ -91,7 +91,9 @@ Round 1 skips the architect: one generalist `dev` agent does the whole goal on t
   each goal's `--max-cost` is capped to what is left, and the loop stops before its next goal (`loop_stop`,
   reason `budget`) once it is used up. When the loop budget (not the goal's own `--max-cost`) runs out during a
   goal, that goal stays `pending` with a note, is not retried and blocks nothing, and the loop stops at once; a
-  later loop with more budget carries on. A goal that exceeds its own `--max-cost` fails as before.
+  later loop with more budget carries on. A goal that exceeds its own `--max-cost` fails as before. The backends pass what is left of the UI's daily budget to a
+  `loop` (and to `orch new --start`) as `--max-cost-total`, so the daily budget stops a queue the same way; a single
+  goal or call gets it as `--max-cost`.
 - **Budget** (`--max-cost`): every call's `total_cost_usd` is added to the goal's total, also for failed calls. Before it starts, each call reserves its share of the unreserved budget and gets it as `--max-budget-usd`: alone, all of it; in the parallel build batch, an equal share per task still to start (with $0.20 left, two build agents get $0.10 each). When the call ends its reservation is released and its real cost counted, also on failure, timeout or a spawn error. A call that would get less than $0.01 waits while others hold reservations, and otherwise stops the goal. When the CLI reports `error_max_budget_usd`, or the total reaches the cap, the goal stops with `Stopped: budget of $X used up`. The CLI checks its limit after each turn, so a call can overshoot its share by up to one turn.
 
 - **Usage limit**: the Claude subscription limit comes back as an error result with subtype `success` and text like `You've hit your 5-hour limit · resets 1:30am (Europe/London)`. `run()` turns it into a `UsageLimit` error (reset time parsed in the named IANA zone) that ends the goal instead of becoming a task failure, so it never triggers stuck detection. It emits `usage_limit`, then `goal_end` with `usageLimit: true, resetAt`. What happens next is the **"when the usage limit is hit"** setting (`--on-limit`, config `onLimit`):

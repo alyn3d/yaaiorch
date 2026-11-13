@@ -201,5 +201,21 @@
       "Add src/inventory.js exporting a class Inventory and an error class InsufficientStockError (extends Error, name \"InsufficientStockError\", with properties sku, requested and available). A SKU is trimmed and upper-cased, and must then be 3 to 20 characters of A-Z, 0-9 and hyphens, else a TypeError (also for non-strings). Quantities must be positive integers, else a RangeError. add(sku, qty) adds to the stock and returns the new quantity. remove(sku, qty) returns what is left; asking for more than is in stock (also for an unknown SKU, which has 0) throws InsufficientStockError and changes nothing; a SKU whose stock reaches 0 is dropped. quantity(sku) returns the stock, 0 if unknown. list() returns copies, [{ sku, qty }] sorted by SKU. total() returns the sum of all stock. Add tests in test/inventory.test.js."
     ],
     "grade": "node --test test/__hidden__/inventory.test.js"
+  },
+  {
+    "id": "api-patch-contract",
+    "fixture": "node-api-strict",
+    "kind": "multi-round",
+    "difficulty": "multi-round: a visible API contract (route registry, docs table, test names) that a first attempt tends to miss",
+    "goal": "Add PATCH /todos/:id to the API. The body is JSON with \"title\" and/or \"done\": a title is trimmed and must then be 1 to 200 characters; done must be a boolean. At least one of the two is required. Respond 200 with the updated todo, 404 with {\"error\"} for an unknown id, and 400 with {\"error\"} for invalid JSON, a body without either field, or an invalid value, changing nothing. Add tests.",
+    "grade": "node --test test/__hidden__/patch.test.js test/server.test.js test/contract.test.js"
+  },
+  {
+    "id": "lib-retry-lint",
+    "fixture": "node-lib-strict",
+    "kind": "multi-round",
+    "difficulty": "multi-round: house rules checked by npm run lint (JSDoc tags, no console, a test per module) that a first attempt tends to miss",
+    "goal": "Add src/retry.js exporting an async function retry(fn, options) that calls fn(attempt) (attempt counts from 1; fn may be sync or async) until it succeeds and returns its result. Options: attempts (total tries, default 3, a positive integer, else RangeError), delayMs (wait before the second try, default 100, a number >= 0, else RangeError), factor (each later wait is multiplied by it, default 2) and shouldRetry(err) (return false to rethrow at once; default retries every error). After the last attempt, throw its error. A non-function fn is a TypeError. Add tests.",
+    "grade": "node --test test/__hidden__/retry.test.js test/text.test.js && node scripts/lint.mjs"
   }
 ]

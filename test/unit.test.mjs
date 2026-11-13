@@ -252,3 +252,98 @@ describe("brief progress (orch-ui/src/progress.ts)", () => {
     assert.equal(p.leftText(3 * 3600), "about 3 h left");
   });
 });
+
+describe("run view (orch-ui/src/reduce.ts)", () => {
+  let reduce;
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    ({ reduce } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "reduce.ts")).href, import.meta.url));
+  });
+  const fold = (events) => events.reduce((run, e, i) => reduce(run, { t: 1000 + i, ...e }), null);
+  const start = [
+    { type: "goal_start", goal: "g", maxRounds: 3, dryRun: false, maxCost: 2 },
+    { type: "round_start", round: 1, power: "heavy", models: { impl: "sonnet" } },
+    {
+      type: "plan",
+      round: 1,
+      summary: "s",
+      cost: 0.05,
+      tasks: [
+        { id: 0, agent: "be", phase: "build", task: "t", files: ["a.js"] },
+        { id: 1, agent: "qa", phase: "verify", task: "v" },
+      ],
+    },
+  ];
+
+  test("a goal from start to pass: tasks, costs, reviews, checks", () => {
+    const run = fold([
+      ...start,
+      { type: "task_start", round: 1, id: 0, resumed: 1 },
+      { type: "task_end", round: 1, id: 0, status: "COMPLETE", touched: ["a.js"], cost: 0.05 },
+      { type: "review", round: 1, agent: "reviewer", lens: "bugs", approved: true, issues: [], cost: 0.05 },
+      { type: "checks", round: 1, results: [{ name: "test", ok: true }] },
+      { type: "round_end", round: 1, passed: true, failures: [], cost: 0.2 },
+      { type: "goal_end", passed: true, cost: 0.2 },
+    ]);
+    assert.equal(run.status, "passed");
+    assert.equal(run.cost, 0.2, "goal_end has the last word on cost");
+    const r = run.rounds[0];
+    assert.deepEqual([r.architect, r.summary, r.passed, r.checks[0].name], ["done", "s", true, "test"]);
+    assert.deepEqual(
+      r.tasks.map((t) => [t.agent, t.status, t.resumed]),
+      [
+        ["be", "COMPLETE", 1],
+        ["qa", "queued", undefined],
+      ],
+    );
+    assert.deepEqual(
+      r.reviews.map((v) => [v.agent, v.lens, v.approved]),
+      [["reviewer", "bugs", true]],
+    );
+    // Before goal_end, the cost is the sum of what each event reported.
+    const mid = fold([
+      ...start,
+      { type: "task_end", round: 1, id: 0, status: "COMPLETE", cost: 0.05 },
+      { type: "review", round: 1, agent: "c", lens: "goal", approved: false, issues: ["x"], cost: 0.05 },
+    ]);
+    assert.ok(Math.abs(mid.cost - 0.15) < 1e-9, String(mid.cost));
+  });
+
+  test("approval: the plan waits for the user, then the panel goes away", () => {
+    const waiting = fold([
+      ...start.slice(0, 2),
+      { type: "architect_start", round: 1 },
+      { type: "approval_wait", round: 1, summary: "s", tasks: [{ agent: "be", phase: "build", task: "t" }] },
+    ]);
+    assert.equal(waiting.approval.summary, "s");
+    assert.equal(waiting.rounds[0].architect, "done", "no longer planning");
+    assert.equal(reduce(waiting, { type: "approval", round: 1, action: "approve", t: 9 }).approval, undefined);
+  });
+
+  test("stopped: a run killed mid-task fails and its open tasks show STOPPED; a finished run is left alone", () => {
+    const killed = reduce(fold([...start, { type: "task_start", round: 1, id: 0 }]), { type: "stopped", t: 5000 });
+    assert.equal(killed.status, "failed");
+    assert.match(killed.error, /Stopped/);
+    assert.deepEqual(
+      killed.rounds[0].tasks.map((t) => t.status),
+      ["STOPPED", "STOPPED"],
+    );
+    const done = fold([...start, { type: "goal_end", passed: true, cost: 0.05 }]);
+    assert.equal(reduce(done, { type: "stopped", t: 1 }), done);
+  });
+
+  test("stuck notes, branch and PR, and events without a run", () => {
+    const run = fold([
+      ...start,
+      { type: "stuck", round: 1, action: "escalate", reason: "same failures", agents: { be: "max" } },
+      { type: "goal_branch", branch: "orch/1-g", base: "main" },
+      { type: "pr", url: "https://example.com/pr/1" },
+    ]);
+    assert.match(run.rounds[0].note, /only the failing tasks move up next round \(be at max\)/);
+    assert.deepEqual(run.branch, { name: "orch/1-g", base: "main" });
+    assert.equal(run.pr.url, "https://example.com/pr/1");
+    assert.equal(reduce(null, { type: "plan", round: 1, tasks: [], t: 1 }), null, "nothing to fold into before goal_start");
+    assert.equal(reduce(run, { type: "something_new", t: 1 }), run, "unknown events change nothing");
+  });
+});

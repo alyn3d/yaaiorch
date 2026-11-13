@@ -1,0 +1,9 @@
+{
+  "name": "node-lib-strict",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "node scripts/lint.mjs",
+    "test": "node --test"
+  }
+}

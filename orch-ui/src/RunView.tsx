@@ -1,5 +1,16 @@
 import { useEffect, useState } from "react";
 import type { RunView as Run, TaskView } from "./types";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { isTauri } from "./transport";
+
+/** A link out of the app: the desktop app's webview does not open new windows, so ask the system browser. */
+function openExternal(e: React.MouseEvent, url: string) {
+  if (!isTauri || !/^https?:\/\//.test(url)) return;
+  e.preventDefault();
+  openUrl(url).catch(() => {
+    /* nothing to do: the URL is on screen to copy */
+  });
+}
 
 const fmt = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -182,7 +193,7 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
       {run.pr?.url && (
         <p>
           Pull request:{" "}
-          <a href={run.pr.url} target="_blank" rel="noreferrer">
+          <a href={run.pr.url} target="_blank" rel="noreferrer" onClick={(e) => openExternal(e, run.pr!.url!)}>
             {run.pr.url}
           </a>
         </p>

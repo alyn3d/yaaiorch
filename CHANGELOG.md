@@ -5,6 +5,17 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Eval cases built to need a fix round, `api-patch-contract` and `lib-retry-lint`, on two new fixtures whose house
+  rules only the repo's checks enforce; they measure session resume, the critics and escalation.
+- Unit tests for the UI's run view (`reduce.ts`) and the desktop app's project-name check.
+
+### Fixed
+- The pull request link in the run panel did nothing in the desktop app; it now opens the system browser.
+- The UI's daily budget capped each goal of a queue, so the goal it ran out in failed (and blocked the goals that
+  need it). A queue now gets what is left of the day as its overall budget: that goal stays pending and the
+  queue stops, like with **Budget $**.
+
 ## [0.4.0] - 2026-11-13
 
 From one goal at a time to whole projects: give orch a big brief (or a spec for a new project) and it splits it

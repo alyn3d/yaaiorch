@@ -422,17 +422,24 @@ fn with_budget(mut args: Vec<String>, left: Option<f64>, caps: &str) -> Vec<Stri
         args.push(caps.into());
     }
     let Some(left) = left else { return args };
+    // A loop (or a new project that starts building) gets what is left today as its budget for all goals together,
+    // so the goal it runs out in stays pending instead of failing; a single call or goal gets it as its own cap.
+    let key = match args.first().map(String::as_str) {
+        Some("loop") => "--max-cost-total",
+        Some("new") if args.iter().any(|a| a == "--start") => "--max-cost-total",
+        _ => "--max-cost",
+    };
     let mut own = f64::INFINITY;
     let mut out = Vec::with_capacity(args.len() + 2);
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
-        if a == "--max-cost" {
+        if a == key {
             own = it.next().and_then(|v| v.parse().ok()).unwrap_or(f64::INFINITY);
         } else {
             out.push(a);
         }
     }
-    out.push("--max-cost".into());
+    out.push(key.into());
     out.push(format!("{:.2}", own.min(left)));
     out
 }
@@ -698,6 +705,12 @@ fn add_repo(app: AppHandle, state: State<AppState>, path: String) -> Result<(), 
     Ok(())
 }
 
+/// A plain folder name for a new project: letters, digits, dots, dashes and underscores, starting with a letter or
+/// digit, at most 64 characters (so no path separators, "..", drive letters or reserved leading characters).
+fn valid_project_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+}
+
 /// A new folder (parent + a plain name), opened as a repo tab, then `orch new` runs there like any run. The spec goes
 /// to orch in a temporary file, which orch deletes once read. Returns the repo path as the tabs show it.
 #[tauri::command]
@@ -715,10 +728,7 @@ fn new_project(
     max_cost_total: Option<f64>,
     plugins: Option<PluginOpts>,
 ) -> Result<String, String> {
-    let ok_name = name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
-        && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
-    if !ok_name {
+    if !valid_project_name(&name) {
         return Err("project name: letters, digits, dots, dashes and underscores".into());
     }
     if spec.trim().is_empty() {
@@ -1226,6 +1236,7 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState(Mutex::new(Inner::default())))
         .setup(|app| {
             if let Ok(dir) = app.path().app_config_dir() {
@@ -1351,7 +1362,17 @@ mod tests {
             with_budget(v(&["run", "g", "--max-cost", "0.5"]), Some(1.0), ""),
             v(&["run", "g", "--max-cost", "0.50"])
         );
-        assert_eq!(with_budget(v(&["loop"]), Some(2.5), ""), v(&["loop", "--max-cost", "2.50"]));
+        // A loop gets it as the budget for all its goals; a goal's own --max-cost stays as given.
+        assert_eq!(with_budget(v(&["loop"]), Some(2.5), ""), v(&["loop", "--max-cost-total", "2.50"]));
+        assert_eq!(
+            with_budget(v(&["loop", "--max-cost", "1", "--max-cost-total", "9"]), Some(2.5), ""),
+            v(&["loop", "--max-cost", "1", "--max-cost-total", "2.50"])
+        );
+        assert_eq!(
+            with_budget(v(&["new", ".", "--start", "--max-cost", "1"]), Some(2.0), ""),
+            v(&["new", ".", "--start", "--max-cost", "1", "--max-cost-total", "2.00"])
+        );
+        assert_eq!(with_budget(v(&["new", "."]), Some(2.0), ""), v(&["new", ".", "--max-cost", "2.00"]));
         assert_eq!(with_budget(v(&["run", "g"]), None, ""), v(&["run", "g"]));
         assert_eq!(with_budget(v(&["rollback"]), Some(1.0), "5h=80"), v(&["rollback"]));
         assert_eq!(
@@ -1362,6 +1383,16 @@ mod tests {
             with_budget(v(&["run", "g", "--usage-cap", "5h=50"]), None, "5h=80"),
             v(&["run", "g", "--usage-cap", "5h=50"])
         );
+    }
+
+    #[test]
+    fn project_names() {
+        for ok in ["app", "my-app", "a.b_c-1", "9lives", &"x".repeat(64)] {
+            assert!(valid_project_name(ok), "{ok}");
+        }
+        for bad in ["", ".hidden", "-x", "a/b", "a\\b", "..", "C:", "a b", "naïve", &"x".repeat(65)] {
+            assert!(!valid_project_name(bad), "{bad}");
+        }
     }
 
     #[test]
