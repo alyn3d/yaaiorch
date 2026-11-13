@@ -183,6 +183,12 @@ Pick the target repo with **Choose repo…**. The app needs Node on PATH at runt
   `.orchestrator/spec.md`, and every goal's architect reads it, so each goal fits the rest. When the queue runs
   dry, a coverage check compares the brief with the code and queues what is still missing (at most twice per
   brief; `--no-coverage` or `"coverage": false` to skip it).
+- **Protected paths and a secret scan.** Paths in the config's `protect` list (default `.github/workflows/`, so
+  agents cannot change your CI; `--protect` to set them, `[]` for none) are off limits: a plan that lists one goes
+  back to the architect, and a change there anyway is reverted and fails the round. Before every commit the
+  changes are checked for known key and token formats (AWS, GitHub, Anthropic, OpenAI, Slack, Google, Stripe),
+  private keys and `.env` files; a finding blocks the commit (so it is never pushed) and fails the round, without
+  printing the value. `--no-secret-scan` or `"secretScan": false` turns it off.
 - **Goals from your backlog** (`orch intake --github LABEL`, `--backlog BACKLOG.md`; **Issues label** and
   **Import issues** in the queue section): open GitHub issues with a label (read with `gh`) and the unchecked
   `- [ ]` items of a backlog file become goals, each once; your files are not changed. `orch loop --intake

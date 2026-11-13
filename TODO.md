@@ -132,6 +132,12 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Multi-round eval cases**: `api-patch-contract`, `lib-retry-lint` (house rules only the checks enforce).
 - [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
 
+## Safety
+
+- [x] **Protected paths** (`protect`, default `.github/workflows/`): rejected in plans, reverted if changed anyway.
+- [x] **Secret scan** before every commit: known key formats, private keys, `.env` files.
+- [ ] A scan for licenses or large binaries added by agents; a size limit per round.
+
 ## 0.6: product and packaging
 
 - [ ] **Run history**: append events to `.orchestrator/runs/<id>.jsonl`, list and replay past runs.

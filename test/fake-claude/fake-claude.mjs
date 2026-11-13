@@ -28,6 +28,7 @@
 //   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
 //   FAKE_SPLIT=deps          orch split returns A, B (needs A) and C (needs nothing)
 //   FAKE_QA_FAIL_GOAL=<text> QA fails every round of a goal whose text contains this
+//   FAKE_SECRET_ONCE=<agent> that agent's first call writes an AWS-style access key into its files
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
 //   FAKE_BAD_PLAN_ONCE=1     the first plan is not JSON
@@ -281,6 +282,14 @@ if (prompt.includes("Review this change")) {
           : `// ${agent} ${Date.now()} ${Math.random()}\n`,
       );
     }
+  // FAKE_SECRET_ONCE=<agent>: that agent's first write puts an AWS-style key into its files (built here, so this
+  // source never holds one).
+  const secretFlag = ".orchestrator/fake-secret-done";
+  if (env.FAKE_SECRET_ONCE === agent && !existsSync(secretFlag)) {
+    writeFileSync(secretFlag, "1");
+    for (const f of files) writeFileSync(f, `export const key = "${"AKIA" + "ABCDEFGHIJKLMNOP"}";\n`);
+    log(`${agent}: wrote a secret`);
+  }
   if (env.FAKE_STRAY_FILE && agent === "be") {
     mkdirSync(dirname(env.FAKE_STRAY_FILE), { recursive: true });
     writeFileSync(env.FAKE_STRAY_FILE, "not in any task's list\n");

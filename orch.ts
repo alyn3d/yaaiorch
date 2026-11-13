@@ -81,6 +81,11 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   reused across rounds and goals); also "brief": false in config
          --intake github:LABEL,backlog:FILE   loop: when the queue runs dry, pull new goals in (orch intake);
                   also "intake" in config
+         --protect PATHS   comma-separated paths no task may change ("dir/", "file", "*.pem", "infra/**"); a plan
+                  that lists one is sent back, and a change there anyway is reverted and fails the round; default
+                  .github/workflows/; also "protect" in config ([] for none)
+         --no-secret-scan   do not check the changes for keys, tokens, private keys and .env files before each commit
+                  (by default a finding blocks the commit and fails the round); also "secretScan": false
          --retries N   loop: try a failed goal again N times (default 1), one power tier higher each time; after
                   that, goals that build on it are marked blocked ("orch retry ID" runs them again); also "retries"
          --no-coverage   when the queue runs dry after goals from a brief, do not check the brief against the code
@@ -535,6 +540,9 @@ type Config = {
   retries?: number;
   /** loop --intake: "github:LABEL" and/or "backlog:FILE". */
   intake?: string | string[];
+  /** Paths no task may change ("dir/", "file", "*.lock", "infra/**"); default [".github/workflows/"]. */
+  protect?: string[];
+  secretScan?: boolean;
   /** Installs dependencies (for example "npm install"), run by orch before the checks when a manifest changed. */
   setup?: string;
   /** Files whose change triggers `setup` (default: the usual manifests and lock files). */
@@ -1086,6 +1094,104 @@ function badPath(f: string): string | null {
   return null;
 }
 
+// ---------- protected paths and the secret scan ----------
+/** Paths no task may change (config "protect", --protect); set for the goal being run. */
+let PROTECT: string[] = [".github/workflows/"];
+
+/** A protect pattern as a regex: "dir/" (or "dir") covers everything under it, * is one path segment, ** any depth. */
+function protectRe(pattern: string): RegExp {
+  const p = pattern.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  const dir = p.endsWith("/");
+  const body = p
+    .replace(/\/+$/, "")
+    .split("**")
+    .map((part) =>
+      part
+        .replace(/[.+^${}()|[\]]/g, "\\$&")
+        .replace(/\*/g, "[^/]*")
+        .replace(/\?/g, "[^/]"),
+    )
+    .join(".*");
+  return new RegExp(`^${body}${dir ? "/.*" : "(/.*)?"}$`, process.platform === "win32" ? "i" : "");
+}
+
+/** The protect pattern a path falls under, if any. */
+function protectedBy(f: string, patterns = PROTECT): string | undefined {
+  const p = f.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  return patterns.find((pat) => protectRe(pat).test(p));
+}
+
+/** Put protected paths back as they were at HEAD (a new file is removed). */
+function revertPaths(files: string[]) {
+  for (const f of files) {
+    try {
+      git("cat-file", "-e", `HEAD:${f.replace(/\\/g, "/")}`);
+      git("checkout", "-q", "HEAD", "--", f);
+    } catch {
+      rmSync(f, { force: true, recursive: true });
+    }
+  }
+}
+
+/** Known key and token formats (never logged, only named), and files that hold secrets by convention. */
+const SECRETS: [string, RegExp][] = [
+  ["an AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ["a GitHub token", /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{50,}/],
+  ["an Anthropic API key", /\bsk-ant-[A-Za-z0-9_-]{20,}/],
+  ["an OpenAI API key", /\bsk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{40,}/],
+  ["a Slack token", /\bxox[abprs]-[A-Za-z0-9-]{10,}/],
+  ["a Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/],
+  ["a Stripe live key", /\b(?:sk|rk)_live_[A-Za-z0-9]{20,}/],
+  ["a private key", /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/],
+];
+const ENV_FILE = /(^|\/)\.env(\.(?!example$|sample$|template$|dist$)[^/]+)?$/i;
+let SECRET_SCAN = true;
+
+/**
+ * Secrets in what is about to be committed: the lines added since HEAD in tracked files, all of each new file, and
+ * any .env file. Returns where and what (the value itself is never returned or logged).
+ */
+function scanSecrets(): { file: string; what: string }[] {
+  if (!SECRET_SCAN) return [];
+  const out: { file: string; what: string }[] = [];
+  const check = (file: string, text: string) => {
+    for (const [what, re] of SECRETS) if (re.test(text)) out.push({ file, what });
+  };
+  // Before the first commit there is no HEAD: compare with git's empty tree, so everything counts as added.
+  const base = hasCommits() ? "HEAD" : "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  const diff = execFileSync("git", ["diff", base, "--unified=0", "--no-color", "--no-ext-diff", "--", ".", NOT_STATE], {
+    encoding: "utf8",
+    maxBuffer: 100 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let file = "";
+  let added: string[] = [];
+  const flush = () => {
+    if (file && added.length) check(file, added.join("\n"));
+    added = [];
+  };
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ ")) {
+      flush();
+      file = line.slice(4).replace(/^b\//, "");
+    } else if (line.startsWith("+") && !line.startsWith("+++")) added.push(line.slice(1));
+  }
+  flush();
+  const untracked = git("ls-files", "--others", "--exclude-standard", "--", ".", NOT_STATE).split("\n").filter(Boolean);
+  for (const f of untracked) {
+    try {
+      if (statSync(f).size > 2 * 1024 * 1024) continue;
+      const text = readFileSync(f, "utf8");
+      if (!text.includes("\u0000")) check(f, text);
+    } catch {
+      /* gone or unreadable */
+    }
+  }
+  for (const f of [...untracked, ...changedFiles()])
+    if (ENV_FILE.test(f.replace(/\\/g, "/")) && !out.some((x) => x.file === f)) out.push({ file: f, what: "an .env file" });
+  return out;
+}
+
 function validate(plan: Plan, roster: Entry[]) {
   if (!plan || typeof plan.summary !== "string" || !Array.isArray(plan.tasks) || !plan.tasks.length)
     throw new Error('plan must be {"summary": string, "tasks": [...]} with at least one task');
@@ -1103,6 +1209,8 @@ function validate(plan: Plan, roster: Entry[]) {
     for (const f of t.files ?? []) {
       const why = badPath(f);
       if (why) throw new Error(`task ${i} (${t.agent}): file "${f}" ${why}`);
+      const prot = protectedBy(f);
+      if (prot) throw new Error(`task ${i} (${t.agent}): file "${f}" is protected ("${prot}" in the config's protect list); do the goal without changing it`);
       const k = normPath(f);
       if (owner.has(k)) throw new Error(`file ${f} owned by both ${owner.get(k)} and ${t.agent}`);
       owner.set(k, t.agent);
@@ -1201,6 +1309,10 @@ function commitAll(message: string, park = false): string | null {
     return null;
   } catch {
     /* exit 1: there are staged changes */
+  }
+  if (!park) {
+    const found = scanSecrets();
+    if (found.length) throw new Error(`refusing to commit: ${found.map((x) => `${x.what} in ${x.file}`).join(", ")}`);
   }
   let identity: string[] = [];
   try {
@@ -1638,6 +1750,10 @@ type Opts = {
   retries: number;
   /** loop: where to pull goals from when the queue runs dry (orch intake). */
   intake: IntakeSource[];
+  /** Paths no task may change (default: .github/workflows/). */
+  protect: string[];
+  /** Refuse to commit known key formats, private keys and .env files. */
+  secretScan: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -2551,6 +2667,8 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resum
 }
 
 async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: LastRun, resumed: string[] | null = null): Promise<boolean> {
+  PROTECT = o.protect;
+  SECRET_SCAN = o.secretScan;
   const roster = discoverAgents();
   const byName = new Map(roster.map((a) => [a.name, a]));
   const architect = byName.get("architect")!; // always present: built-in unless overridden
@@ -2775,7 +2893,20 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       console.warn(`files changed outside every task's list: ${unowned.join(", ")}`);
       emit("unowned", { round, files: unowned, strict: o.strictFiles });
     }
-    const committed = cp ? tryCommit(`orch: ${short(goal)} (round ${round})`) : null;
+    // Protected paths: whatever an agent changed there anyway is put back before the commit, and fails the round.
+    const touchedProtected = cp && !foundationFailed ? changedFiles().filter((f) => protectedBy(f) && !changedBefore.has(normPath(f))) : [];
+    if (touchedProtected.length) {
+      revertPaths(touchedProtected);
+      console.warn(`changed protected paths, reverted: ${touchedProtected.join(", ")}`);
+      emit("protected", { round, files: touchedProtected });
+    }
+    // Secrets: never commit them (so never push them); the round fails until they are gone.
+    const secrets = cp ? scanSecrets() : [];
+    if (secrets.length) {
+      console.warn(`secrets in the changes, not committed: ${secrets.map((x) => `${x.what} in ${x.file}`).join(", ")}`);
+      emit("secrets", { round, found: secrets });
+    }
+    const committed = cp && !secrets.length ? tryCommit(`orch: ${short(goal)} (round ${round})`) : null;
     const progressed = cp ? !!committed || !!dirtyFiles() : results.some((r) => r.touched.length > 0);
     // Budget or usage limit: siblings have finished and the work is committed; end the goal.
     const fatal = results.find((r) => r.fatal)?.fatal;
@@ -2849,13 +2980,29 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const checkFailures = checkResults.filter((c) => !c.ok).map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
     // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
     const verifiedBy = verify.length ? verdicts.length > 0 && verdicts.every((v) => v.passed) : checkResults.length > 0;
-    const passed = !errors.length && !checkFailures.length && verifiedBy && !reviewFailures.length && !(o.strictFiles && unowned.length);
+    const passed =
+      !errors.length &&
+      !checkFailures.length &&
+      verifiedBy &&
+      !reviewFailures.length &&
+      !(o.strictFiles && unowned.length) &&
+      !touchedProtected.length &&
+      !secrets.length;
     const prevKey = failureKey(failures);
     const ownershipFailures =
       o.strictFiles && unowned.length
         ? [`files changed outside every task's file list: ${unowned.join(", ")}. Give them to a task in the plan, or have their changes reverted.`]
         : [];
-    failures = [...errors, ...checkFailures, ...ownershipFailures, ...verdicts.flatMap((v) => v.failures), ...reviewFailures];
+    const safetyFailures = [
+      ...(touchedProtected.length
+        ? [`changed protected paths (they were reverted): ${touchedProtected.join(", ")}. They must not be changed; reach the goal without them.`]
+        : []),
+      ...secrets.map(
+        (x) =>
+          `${x.what} in ${x.file}: secrets must never be committed. Remove it and read it from the environment or a config file that is not committed instead.`,
+      ),
+    ];
+    failures = [...errors, ...checkFailures, ...ownershipFailures, ...safetyFailures, ...verdicts.flatMap((v) => v.failures), ...reviewFailures];
     const roundCost = round4(ctx.budget.spent - spentBefore);
     const checkSummary = checkResults.map(({ name, ok, code }) => ({ name, ok, code }));
     lr.state.push({ round, power, plan: plan.summary, touched: results.flatMap((r) => r.touched), checks: checkSummary, passed, failures, cost: roundCost });
@@ -3283,6 +3430,16 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
   const coverage = !values["no-coverage"] && cfg.coverage !== false;
   const intake = parseIntake(values.intake ?? cfg.intake);
+  const protect =
+    values.protect !== undefined
+      ? String(values.protect)
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean)
+      : Array.isArray(cfg.protect)
+        ? cfg.protect.map(String)
+        : [".github/workflows/"];
+  const secretScan = !values["no-secret-scan"] && cfg.secretScan !== false;
   const retries = Number(values.retries ?? cfg.retries ?? 1);
   if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
   return {
@@ -3309,6 +3466,8 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     coverage,
     retries,
     intake,
+    protect,
+    secretScan,
     strictFiles,
     maxCostTotal,
   };
@@ -3352,6 +3511,8 @@ async function main() {
       "no-coverage": { type: "boolean", default: false },
       retries: { type: "string" },
       intake: { type: "string" },
+      protect: { type: "string" },
+      "no-secret-scan": { type: "boolean", default: false },
       github: { type: "string" },
       backlog: { type: "string" },
       setup: { type: "string" },
@@ -3489,7 +3650,7 @@ async function main() {
 }
 
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
-export { validate, extractJson, parseReset, failureKey, badPath, normPath, asVerdict, asReview, TRANSIENT_RE };
+export { protectRe, protectedBy, SECRETS, ENV_FILE, validate, extractJson, parseReset, failureKey, badPath, normPath, asVerdict, asReview, TRANSIENT_RE };
 
 if (!process.env.ORCH_NO_MAIN)
   main().catch((e) => {

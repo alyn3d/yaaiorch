@@ -347,3 +347,30 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     assert.equal(reduce(run, { type: "something_new", t: 1 }), run, "unknown events change nothing");
   });
 });
+
+describe("protected paths and secret formats", () => {
+  test("protect patterns", () => {
+    const hit = (p, f) => o.protectRe(p).test(f);
+    assert.ok(hit(".github/workflows/", ".github/workflows/ci.yml"));
+    assert.ok(!hit(".github/workflows/", ".github/dependabot.yml"));
+    assert.ok(hit("infra", "infra/main.tf") && hit("infra", "infra"));
+    assert.ok(!hit("infra", "infrastructure/x"));
+    assert.ok(hit("*.pem", "key.pem") && !hit("*.pem", "certs/key.pem"));
+    assert.ok(hit("**/*.pem", "certs/deep/key.pem"));
+    assert.ok(hit("db/migrations/**", "db/migrations/001.sql"));
+    assert.equal(o.protectedBy(".\\.github\\workflows\\x.yml", [".github/workflows/"]), ".github/workflows/");
+    assert.equal(o.protectedBy("src/a.ts", [".github/workflows/"]), undefined);
+  });
+  test("secret formats: real-looking keys yes, ordinary code no", () => {
+    const found = (text) => o.SECRETS.filter(([, re]) => re.test(text)).map(([what]) => what);
+    const k = (...parts) => parts.join("");
+    assert.deepEqual(found(k("AKIA", "ABCDEFGHIJKLMNOP")), ["an AWS access key"]);
+    assert.deepEqual(found(k("ghp_", "a".repeat(36))), ["a GitHub token"]);
+    assert.deepEqual(found(k("sk-ant-", "api03-", "x".repeat(30))), ["an Anthropic API key"]);
+    assert.deepEqual(found(k("-----BEGIN ", "OPENSSH PRIVATE KEY-----")), ["a private key"]);
+    for (const ok of ["const sk = 'sk-test'", "AKIA is a prefix", "process.env.API_KEY", "ghp_short", "-----BEGIN PUBLIC KEY-----"])
+      assert.deepEqual(found(ok), [], ok);
+    assert.ok(o.ENV_FILE.test(".env") && o.ENV_FILE.test("api/.env.local") && o.ENV_FILE.test(".env.production"));
+    assert.ok(!o.ENV_FILE.test(".env.example") && !o.ENV_FILE.test("src/env.ts") && !o.ENV_FILE.test(".envrc.sample"));
+  });
+});

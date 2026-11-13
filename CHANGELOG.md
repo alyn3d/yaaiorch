@@ -6,6 +6,12 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Protected paths**: the config's `protect` list (default `.github/workflows/`; `--protect`) is off limits to
+  agents: a plan that lists such a file goes back to the architect, and a change there anyway is reverted and
+  fails the round. New `protected` event.
+- **Secret scan**: before every commit the changes are checked for known key and token formats, private keys and
+  `.env` files. A finding blocks the commit (so nothing is pushed) and fails the round; the value is never
+  printed. `--no-secret-scan` / `"secretScan": false`. New `secrets` event.
 - **Goals from your backlog**: `orch intake --github LABEL` queues open GitHub issues with that label (via `gh`),
   `--backlog BACKLOG.md` the unchecked items of a backlog file, each once and without changing your files.
   `orch loop --intake github:LABEL` keeps pulling new issues in when the queue runs dry, and with `--pr` the pull

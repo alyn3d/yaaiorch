@@ -1066,6 +1066,61 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.ev("goal_start").length, 1, "the issue is not picked up again");
   });
 
+  test("protected paths: a plan touching one is sent back; a change there anyway is reverted and fails the round", () => {
+    const dir = repo();
+    const plan = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_BE_FILE: ".github/workflows/ci.yml" });
+    assert.notEqual(plan.code, 0);
+    assert.match(plan.out, /file "\.github\/workflows\/ci\.yml" is protected \("\.github\/workflows\/"/);
+    assert.ok(plan.calls.includes("architect: got rejection reason"), "the architect is told why");
+
+    const stray = repo();
+    const r = orch(stray, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_STRAY_FILE: ".github/workflows/x.yml" });
+    assert.equal(r.code, 1, r.out);
+    assert.deepEqual(r.last("protected").files, [".github/workflows/x.yml"]);
+    assert.ok(!existsSync(join(stray, ".github", "workflows", "x.yml")), "reverted");
+    assert.match(r.last("round_end").failures.join("\n"), /changed protected paths \(they were reverted\): \.github\/workflows\/x\.yml/);
+    assert.equal(git(stray, "ls-files", ".github"), "", "never committed");
+
+    // Your own list replaces the default; [] protects nothing.
+    const open = repo();
+    writeConfig(open, { protect: [] });
+    const o = orch(open, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_STRAY_FILE: ".github/workflows/x.yml" });
+    assert.equal(o.code, 0, o.out);
+    assert.equal(o.ev("protected").length, 0);
+    const custom = orch(repo(), ["run", "x", "--max-rounds", "1", "--protect", "src/api.ts"], { FAKE_QA: "pass" });
+    assert.match(custom.out, /file "src\/api\.ts" is protected/);
+  });
+
+  test("secret scan: a key in the changes is never committed and fails the round; the fix round commits clean work", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "2"], { FAKE_QA: "pass", FAKE_SECRET_ONCE: "be" });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("secrets").map((e) => e.found.map((x) => [x.file, x.what])),
+      [[["src/api.ts", "an AWS access key"]]],
+    );
+    assert.doesNotMatch(r.out, /AKIAABCDEFGHIJKLMNOP/, "the value is never printed");
+    assert.match(r.ev("round_end")[0].failures.join("\n"), /an AWS access key in src\/api\.ts: secrets must never be committed/);
+    assert.deepEqual(
+      r.ev("round_end").map((e) => e.passed),
+      [false, true],
+    );
+    assert.doesNotMatch(git(dir, "log", "-p", "--all"), /AKIA[A-Z]{16}/, "no commit anywhere holds it");
+
+    // An .env file is a secret by convention; .env.example is not.
+    const env = repo();
+    const e = orch(env, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_STRAY_FILE: ".env" });
+    assert.equal(e.code, 1);
+    assert.deepEqual(e.last("secrets").found, [{ file: ".env", what: "an .env file" }]);
+    const ex = orch(repo(), ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_STRAY_FILE: ".env.example" });
+    assert.equal(ex.code, 0, ex.out);
+
+    const off = repo();
+    const o = orch(off, ["run", "x", "--max-rounds", "1", "--no-secret-scan"], { FAKE_QA: "pass", FAKE_SECRET_ONCE: "be" });
+    assert.equal(o.code, 0, o.out);
+    assert.equal(o.ev("secrets").length, 0);
+  });
+
   test("--max-cost-total: the loop stops before the next goal once its budget is spent", () => {
     const dir = repo();
     for (const g of ["one", "two", "three"]) orch(dir, ["add", g]);
