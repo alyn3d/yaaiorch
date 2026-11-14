@@ -458,9 +458,7 @@
         font-weight: 800;
       }
 
-      .feature:nth-child(2) .feature-mark,
-      .feature:nth-child(4) .feature-mark,
-      .feature:nth-child(6) .feature-mark {
+      .feature:nth-child(even) .feature-mark {
         color: var(--violet);
       }
 
@@ -788,9 +786,9 @@
           height="1200"
           loading="lazy"
           decoding="async"
-          alt="The YAAIORCH app running a goal: the architect's plan, a finished foundation task, two build tasks running in parallel, and two more goals waiting in the queue."
+          alt="The YAAIORCH app showing an example completed goal, token counts, an expanded agent report and round diff, and two goals waiting in the queue."
         />
-        <figcaption>A goal mid-run: the plan, tasks with their files and cost, and the queue that runs next.</figcaption>
+        <figcaption>An example completed goal: task reports, round diff, cost and token counts, and the queue.</figcaption>
       </figure>
 
       <div class="trust-strip">
@@ -824,7 +822,8 @@
             <h3>Your project sets the bar</h3>
             <p>
               A read-only architect plans; implementers build; then your configured checks and a read-only QA agent
-              verify the result. A failed check means the round fails, regardless of agent claims.
+              verify the result. A failed check means the round fails, regardless of agent claims. Optional browser
+              checks give QA screenshots and measurements from your app.
             </p>
           </article>
           <article class="feature">
@@ -859,7 +858,23 @@
             <p>
               Label a GitHub issue and YAAIORCH picks it up: it works on its own branch, opens a pull request that
               closes the issue, comments on progress, and tries to fix the pull request's CI when a check fails. You
-              review pull requests, not runs.
+              review the pull request before merging.
+            </p>
+          </article>
+          <article class="feature">
+            <span class="feature-mark" aria-hidden="true">07</span>
+            <h3>See what happened</h3>
+            <p>
+              Expand task reports and inspect each round's Git diff. See input and output token counts alongside cost
+              when usage is available, and revisit round diffs in the last-run summary.
+            </p>
+          </article>
+          <article class="feature">
+            <span class="feature-mark" aria-hidden="true">08</span>
+            <h3>Know your agents</h3>
+            <p>
+              Browse built-in, user and project agents alongside discovered skills. Edit project agents or save a
+              repo-local override without changing your global Claude Code definitions.
             </p>
           </article>
         </div>

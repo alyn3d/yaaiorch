@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Changed
+- Updated the project site and screenshot to highlight browser checks, task reports, round diffs, token counts and the agent roster.
+
 ## [0.5.1] - 2026-11-14
 
 ### Added
