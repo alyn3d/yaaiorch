@@ -1037,6 +1037,20 @@ fn agents(app: AppHandle, repo: String) -> Result<Value, String> {
 }
 
 #[tauri::command(async)]
+fn history(app: AppHandle, repo: String, id: Option<String>) -> Result<Value, String> {
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let mut args = vec!["history".into(), "--json".into()];
+    if let Some(id) = id {
+        args.push(id);
+    }
+    let out = node_cmd(&app, &dir, &args)?.output().map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("could not read run history: {e}"))
+}
+
+#[tauri::command(async)]
 fn save_agent(app: AppHandle, repo: String, name: String, content: String) -> Result<(), String> {
     use std::io::Write;
     let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
@@ -1390,6 +1404,7 @@ fn main() {
             retry_goal,
             intake_goals,
             agents,
+            history,
             save_agent,
             stop,
             clear_log,
@@ -1632,6 +1647,19 @@ mod tests {
             assert_eq!(end["passed"], true);
             assert!(s.log.iter().any(|l| l.starts_with("-- exited (0)")), "log: {:?}", s.log);
             assert!(session_value(s, None)["queue"].is_array());
+            let list = node_cmd(&h, &s.repo, &["history".into(), "--json".into()]).unwrap().output().unwrap();
+            assert!(list.status.success(), "{}", String::from_utf8_lossy(&list.stderr));
+            let entries: Value = serde_json::from_slice(&list.stdout).unwrap();
+            let id = entries[0]["id"].as_str().unwrap();
+            assert_eq!(entries[0]["status"], "passed");
+            let replay = node_cmd(&h, &s.repo, &["history".into(), "--json".into(), id.into()])
+                .unwrap()
+                .output()
+                .unwrap();
+            assert!(replay.status.success(), "{}", String::from_utf8_lossy(&replay.stderr));
+            let recording: Value = serde_json::from_slice(&replay.stdout).unwrap();
+            assert_eq!(recording["events"][0]["type"], "goal_start");
+            assert!(recording["events"].as_array().unwrap().iter().any(|e| e["type"] == "goal_end"));
         }
         let sb = &g.sessions[g.find(&b).unwrap()];
         assert!(sb.log.iter().any(|l| l.contains("waiting: free slot")), "log: {:?}", sb.log);

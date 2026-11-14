@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import type { AgentRoster, Finding, Global, OrchEvent, Plugin, State } from "./types";
+import type { AgentRoster, Finding, Global, HistoryEntry, HistoryRecording, OrchEvent, Plugin, State } from "./types";
 
 /** One repo's state, log and structured events since its last goal_start. */
 export type SessionInit = { state: State; log: string[]; events: OrchEvent[] };
@@ -43,6 +43,8 @@ export interface Transport {
   plugins(repo: string, fresh?: boolean): Promise<Plugin[]>;
   /** Agents and skills discovered for a repo. */
   agents(repo: string): Promise<AgentRoster>;
+  history(repo: string): Promise<HistoryEntry[]>;
+  historyRun(repo: string, id: string): Promise<HistoryRecording>;
   /** Save a project-level agent definition (also creates an override of a built-in or user agent). */
   saveAgent(repo: string, name: string, content: string): Promise<void>;
 }
@@ -164,6 +166,16 @@ const web: Transport = {
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
     return r.json();
   },
+  async history(repo) {
+    const r = await api(`/api/history?repo=${encodeURIComponent(repo)}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+    return r.json();
+  },
+  async historyRun(repo, id) {
+    const r = await api(`/api/history?repo=${encodeURIComponent(repo)}&id=${encodeURIComponent(id)}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+    return r.json();
+  },
   saveAgent: (repo, name, content) => post("agents", { repo, name, content }),
 };
 
@@ -239,6 +251,8 @@ const tauri: Transport = {
   doctor: (repo) => tauriInvoke<Finding[]>("doctor", { repo }),
   plugins: (repo) => tauriInvoke<Plugin[]>("plugins", { repo }),
   agents: (repo) => tauriInvoke<AgentRoster>("agents", { repo }),
+  history: (repo) => tauriInvoke<HistoryEntry[]>("history", { repo }),
+  historyRun: (repo, id) => tauriInvoke<HistoryRecording>("history", { repo, id }),
   saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
 };
 

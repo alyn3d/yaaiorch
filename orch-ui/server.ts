@@ -546,6 +546,19 @@ http
       if (url.pathname === "/api/state") return json(200, initPayload());
       if (url.pathname === "/api/doctor") return json(200, await doctor(mustGet(url.searchParams.get("repo"))));
       if (url.pathname === "/api/plugins") return json(200, await plugins(mustGet(url.searchParams.get("repo")), url.searchParams.has("fresh")));
+      if (url.pathname === "/api/history" && req.method === "GET") {
+        const s = mustGet(url.searchParams.get("repo"));
+        const id = url.searchParams.get("id");
+        const result = await new Promise<string>((ok, fail) =>
+          execFile(
+            process.execPath,
+            [TSX_CLI, ORCH, "history", "--json", ...(id === null ? [] : [id])],
+            { cwd: s.repo, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+            (err, stdout, stderr) => (err ? fail(new Error((stderr || err.message).trim())) : ok(stdout)),
+          ),
+        );
+        return json(200, JSON.parse(result));
+      }
       if (url.pathname === "/api/agents" && req.method === "GET") {
         const s = mustGet(url.searchParams.get("repo"));
         return json(200, JSON.parse(execFileSync(process.execPath, [TSX_CLI, ORCH, "agents", "--json"], { cwd: s.repo, encoding: "utf8" })));

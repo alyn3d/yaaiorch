@@ -149,6 +149,7 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | type | fields |
 |---|---|
 | `goal_start` | goal, maxRounds, dryRun, power, maxCost?, models ({roles, agents} overrides), onLimit |
+| `history_error` | error (recording failed; the goal continues and the live run displays the warning) |
 | `queue_item` | id, goal (loop only) |
 | `checkpoint` | branch (git only, not on dry run) |
 | `round_start` | round, power, models (effective model per role), mode? (`direct` on the fast path), agentPower? ({agent: power} for agents escalated on their own) |
@@ -236,6 +237,7 @@ A start that waits is `queued` with a `waitReason`: the usage limit, the budget,
 | `Overview.tsx` | The **Overview** tab (shown from two repos on): one row per repo with its phase (planning, building, verifying, checks, waiting), goal, round, tasks done and running agents, cost against its cap, pending queue, and Open / Stop. |
 | `repoStatus.ts` | `repoStatus()`: a repo's status dot and label, shared by the tabs and the overview. |
 | `RepoView.tsx` | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log. |
+| `RunHistory.tsx` | Lists repo-local goal attempts and replays a selected event stream through `reduce.ts`, without live approval controls. |
 | `Settings.tsx` | Power, rounds, per-goal and queue budgets, usage-limit choice, fast path, models per role and agent; remembered per repo in local storage. |
 | `reduce.ts` | Pure fold of `OrchEvent`s into a `RunView` (rounds -> tasks). A reload replays the stored events through it. |
 | `RunView.tsx` | Task cards grouped Foundation / Build / Verify, with status, elapsed time, owned and changed files, failures. |
@@ -268,6 +270,7 @@ reconnects the event stream. Vite's dev proxy (`localhost:5173`) passes the chec
 | `GET /api/events?token=` | SSE: `init`, `session`, `log`, `ev`, `global` |
 | `GET /api/state` | The init payload |
 | `GET /api/doctor?repo=`, `/api/agents?repo=` | `orch doctor --json`, roster |
+| `GET /api/history?repo=[&id=]` | List a repo's recorded attempts, or read one event stream |
 | `GET /api/plugins?repo=[&fresh]` | `orch plugins --json --details` (cached 10 minutes) |
 | `POST /api/add-repo` `{ path }`, `/api/remove-repo` `{ repo }` | Open or close a repo (closing is refused while it runs) |
 | `POST /api/settings` `{ maxParallel?, dailyBudget?, usageCap?: { fiveHour?, week? } }` | Change the parallel limit, the daily budget and/or the usage caps in percent (`null` or `""` = none) |
@@ -287,6 +290,7 @@ Tauri v2. Replaces the Node server. Runs the compiled `orch.mjs` with `node` in 
 | `set_daily_budget(dailyBudget)`, `set_usage_cap(fiveHour, week)`, `clear_limit` | Daily budget and usage caps (`null` = none); lift the usage-limit hold and forget usage readings |
 | `run_goal`, `run_loop`, `add_goal`, `stop`, `clear_log`, `agents`, `rollback` | Same actions as the HTTP API, each with `repo` |
 | `doctor(repo)` | `orch doctor --json` (async command, so starting node does not freeze the window) |
+| `history(repo, id?)` | `orch history --json [ID]` (async) |
 | `plugins(repo)` | `orch plugins --json --details` (async) |
 
 Events to the UI: `orch-init`, `orch-session`, `orch-log`, `orch-ev` (these two as `{ repo, … }`), `orch-global`.
@@ -324,6 +328,7 @@ a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 |---|---|---|
 | `<target>/.orchestrator/queue.json` | orch.ts / UI | Queue |
 | `<target>/.orchestrator/last-run.json` | orch.ts | Latest goal: status, total cost, `checkpoint` (only while that branch exists; drives the UI's rollback offer), and per round power, plan, touched files, checks, failures, cost |
+| `<target>/.orchestrator/runs/<id>.jsonl` | orch.ts | Append-only structured events for one goal attempt, including plan-only and CI-fix attempts; recognized secrets redacted, never committed |
 | `<target>/.orchestrator/readonly-settings.json` | orch.ts | Allow-list plus edit-tool deny for the architect and verifiers |
 | `<target>` git branches `orchestrator/discarded-*` | orch.ts | Work thrown away by `orch rollback` |
 | `<target>/.orchestrator/run.lock`, `queue.lock`, `stop-after-goal` | orch.ts | Run lock, queue edit lock, stop request (see Concurrency) |
@@ -340,7 +345,10 @@ a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 | `<app config>/repos.json` | Tauri | Open repos, the parallel limit, the daily budget and today's spending |
 | `~/.yaaiorch/ui.json` | server.ts | Same, for browser mode |
 
-Run events and the log live in memory only and are lost on restart.
+Run events are appended as they occur even without `ORCH_EVENTS`; a missing `goal_end` marks an unfinished attempt.
+An incomplete final line is ignored and reported, while other malformed recordings are reported as unreadable. The
+UI reads history through `orch history --json [ID]` and replays it without altering live sessions. The raw live log
+remains in memory only. History has no automatic retention limit and may contain sensitive project information.
 
 ## Design decisions
 

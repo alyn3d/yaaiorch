@@ -7,6 +7,7 @@ import { OpenIn } from "./OpenIn";
 import { briefProgress, leftText } from "./progress";
 import { usd } from "./repoStatus";
 import { SettingsPanel, modelSpec, useRepoSettings } from "./Settings";
+import { RunHistory } from "./RunHistory";
 import { transport } from "./transport";
 import { useFindings, type Session } from "./useOrch";
 
@@ -291,6 +292,8 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
               )}
             </section>
           )}
+
+          <RunHistory repo={repo} busy={busy} />
 
           <section className="card output">
             <div className="card-head">

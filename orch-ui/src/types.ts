@@ -63,6 +63,17 @@ export type AgentRoster = { agents: RosterEntry[]; skills: RosterSkill[] };
 export type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };
 
 export type OrchEvent = { type: string; t: number; [k: string]: any };
+export type HistoryEntry = {
+  id: string;
+  goal?: string;
+  startedAt?: number;
+  endedAt?: number;
+  status: "passed" | "failed" | "unfinished" | "unreadable";
+  cost?: number;
+  truncated?: boolean;
+  error?: string;
+};
+export type HistoryRecording = { events: OrchEvent[]; truncated: boolean };
 export type TaskView = {
   id: number;
   agent: string;
@@ -123,6 +134,8 @@ export type RunView = {
   maxRounds: number;
   dryRun: boolean;
   status: "running" | "passed" | "failed";
+  endedAt?: number;
+  historyError?: string;
   error?: string;
   checkpoint?: string;
   maxCost?: number;

@@ -224,11 +224,14 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
           {run.maxCost !== undefined ? ` / ${money(run.maxCost)}` : ""}
         </span>
         <TokenCount tokens={run.tokens} />
-        <span className="muted">{fmt((run.status === "running" ? now : (run.rounds.at(-1)?.tasks.at(-1)?.endedAt ?? now)) - run.startedAt)}</span>
+        <span className="muted">
+          {fmt((run.status === "running" ? now : (run.endedAt ?? run.rounds.at(-1)?.tasks.at(-1)?.endedAt ?? now)) - run.startedAt)}
+        </span>
       </div>
       {/* The checkpoint and its rollback offer are shown by App from last-run.json, which stays correct after a rollback. */}
       {run.checkpoint && run.status === "running" && <p className="muted">Checkpoint: {run.checkpoint}</p>}
       {run.error && <p className="error">{run.error}</p>}
+      {run.historyError && <p className="error">{run.historyError}</p>}
       {run.approval && run.status === "running" && onAnswer && (
         <Approval key={run.approval.round + run.approval.summary} a={run.approval} onAnswer={onAnswer} />
       )}

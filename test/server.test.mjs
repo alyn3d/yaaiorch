@@ -3,7 +3,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -134,5 +134,38 @@ describe("browser-mode server guard", { timeout: 60_000 }, () => {
     const helper = updated.json().agents.find((a) => a.name === "helper");
     assert.equal(helper?.source, "project");
     assert.equal(helper?.content, content);
+  });
+
+  test("history is scoped to an open repo and requires the API token", async () => {
+    const repo = join(home, "history-repo");
+    const runs = join(repo, ".orchestrator", "runs");
+    mkdirSync(runs, { recursive: true });
+    const id = "1700000000000-12345678-1234-1234-1234-123456789abc";
+    const events = [
+      { type: "goal_start", t: 1700000000000, goal: "saved goal", maxRounds: 2, dryRun: false },
+      { type: "goal_end", t: 1700000001000, passed: true, cost: 0.5 },
+    ];
+    writeFileSync(join(runs, `${id}.jsonl`), events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    const t = await token();
+    const headers = { "x-orch-token": t };
+    const opened = await request("/api/add-repo", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: { path: repo },
+    });
+    assert.equal(opened.status, 200, opened.text);
+    const path = `/api/history?repo=${encodeURIComponent(repo)}`;
+    assert.equal((await request(path)).status, 403);
+    const list = await request(path, { headers });
+    assert.equal(list.status, 200, list.text);
+    assert.deepEqual(
+      list.json().map((entry) => [entry.id, entry.goal, entry.status]),
+      [[id, "saved goal", "passed"]],
+    );
+    const replay = await request(`${path}&id=${id}`, { headers });
+    assert.equal(replay.status, 200, replay.text);
+    assert.deepEqual(replay.json(), { events, truncated: false });
+    assert.notEqual((await request(`${path}&id=${encodeURIComponent("../queue")}`, { headers })).status, 200);
+    assert.notEqual((await request(`/api/history?repo=${encodeURIComponent(join(home, "not-open"))}`, { headers })).status, 200);
   });
 });

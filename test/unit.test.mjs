@@ -426,6 +426,7 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
       { type: "goal_end", passed: true, cost: 0.2, tokens: { input: 45, output: 15, cacheRead: 9, cacheCreation: 6 } },
     ]);
     assert.equal(run.status, "passed");
+    assert.equal(run.endedAt, 1008);
     assert.equal(run.cost, 0.2, "goal_end has the last word on cost");
     assert.deepEqual(run.tokens, { input: 45, output: 15, cacheRead: 9, cacheCreation: 6 });
     const r = run.rounds[0];
@@ -471,6 +472,11 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
   test("a round diff stays visible if a goal stops before round_end", () => {
     const run = fold([...start, { type: "round_diff", round: 1, diff: { text: "+work\n" } }, { type: "goal_end", passed: false }]);
     assert.deepEqual(run.rounds[0].diff, { text: "+work\n" });
+  });
+
+  test("history failures are visible in the live run", () => {
+    const run = fold([...start, { type: "history_error", error: "Could not save run history" }]);
+    assert.equal(run.historyError, "Could not save run history");
   });
 
   test("stopped: a run killed mid-task fails and its open tasks show STOPPED; a finished run is left alone", () => {

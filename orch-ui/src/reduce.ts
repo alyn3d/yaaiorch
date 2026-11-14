@@ -39,6 +39,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
         run && {
           ...run,
           status: ev.passed ? "passed" : "failed",
+          endedAt: ev.t,
           error: ev.usageLimit && ev.resetAt ? `${ev.error} (resets ${new Date(ev.resetAt).toLocaleString()})` : ev.error,
           cost: ev.cost ?? run.cost,
           tokens: ev.tokens ?? run.tokens,
@@ -179,11 +180,14 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       );
     case "checkpoint":
       return run && { ...run, checkpoint: ev.branch };
+    case "history_error":
+      return run && { ...run, historyError: ev.error };
     case "stopped": // synthetic (useOrch): the process exited without a goal_end, e.g. killed by Stop
       return run && run.status === "running"
         ? {
             ...run,
             status: "failed",
+            endedAt: ev.t,
             error: run.error ?? "Stopped before the goal finished",
             rounds: run.rounds.map((r) => ({
               ...r,

@@ -960,6 +960,37 @@ button {
     }
   }
 }
+.run-history {
+  display: block;
+  .history-body {
+    margin-top: 12px;
+  }
+  .history-list {
+    list-style: none;
+    padding: 0;
+    margin: 12px 0;
+    display: grid;
+    gap: 6px;
+    button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      text-align: left;
+      > span:first-child {
+        flex: 1 1 200px;
+        overflow-wrap: anywhere;
+      }
+    }
+  }
+  .history-replay {
+    margin-top: 16px;
+    > .card {
+      margin-top: 10px;
+    }
+  }
+}
 .models {
   border: 1px solid var(--border);
   border-radius: var(--radius);

@@ -94,6 +94,7 @@ Other commands:
 | `orch add "<goal>"` / `orch loop` | queue goals and process them (`--until-empty` to stop when drained) |
 | `orch stop-after` | a running `loop` stops before its next goal (the current one finishes) |
 | `orch status` | show the queue |
+| `orch history --json` / `orch history ID --json` | list recorded goal attempts / read one attempt's events |
 | `orch doctor` | check node, claude login, git, a clean tree, leftover checkpoints |
 | `orch rollback` | undo the last unfinished goal (work kept on `orchestrator/discarded-*`) |
 | `orch prune` | delete old `orchestrator/*` branches |
@@ -208,6 +209,11 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   goals done", failed and blocked counts, what it cost, a rough time left and the goal running now; the
   overview shows "7/23" per repo. Power, rounds, **Max $**, **Budget $** and advanced run settings are remembered
   separately for each repo in the desktop app or browser's local storage.
+- **Run history.** Expand **Run history** on a repo page to list and replay goal attempts, including retries, plan-only
+  runs and CI fixes. An unfinished recording may be running or interrupted. History is kept in
+  `.orchestrator/runs/` in that repo, including when using the CLI without event streaming. Recognized secrets are
+  redacted, but goals, plans, reports and diffs can still contain sensitive information: protect this folder and
+  delete recordings manually when no longer needed. History is never committed by the orchestrator.
 - **Goals that build on each other.** The split says which earlier goals each one needs (shown as "after 1, 3";
   unsaid means all earlier ones). A failed goal is tried again one power tier higher (`--retries N`, default 1;
   not after the budget ran out); if it still fails, the goals that need it are marked **blocked** and skipped

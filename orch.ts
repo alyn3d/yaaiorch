@@ -23,6 +23,7 @@ import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { BUILTIN_AGENTS } from "./orch-agents";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
+import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
   DevServer,
   MAX_TARGETS,
@@ -46,6 +47,7 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch add "<goal>"     queue a goal
   orch loop             process the queue continuously (Ctrl+C stops after current goal)
   orch status           show queue
+  orch history [ID] --json   list recorded goal attempts, or read one attempt's events
   orch agents [--json]  list agents + skills the architect will see
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
   orch stop-after        a running loop stops before its next goal (the current one finishes)
@@ -506,9 +508,44 @@ List only problems that need fixing: no notes, no "no defects found". Use an emp
 "notes" is for lessons a later goal in this repo should know (a pitfall, a decision, a convention you found), at most 3 short ones; usually leave it out.
 The check results above were produced by the orchestrator; do not fail only because you could not re-run them yourself.`;
 
-/** Structured events for UIs: one "@@ORCH@@ {json}" line per event, only when ORCH_EVENTS is set. */
+type HistoryWriter = { path?: string; error?: string; announced?: boolean };
+let historyWriter: HistoryWriter | undefined;
+function redactHistoryValue(value: unknown): unknown {
+  if (typeof value === "string") return redactOutput(value);
+  if (Array.isArray(value)) return value.map(redactHistoryValue);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactHistoryValue(item)]));
+  return value;
+}
+
+function beginHistory(): HistoryWriter | undefined {
+  const previous = historyWriter;
+  try {
+    historyWriter = { path: createRunHistory() };
+  } catch (e) {
+    historyWriter = { error: msg(e) };
+  }
+  return previous;
+}
+
+/** Structured events also go to the active goal's append-only history, even without ORCH_EVENTS. */
 const emit = (type: string, data: Record<string, unknown> = {}) => {
-  if (process.env.ORCH_EVENTS) console.log("@@ORCH@@ " + JSON.stringify({ type, t: Date.now(), ...data }));
+  const event = { type, t: Date.now(), ...data };
+  if (historyWriter?.path) {
+    try {
+      const safe = Object.fromEntries(Object.entries(event).map(([key, value]) => [key, redactHistoryValue(value)]));
+      appendRunHistory(historyWriter.path, { ...safe, type: event.type, t: event.t });
+    } catch (e) {
+      historyWriter.path = undefined;
+      historyWriter.error = msg(e);
+    }
+  }
+  if (process.env.ORCH_EVENTS) console.log("@@ORCH@@ " + JSON.stringify(event));
+  if (historyWriter?.error && !historyWriter.announced) {
+    historyWriter.announced = true;
+    const warning = `Could not save run history: ${historyWriter.error}`;
+    console.warn(warning);
+    if (process.env.ORCH_EVENTS) console.log("@@ORCH@@ " + JSON.stringify({ type: "history_error", t: Date.now(), error: warning }));
+  }
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -1874,6 +1911,7 @@ async function watchPullRequest(gb: GoalBranch, goal: string, o: Opts, lr: LastR
     const fixLr: LastRun = { goal: fixGoal, status: "running", cost: 0, state: [] };
     let cp = "";
     let fixed = false;
+    const previousHistory = beginHistory();
     emit("goal_start", { goal: `Fix CI of ${lr.pr}`, maxRounds: fixOpts.maxRounds, dryRun: false, power: o.power, maxCost: o.maxCost, ci: true });
     try {
       cp = prepareGit();
@@ -1888,6 +1926,7 @@ async function watchPullRequest(gb: GoalBranch, goal: string, o: Opts, lr: LastR
       });
       if (isFatal(e)) console.warn(`CI fix stopped: ${msg(e)}`);
     } finally {
+      historyWriter = previousHistory;
       cost += ctx.budget.spent;
       // Keep what the fix committed if it passed, else drop it: the branch stays as the PR had it.
       try {
@@ -2968,6 +3007,15 @@ let lastGoalCost = 0;
 /** QA's notes for the goal being run, written to notes.md when it ends. */
 let goalNotes: string[] = [];
 async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resumeFrom?: string, issue?: number): Promise<boolean> {
+  const previousHistory = beginHistory();
+  try {
+    return await runRecordedGoal(goal, o, id, brief, resumeFrom, issue);
+  } finally {
+    historyWriter = previousHistory;
+  }
+}
+
+async function runRecordedGoal(goal: string, o: Opts, id?: number, brief?: string, resumeFrom?: string, issue?: number): Promise<boolean> {
   emit("goal_start", {
     goal,
     maxRounds: o.maxRounds,
@@ -4191,6 +4239,9 @@ async function main() {
           )
           .join("\n") || "queue empty",
       );
+    case "history":
+      if (!values.json || rest.length > 1) throw new Error("usage: orch history [ID] --json");
+      return console.log(JSON.stringify(rest[0] ? readRunHistory(rest[0]) : listRunHistory()));
     case "agents":
       if (typeof values["save-agent"] === "string") {
         const path = saveAgent(values["save-agent"], readFileSync(0, "utf8"));

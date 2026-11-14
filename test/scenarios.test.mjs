@@ -7,7 +7,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync, symlinkSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,6 +96,93 @@ const writeConfig = (dir, cfg) => {
 
 // spawnSync blocks, so the scenarios run one after another; the timeout makes a hang fail instead of stalling CI.
 describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
+  test("run history records separate goal attempts, even without streamed events", () => {
+    const dir = repo();
+    const first = orch(dir, ["run", "first goal", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(first.code, 0, first.out);
+    const second = orch(dir, ["run", "plan another", "--dry-run"], { ORCH_EVENTS: "" });
+    assert.equal(second.code, 0, second.out);
+    assert.deepEqual(second.events, []);
+    const listing = orch(dir, ["history", "--json"]);
+    assert.equal(listing.code, 0, listing.out);
+    const entries = JSON.parse(listing.out);
+    assert.equal(entries.length, 2);
+    assert.deepEqual(
+      entries.map((e) => [e.goal, e.status]),
+      [
+        ["plan another", "passed"],
+        ["first goal", "passed"],
+      ],
+    );
+    const saved = orch(dir, ["history", "--json", entries[1].id]);
+    assert.equal(saved.code, 0, saved.out);
+    const { events, truncated } = JSON.parse(saved.out);
+    assert.equal(truncated, false);
+    assert.deepEqual(events, first.events.slice(first.events.findIndex((e) => e.type === "goal_start")));
+    assert.ok(events.some((e) => e.type === "task_end" && e.report));
+    assert.ok(events.some((e) => e.type === "round_diff"));
+    assert.equal(orch(dir, ["history", "--json", "..\\queue"]).code, 1);
+    assert.doesNotMatch(git(dir, "ls-files"), /\.orchestrator/);
+  });
+
+  test("run history preserves interrupted attempts and reports damaged files", async () => {
+    const dir = repo();
+    const run = orchAsync(dir, ["run", "unfinished", "--approve-plan"], { FAKE_QA: "pass" });
+    try {
+      await until(() => existsSync(join(dir, ".orchestrator", "plan-pending.json")));
+    } finally {
+      run.child.kill();
+      await run.done;
+    }
+    const entries = JSON.parse(orch(dir, ["history", "--json"]).out);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].status, "unfinished");
+    const path = join(dir, ".orchestrator", "runs", `${entries[0].id}.jsonl`);
+    appendFileSync(path, '{"type":"partial"');
+    const partial = JSON.parse(orch(dir, ["history", "--json", entries[0].id]).out);
+    assert.equal(partial.truncated, true);
+    assert.ok(partial.events.some((e) => e.type === "goal_start"));
+    assert.equal(JSON.parse(orch(dir, ["history", "--json"]).out)[0].truncated, true);
+    appendFileSync(path, "\n");
+    const damaged = JSON.parse(orch(dir, ["history", "--json"]).out)[0];
+    assert.equal(damaged.status, "unreadable");
+    assert.match(damaged.error, /invalid run history/);
+    assert.notEqual(orch(dir, ["history", "--json", entries[0].id]).code, 0);
+  });
+
+  test("run history redacts recognized secrets from goal and nested event fields", () => {
+    const dir = repo();
+    const secret = "AKIA" + "ABCDEFGHIJKLMNOP";
+    mkdirSync(join(dir, ".orchestrator"), { recursive: true });
+    const planFile = join(dir, ".orchestrator", "fake-plan.json");
+    writeFileSync(
+      planFile,
+      JSON.stringify({
+        summary: `plan ${secret}`,
+        tasks: [{ agent: "qa", phase: "verify", task: `check ${secret}` }],
+      }),
+    );
+    const run = orch(dir, ["run", `goal ${secret}`, "--dry-run"], { FAKE_PLAN_FILE: planFile });
+    assert.equal(run.code, 0, "dry run failed");
+    const [entry] = JSON.parse(orch(dir, ["history", "--json"]).out);
+    const replay = orch(dir, ["history", "--json", entry.id]).out;
+    assert.doesNotMatch(replay, new RegExp(secret));
+    const { events } = JSON.parse(replay);
+    assert.equal(events[0].goal, "goal [secret redacted]");
+    assert.equal(events.find((e) => e.type === "plan").tasks[0].task, "check [secret redacted]");
+  });
+
+  test("a history write failure is reported without stopping the goal", () => {
+    const dir = repo();
+    mkdirSync(join(dir, ".orchestrator"), { recursive: true });
+    writeFileSync(join(dir, ".orchestrator", "runs"), "not a directory");
+    const result = orch(dir, ["run", "plan", "--dry-run"]);
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.last("history_error").error, /Could not save run history/);
+    assert.match(result.out, /Could not save run history/);
+    assert.equal(result.last("goal_end").passed, true);
+  });
+
   test("happy path: roles, permissions, costs, commit, checkpoint removed", () => {
     const dir = repo();
     const r = orch(dir, ["run", "build it", "--max-rounds", "2"], { FAKE_QA: "needs-new" });
@@ -1272,6 +1359,20 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "main");
     assert.equal(git(dir, "rev-parse", "main"), main);
     assert.equal(lastRun(dir).ci, "pass");
+    const history = JSON.parse(orch(dir, ["history", "--json"]).out);
+    assert.equal(history.length, 2);
+    const parent = history.find((entry) => entry.goal === "Add export");
+    const fix = history.find((entry) => entry.goal.startsWith("Fix CI of "));
+    assert.ok(parent && fix);
+    const parentEvents = JSON.parse(orch(dir, ["history", "--json", parent.id]).out).events;
+    const fixEvents = JSON.parse(orch(dir, ["history", "--json", fix.id]).out).events;
+    assert.deepEqual(
+      parentEvents.filter((e) => e.type === "ci").map((e) => e.state),
+      ["fail", "pass"],
+    );
+    assert.equal(parentEvents.filter((e) => e.type === "goal_start").length, 1);
+    assert.equal(fixEvents.filter((e) => e.type === "goal_start").length, 1);
+    assert.ok(fixEvents.some((e) => e.type === "goal_end"));
     assert.deepEqual(branches(dir, "orchestrator/checkpoint-*"), []);
 
     // --ci-fixes 0 only reports; --no-ci-watch does not wait at all.
