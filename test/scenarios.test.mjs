@@ -102,8 +102,20 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.code, 0, r.out);
     assert.equal(r.last("goal_end").passed, true);
     assert.equal(r.last("goal_end").cost, 0.25); // architect + 3 implementers + qa
+    const oneCall = { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 };
+    const fullRun = { input: 75, output: 25, cacheRead: 15, cacheCreation: 10 };
+    assert.deepEqual(r.last("plan").tokens, oneCall);
+    assert.deepEqual(r.ev("task_end")[0].tokens, oneCall);
+    assert.deepEqual(r.last("round_end").tokens, fullRun);
+    assert.deepEqual(r.last("goal_end").tokens, fullRun);
+    assert.deepEqual(lastRun(dir).tokens, fullRun);
+    assert.deepEqual(lastRun(dir).state[0].tokens, fullRun);
     // QA saw the new (untracked at build time) files through the round commit.
     assert.ok(r.calls.includes("qa: sawNewFiles=true"), r.calls.join("\n"));
+    assert.ok(
+      r.calls.filter((c) => c.startsWith("call agent=")).every((c) => /builtin=true$/.test(c)),
+      "built-in agents are passed to claude with their definitions",
+    );
     // Read-only roles vs implementers.
     for (const c of r.calls.filter((c) => c.startsWith("call agent="))) {
       const readOnly = /agent=(architect|qa) /.test(c);
@@ -224,7 +236,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const r = orch(dir, ["run", "x", "--max-rounds", "1", "--max-cost", "0.30"], { FAKE_QA: "pass", FAKE_SLOW: "1" });
     assert.equal(r.code, 0, r.out);
     const calls = r.calls.filter((c) => c.startsWith("call "));
-    const capOf = (c) => [/agent=(\S+)/.exec(c)[1], Number(/ cap=(\S+)$/.exec(c)[1])];
+    const capOf = (c) => [/agent=(\S+)/.exec(c)[1], Number(/\bcap=(\S+)/.exec(c)[1])];
     // architect 0.30 -> foundation fe gets the 0.25 left -> be and fe build in parallel: 0.20 left, 0.10 each -> qa 0.10.
     assert.deepEqual(
       calls.map(capOf),
@@ -1360,7 +1372,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(r.last("goal_end").error, /budget of \$0\.12 used up/);
     assert.match(r.out, /Stopped: budget/);
     assert.ok(
-      r.calls.some((c) => / cap=0\.12$/.test(c)),
+      r.calls.some((c) => /\bcap=0\.12(?:\s|$)/.test(c)),
       "remaining budget passed as --max-budget-usd",
     );
   });

@@ -1,4 +1,15 @@
-import type { OrchEvent, RoundView, RunView, TaskView } from "./types";
+import type { OrchEvent, RoundView, RunView, TaskView, TokenUsage } from "./types";
+
+const addTokens = (a?: TokenUsage, b?: TokenUsage): TokenUsage | undefined => {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheCreation: a.cacheCreation + b.cacheCreation,
+  };
+};
 
 const upd = (run: RunView, round: number, fn: (r: RoundView) => RoundView): RunView => ({
   ...run,
@@ -30,6 +41,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
           status: ev.passed ? "passed" : "failed",
           error: ev.usageLimit && ev.resetAt ? `${ev.error} (resets ${new Date(ev.resetAt).toLocaleString()})` : ev.error,
           cost: ev.cost ?? run.cost,
+          tokens: ev.tokens ?? run.tokens,
         }
       );
     case "round_start":
@@ -54,10 +66,11 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
     case "plan":
       return (
         run &&
-        upd({ ...run, cost: run.cost + (ev.cost ?? 0) }, ev.round, (r) => ({
+        upd({ ...run, cost: run.cost + (ev.cost ?? 0), tokens: addTokens(run.tokens, ev.tokens) }, ev.round, (r) => ({
           ...r,
           architect: "done",
           architectCost: ev.cost,
+          architectTokens: ev.tokens,
           summary: ev.summary,
           tasks: ev.tasks.map((t: any): TaskView => ({
             id: t.id,
@@ -76,7 +89,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
     case "task_end":
       return (
         run &&
-        upd({ ...run, cost: run.cost + (ev.cost ?? 0) }, ev.round, (r) =>
+        upd({ ...run, cost: run.cost + (ev.cost ?? 0), tokens: addTokens(run.tokens, ev.tokens) }, ev.round, (r) =>
           updTask(r, ev.id, (t) => ({
             ...t,
             status: ev.status,
@@ -84,12 +97,13 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
             failures: ev.failures ?? [],
             error: ev.error,
             cost: ev.cost,
+            tokens: ev.tokens,
             endedAt: ev.t,
           })),
         )
       );
     case "round_end":
-      return run && upd(run, ev.round, (r) => ({ ...r, passed: ev.passed, failures: ev.failures, cost: ev.cost }));
+      return run && upd(run, ev.round, (r) => ({ ...r, passed: ev.passed, failures: ev.failures, cost: ev.cost, tokens: ev.tokens }));
     case "stuck":
       return (
         run &&
@@ -129,13 +143,24 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
     case "review":
       return (
         run &&
-        upd({ ...run, cost: run.cost + (ev.cost ?? 0) }, ev.round, (r) => ({
+        upd({ ...run, cost: run.cost + (ev.cost ?? 0), tokens: addTokens(run.tokens, ev.tokens) }, ev.round, (r) => ({
           ...r,
-          reviews: [...(r.reviews ?? []), { agent: ev.agent, lens: ev.lens, approved: !!ev.approved, issues: ev.issues ?? [], cost: ev.cost }],
+          reviews: [
+            ...(r.reviews ?? []),
+            { agent: ev.agent, lens: ev.lens, approved: !!ev.approved, issues: ev.issues ?? [], cost: ev.cost, tokens: ev.tokens },
+          ],
         }))
       );
     case "critic":
-      return run && upd(run, ev.round, (r) => ({ ...r, critic: { approved: !!ev.approved, issues: ev.issues ?? [], revised: !!ev.revised, cost: ev.cost } }));
+      return (
+        run &&
+        upd(run, ev.round, (r) => ({
+          ...r,
+          critic: { approved: !!ev.approved, issues: ev.issues ?? [], revised: !!ev.revised, cost: ev.cost, tokens: ev.tokens },
+        }))
+      );
+    case "notes_tidy":
+      return run && { ...run, tokens: addTokens(run.tokens, ev.tokens) };
     case "waiting":
       return run && { ...run, waitingUntil: ev.until, waitingReason: ev.reason };
     case "checks":

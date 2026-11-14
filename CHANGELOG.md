@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Token counts alongside cost** in active runs and persisted run summaries, including input and output totals;
+  cache reads and creation are included in input and shown in the count's tooltip.
+- **Agent roster page**: view built-in, user-level and project agents plus discovered skills for each repo;
+  edit project agents or save repo-local overrides without changing your global Claude Code definitions.
 - **Browser checks for QA.** With `"serve": {"url": "http://localhost:5173", "command": "npm run dev"}` in
   `.orchestrator/config.json`, the architect can give a verify task a `visual` list of pages (path, the changed
   element's selector, clicks to reach a state, widths, light and dark). After the checks, orch starts the dev server

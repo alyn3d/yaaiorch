@@ -18,9 +18,26 @@ export type Item = {
   /** 1 (first) to 9; 3 when not set. */
   priority?: number;
 };
-export type Round = { round: number; plan: string; touched: string[]; passed: boolean; failures: string[]; power?: Power; cost?: number };
+export type TokenUsage = { input: number; output: number; cacheRead: number; cacheCreation: number };
+export type Round = {
+  round: number;
+  plan: string;
+  touched: string[];
+  passed: boolean;
+  failures: string[];
+  power?: Power;
+  cost?: number;
+  tokens?: TokenUsage;
+};
 /** .orchestrator/last-run.json, written by orch.ts. `checkpoint` is set only while that branch still exists. */
-export type LastRun = { goal: string; status?: "running" | "passed" | "failed"; checkpoint?: string; cost?: number; state: Round[] } | null;
+export type LastRun = {
+  goal: string;
+  status?: "running" | "passed" | "failed";
+  checkpoint?: string;
+  cost?: number;
+  tokens?: TokenUsage;
+  state: Round[];
+} | null;
 export type Running = { pid: number; label: string; startedAt: number } | null;
 /** One repo's state. `queued`: a start is waiting (for a free slot, the usage limit or the daily budget); `waitReason` says which. */
 export type State = { repo: string; running: Running; queued?: boolean; waitReason?: string; queue: Item[]; lastRun: LastRun };
@@ -37,6 +54,9 @@ export type Global = {
 export type Power = "max" | "heavy" | "balanced" | "economy";
 /** One of the user's Claude Code plugins (`orch plugins --json --details`). `enabled`: on in Claude Code itself. */
 export type Plugin = { id: string; name: string; scope: string; enabled: boolean; tokens?: number };
+export type RosterEntry = { name: string; description: string; source: "builtin" | "user" | "project"; content: string };
+export type RosterSkill = { name: string; description: string; source: "user" | "project" };
+export type AgentRoster = { agents: RosterEntry[]; skills: RosterSkill[] };
 /** One line of `orch doctor --json`. */
 export type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };
 
@@ -52,6 +72,7 @@ export type TaskView = {
   failures: string[];
   error?: string;
   cost?: number;
+  tokens?: TokenUsage;
   startedAt?: number;
   endedAt?: number;
   /** Continued the agent's session from this earlier round. */
@@ -66,18 +87,20 @@ export type RoundView = {
   mode?: string;
   architect: "running" | "done";
   architectCost?: number;
+  architectTokens?: TokenUsage;
   summary: string;
   tasks: TaskView[];
   checks?: { name: string; command: string; ok: boolean; code: number | null; ms: number }[];
   passed?: boolean;
   failures: string[];
   cost?: number;
+  tokens?: TokenUsage;
   /** From a `stuck` event: why the next round escalates, or why the goal stopped. */
   note?: string;
   /** From a `critic` event: the plan critic's review (`revised`: the architect re-planned after a rejection). */
-  critic?: { approved: boolean; issues: string[]; revised: boolean; cost?: number };
+  critic?: { approved: boolean; issues: string[]; revised: boolean; cost?: number; tokens?: TokenUsage };
   /** From `review` events: diff reviews next to QA (lens "goal": the critic; "bugs": a reviewer). */
-  reviews?: { agent: string; lens: "goal" | "bugs"; approved: boolean; issues: string[]; cost?: number }[];
+  reviews?: { agent: string; lens: "goal" | "bugs"; approved: boolean; issues: string[]; cost?: number; tokens?: TokenUsage }[];
   /** From an `unowned` event: files changed outside every task's list (`strict`: that failed the round). */
   unowned?: { files: string[]; strict: boolean };
   /** From a `visual` event: the browser check before QA (`problems` failed the round; screenshots under .orchestrator/visual/). */
@@ -104,6 +127,8 @@ export type RunView = {
   waitingReason?: string;
   /** Sum of the costs reported so far; `goal_end` replaces it with the exact total. */
   cost: number;
+  /** Sum of agent-call token usage; `goal_end` replaces it with the exact total. */
+  tokens?: TokenUsage;
   startedAt: number;
   rounds: RoundView[];
 };

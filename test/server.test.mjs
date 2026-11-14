@@ -3,7 +3,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,5 +104,35 @@ describe("browser-mode server guard", { timeout: 60_000 }, () => {
     assert.equal(r.status, 200);
     assert.match(r.type, /text\/event-stream/);
     assert.match(r.text, /^event: init/);
+  });
+
+  test("the agent roster lists discovered agents and saves project-local overrides", async () => {
+    const repo = join(home, "repo");
+    mkdirSync(repo);
+    const t = await token();
+    const opened = await request("/api/add-repo", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-orch-token": t },
+      body: { path: repo },
+    });
+    assert.equal(opened.status, 200, opened.text);
+
+    const roster = await request(`/api/agents?repo=${encodeURIComponent(repo)}`, { headers: { "x-orch-token": t } });
+    assert.equal(roster.status, 200, roster.text);
+    assert.ok(roster.json().agents.some((a) => a.name === "architect" && a.source === "builtin" && a.builtin));
+    assert.deepEqual(roster.json().skills, []);
+
+    const content = "---\nname: helper\ndescription: A project helper\n---\n\nDo the work.\n";
+    const saved = await request("/api/agents", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-orch-token": t },
+      body: { repo, name: "helper", content },
+    });
+    assert.equal(saved.status, 200, saved.text);
+    assert.equal(readFileSync(join(repo, ".claude", "agents", "helper.md"), "utf8"), content);
+    const updated = await request(`/api/agents?repo=${encodeURIComponent(repo)}`, { headers: { "x-orch-token": t } });
+    const helper = updated.json().agents.find((a) => a.name === "helper");
+    assert.equal(helper?.source, "project");
+    assert.equal(helper?.content, content);
   });
 });

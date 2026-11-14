@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import type { Finding, Global, OrchEvent, Plugin, State } from "./types";
+import type { AgentRoster, Finding, Global, OrchEvent, Plugin, State } from "./types";
 
 /** One repo's state, log and structured events since its last goal_start. */
 export type SessionInit = { state: State; log: string[]; events: OrchEvent[] };
@@ -41,6 +41,10 @@ export interface Transport {
   doctor(repo: string): Promise<Finding[]>;
   /** The repo's Claude Code plugins with their token cost (slow; the browser server caches it). */
   plugins(repo: string, fresh?: boolean): Promise<Plugin[]>;
+  /** Agents and skills discovered for a repo. */
+  agents(repo: string): Promise<AgentRoster>;
+  /** Save a project-level agent definition (also creates an override of a built-in or user agent). */
+  saveAgent(repo: string, name: string, content: string): Promise<void>;
 }
 
 // ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
@@ -155,6 +159,12 @@ const web: Transport = {
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
     return r.json();
   },
+  async agents(repo) {
+    const r = await api(`/api/agents?repo=${encodeURIComponent(repo)}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+    return r.json();
+  },
+  saveAgent: (repo, name, content) => post("agents", { repo, name, content }),
 };
 
 // ---------- desktop: Tauri commands + events ----------
@@ -228,6 +238,8 @@ const tauri: Transport = {
   clearLimit: () => tauriInvoke("clear_limit"),
   doctor: (repo) => tauriInvoke<Finding[]>("doctor", { repo }),
   plugins: (repo) => tauriInvoke<Plugin[]>("plugins", { repo }),
+  agents: (repo) => tauriInvoke<AgentRoster>("agents", { repo }),
+  saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
 };
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

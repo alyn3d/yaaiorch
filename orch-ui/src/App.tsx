@@ -7,14 +7,17 @@ import { Overview } from "./Overview";
 import { NewProjectDialog } from "./NewProject";
 import { baseName, repoStatus, usd } from "./repoStatus";
 import { Limits, clock, overCap } from "./Limits";
+import { AgentsPage } from "./Agents";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
 const OVERVIEW = "*overview";
+const AGENTS = "*agents";
 export function App() {
   const { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
   const [notifyOn, setNotifyOnState] = useState(notifyOnSaved);
   const [newProject, setNewProject] = useState(false);
+  const [agentRepo, setAgentRepo] = useState("");
   // Re-render every 30 s so the usage-limit banner disappears when its reset time passes.
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -34,7 +37,11 @@ export function App() {
 
   // Keep a valid tab selected as repos open and close. The overview is there from two repos on.
   const showOverview = order.length >= 2;
-  const current = order.includes(active) || (active === OVERVIEW && showOverview) ? active : (order[0] ?? "");
+  const showAgents = order.length > 0;
+  const current = active === AGENTS && showAgents ? AGENTS : order.includes(active) || (active === OVERVIEW && showOverview) ? active : (order[0] ?? "");
+  useEffect(() => {
+    if (!order.includes(agentRepo)) setAgentRepo(order.includes(active) ? active : (order[0] ?? ""));
+  }, [order, active, agentRepo]);
   useEffect(() => {
     try {
       if (current) localStorage.setItem(ACTIVE_KEY, current);
@@ -87,6 +94,21 @@ export function App() {
               </span>
               <span className="nav-label">Overview</span>
               <span className="nav-meta">{order.length}</span>
+            </button>
+          )}
+          {showAgents && (
+            <button
+              className={`nav-item ${current === AGENTS ? "active" : ""}`}
+              aria-current={current === AGENTS ? "page" : undefined}
+              onClick={() => {
+                setAgentRepo(order.includes(active) ? active : order.includes(agentRepo) ? agentRepo : (order[0] ?? ""));
+                setActive(AGENTS);
+              }}
+            >
+              <span className="nav-icon" aria-hidden>
+                ◈
+              </span>
+              <span className="nav-label">Agents</span>
             </button>
           )}
           <p className="nav-section">Repos</p>
@@ -273,6 +295,8 @@ export function App() {
         {showOverview && current === OVERVIEW && (
           <Overview sessions={sessions} order={order} now={now} onOpen={setActive} onStop={(repo) => guard(() => transport.call("stop", { repo }))} />
         )}
+
+        {current === AGENTS && <AgentsPage repos={order} repo={agentRepo} onRepoChange={setAgentRepo} />}
 
         {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
       </main>

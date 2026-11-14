@@ -546,12 +546,22 @@ http
       if (url.pathname === "/api/state") return json(200, initPayload());
       if (url.pathname === "/api/doctor") return json(200, await doctor(mustGet(url.searchParams.get("repo"))));
       if (url.pathname === "/api/plugins") return json(200, await plugins(mustGet(url.searchParams.get("repo")), url.searchParams.has("fresh")));
-      if (url.pathname === "/api/agents") {
+      if (url.pathname === "/api/agents" && req.method === "GET") {
         const s = mustGet(url.searchParams.get("repo"));
-        return json(200, { text: execFileSync(process.execPath, [TSX_CLI, ORCH, "agents"], { cwd: s.repo, encoding: "utf8" }) });
+        return json(200, JSON.parse(execFileSync(process.execPath, [TSX_CLI, ORCH, "agents", "--json"], { cwd: s.repo, encoding: "utf8" })));
       }
       if (req.method === "POST") {
         const b = await body(req);
+        if (url.pathname === "/api/agents") {
+          const s = mustGet(typeof b.repo === "string" ? b.repo : null);
+          if (typeof b.name !== "string" || typeof b.content !== "string") return json(400, { error: "agent name and content are required" });
+          const out = execFileSync(process.execPath, [TSX_CLI, ORCH, "agents", "--save-agent", b.name], {
+            cwd: s.repo,
+            encoding: "utf8",
+            input: b.content,
+          });
+          return json(200, JSON.parse(out));
+        }
         if (url.pathname === "/api/add-repo") {
           if (typeof b.path !== "string" || !b.path.trim()) return json(400, { error: "path required" });
           const s = addRepo(b.path.trim());

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pluginOpts } from "./Plugins";
 import type { Power } from "./types";
-import { RunPanel } from "./RunView";
+import { RunPanel, TokenCount } from "./RunView";
 import { BriefBox } from "./Brief";
 import { OpenIn } from "./OpenIn";
 import { briefProgress, leftText } from "./progress";
@@ -252,6 +252,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
                 )}
                 <span className="spacer" />
                 {state.lastRun?.cost !== undefined && <span className="cost">${state.lastRun.cost.toFixed(2)}</span>}
+                <TokenCount tokens={state.lastRun?.tokens} />
               </div>
               {rounds.length ? (
                 rounds.map((r) => (
@@ -262,6 +263,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
                       <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>
                       <span className="spacer" />
                       {r.cost !== undefined && <span className="cost">${r.cost.toFixed(2)}</span>}
+                      <TokenCount tokens={r.tokens} />
                     </div>
                     <p>{r.plan}</p>
                     {r.touched.length > 0 && <p className="muted files">Touched: {r.touched.join(", ")}</p>}

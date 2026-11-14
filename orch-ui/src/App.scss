@@ -462,6 +462,9 @@ button {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  > .nav-item + .nav-item {
+    margin-top: 7px;
+  }
 }
 .nav-section {
   margin: 14px 8px 4px;
@@ -689,6 +692,103 @@ button {
 }
 
 // ---------- repo page ----------
+.agents-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.agent-scope {
+  font-size: 12.5px;
+}
+.agent-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.8fr);
+  gap: 16px;
+}
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 580px;
+  overflow: auto;
+}
+.agent-choice {
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  text-align: left;
+  white-space: normal;
+  &:hover:not(:disabled),
+  &.selected {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  > .muted {
+    font-size: 12px;
+  }
+}
+.agent-choice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.agent-detail {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.agent-prompt {
+  min-height: 260px;
+  max-height: 580px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code);
+  color: var(--text-2);
+  font: 12px/1.6 var(--mono);
+  white-space: pre-wrap;
+}
+.agent-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  color: var(--text-2);
+  input,
+  textarea {
+    width: 100%;
+  }
+}
+.roster-skills {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  > li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    &:last-child {
+      border-bottom: 0;
+    }
+    p {
+      margin-top: 3px;
+      font-size: 12px;
+    }
+  }
+}
+
 .repo-view {
   display: flex;
   flex-direction: column;
@@ -1438,6 +1538,9 @@ input.limit {
     overflow-y: hidden;
     padding: 4px 12px 8px;
     gap: 4px;
+    > .nav-item + .nav-item {
+      margin-top: 0;
+    }
     .nav-section,
     .nav-empty {
       display: none;

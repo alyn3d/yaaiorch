@@ -46,7 +46,7 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch add "<goal>"     queue a goal
   orch loop             process the queue continuously (Ctrl+C stops after current goal)
   orch status           show queue
-  orch agents           list agents + skills the architect will see
+  orch agents [--json]  list agents + skills the architect will see
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
@@ -176,8 +176,20 @@ type Item = {
   /** 1 (first) to 9 (last); 3 when not given. From a p1-p9 / priority label, or "(p1)" in a backlog item. */
   priority?: number;
 };
-type Entry = { name: string; description: string; builtin?: boolean };
-type Result = { agent: string; out: string; touched: string[]; cost: number; error?: string; fatal?: Error; status?: string; session?: string };
+type AgentSource = "builtin" | "user" | "project";
+type Entry = { name: string; description: string; builtin?: boolean; source?: AgentSource; content?: string };
+type TokenUsage = { input: number; output: number; cacheRead: number; cacheCreation: number };
+type Result = {
+  agent: string;
+  out: string;
+  touched: string[];
+  cost: number;
+  tokens?: TokenUsage;
+  error?: string;
+  fatal?: Error;
+  status?: string;
+  session?: string;
+};
 
 const POWER = {
   max: { arch: "opus", impl: "opus", heavy: "opus", qa: "opus" },
@@ -505,8 +517,8 @@ const usd = (n: number) => `$${n.toFixed(2)}`;
 const round4 = (n: number) => Math.round(n * 10_000) / 10_000;
 
 // ---------- discovery: built-in, then user-level (~/.claude), then project-level (./.claude) ----------
-function frontmatter(path: string): Record<string, string> {
-  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(path, "utf8"));
+function parseFrontmatter(text: string): Record<string, string> {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   const out: Record<string, string> = {};
   for (const line of m?.[1].split(/\r?\n/) ?? []) {
     const i = line.indexOf(":");
@@ -514,40 +526,65 @@ function frontmatter(path: string): Record<string, string> {
   }
   return out;
 }
+const frontmatter = (path: string) => parseFrontmatter(readFileSync(path, "utf8"));
 const roots = () => [join(homedir(), ".claude"), join(process.cwd(), ".claude")];
 
 function discoverAgents(): Entry[] {
   const found = new Map<string, Entry>();
-  for (const [name, a] of Object.entries(BUILTIN_AGENTS)) found.set(name, { name, description: a.description, builtin: true });
-  for (const r of roots()) {
+  for (const [name, a] of Object.entries(BUILTIN_AGENTS))
+    found.set(name, {
+      name,
+      description: a.description,
+      builtin: true,
+      source: "builtin",
+      content: `---\nname: ${name}\ndescription: ${a.description}\n---\n\n${a.prompt}\n`,
+    });
+  for (const [rootIndex, r] of roots().entries()) {
     const d = join(r, "agents");
     if (!existsSync(d)) continue;
     for (const f of readdirSync(d).filter((f) => f.endsWith(".md"))) {
-      const fm = frontmatter(join(d, f));
+      const path = join(d, f);
+      const content = readFileSync(path, "utf8");
+      const fm = parseFrontmatter(content);
       const name = fm.name ?? basename(f, ".md");
-      found.set(name, { name, description: (fm.description ?? "").slice(0, 160) }); // later roots override earlier ones
+      found.set(name, { name, description: (fm.description ?? "").slice(0, 160), source: rootIndex === 0 ? "user" : "project", content }); // later roots override earlier ones
     }
   }
   return [...found.values()];
 }
 
+function saveAgent(name: string, content: string) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name))
+    throw new Error("agent name must start with a letter or number and contain only letters, numbers, dashes or underscores");
+  if (content.length > 100_000) throw new Error("agent definition is too large (maximum 100 KB)");
+  const fm = parseFrontmatter(content);
+  if (fm.name !== name) throw new Error(`agent frontmatter name must be "${name}"`);
+  if (!fm.description?.trim()) throw new Error("agent description is required in the frontmatter");
+  const body = /^---\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)([\s\S]*)$/.exec(content)?.[1];
+  if (!body?.trim()) throw new Error("agent instructions are required after the frontmatter");
+  const path = join(process.cwd(), ".claude", "agents", `${name}.md`);
+  writeFileAtomic(path, `${content.trimEnd()}\n`);
+  return path;
+}
+
 /** Write the built-in agents still in use to the file passed to `claude --agents`. */
 function writeBuiltins(roster: Entry[]) {
-  const defs = Object.fromEntries(roster.filter((a) => a.builtin).map((a) => [a.name, BUILTIN_AGENTS[a.name]]));
+  const defs = Object.fromEntries(roster.filter((a) => a.source === "builtin").map((a) => [a.name, BUILTIN_AGENTS[a.name]]));
   mkdirSync(DIR, { recursive: true });
   writeFileSync(BUILTIN_FILE, JSON.stringify(defs, null, 2));
 }
 
 function discoverSkills(): Entry[] {
   const found = new Map<string, Entry>();
-  for (const r of roots()) {
+  for (const [rootIndex, r] of roots().entries()) {
     const d = join(r, "skills");
     if (!existsSync(d)) continue;
     for (const s of readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory())) {
       const p = join(d, s.name, "SKILL.md");
       if (!existsSync(p)) continue;
       const fm = frontmatter(p);
-      found.set(fm.name ?? s.name, { name: fm.name ?? s.name, description: (fm.description ?? "").slice(0, 120) });
+      const name = fm.name ?? s.name;
+      found.set(name, { name, description: (fm.description ?? "").slice(0, 120), source: rootIndex === 0 ? "user" : "project" });
     }
   }
   return [...found.values()];
@@ -776,13 +813,75 @@ function runSetup(cfg: Config, git_: boolean): Check | null {
 }
 
 // ---------- claude runner (prompt via stdin: no quoting problems on Windows) ----------
-type CliResult = { result?: unknown; is_error?: boolean; subtype?: string; total_cost_usd?: number; session_id?: unknown };
+type CliResult = {
+  result?: unknown;
+  is_error?: boolean;
+  subtype?: string;
+  total_cost_usd?: number;
+  session_id?: unknown;
+  usage?: unknown;
+  modelUsage?: unknown;
+  message?: { usage?: unknown };
+  tokens?: TokenUsage;
+};
+
+function tokenUsageFrom(raw: unknown, camelCase = false): TokenUsage | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const u = raw as Record<string, unknown>;
+  const get = (snake: string, camel: string) => {
+    const n = u[camelCase ? camel : snake];
+    return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : undefined;
+  };
+  const input = get("input_tokens", "inputTokens");
+  const output = get("output_tokens", "outputTokens");
+  const cacheRead = get("cache_read_input_tokens", "cacheReadInputTokens");
+  const cacheCreation = get("cache_creation_input_tokens", "cacheCreationInputTokens");
+  if ([input, output, cacheRead, cacheCreation].every((n) => n === undefined)) return undefined;
+  return {
+    input: (input ?? 0) + (cacheRead ?? 0) + (cacheCreation ?? 0),
+    output: output ?? 0,
+    cacheRead: cacheRead ?? 0,
+    cacheCreation: cacheCreation ?? 0,
+  };
+}
+
+function addTokenUsage(a?: TokenUsage, b?: TokenUsage): TokenUsage | undefined {
+  if (!a) return b ? { ...b } : undefined;
+  if (!b) return { ...a };
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheCreation: a.cacheCreation + b.cacheCreation,
+  };
+}
+
+function tokenUsageDelta(after?: TokenUsage, before?: TokenUsage): TokenUsage | undefined {
+  if (!after) return undefined;
+  return {
+    input: after.input - (before?.input ?? 0),
+    output: after.output - (before?.output ?? 0),
+    cacheRead: after.cacheRead - (before?.cacheRead ?? 0),
+    cacheCreation: after.cacheCreation - (before?.cacheCreation ?? 0),
+  };
+}
+
+function tokensFromResult(r: CliResult): TokenUsage | undefined {
+  const usage = tokenUsageFrom(r.usage);
+  if (usage) return usage;
+  if (!r.modelUsage || typeof r.modelUsage !== "object") return undefined;
+  return Object.values(r.modelUsage as Record<string, unknown>).reduce<TokenUsage | undefined>(
+    (total, model) => addTokenUsage(total, tokenUsageFrom(model, true)),
+    undefined,
+  );
+}
+
 /**
  * Money spent on one goal; `cap` is the --max-cost limit. Each agent call reserves its share of what is
  * left before it starts (`reserved`), so parallel calls cannot overspend together; `launching` counts the
  * calls of a parallel batch that have not started yet, so they get equal shares.
  */
-type Budget = { spent: number; cap?: number; reserved: number; launching: number };
+type Budget = { spent: number; cap?: number; reserved: number; launching: number; tokens?: TokenUsage };
 
 /**
  * Reserve this call's spending ceiling: an equal share of the unreserved budget among the calls still to
@@ -972,7 +1071,7 @@ function killTree(p: ChildProcess) {
 const TRANSIENT_RE =
   /API Error: (?:5\d\d|429)\b|overloaded_error|\bapi_error\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|fetch failed|Connection error|Request timed out/i;
 
-type Reply = { text: string; cost: number; session?: string };
+type Reply = { text: string; cost: number; tokens?: TokenUsage; session?: string };
 
 /** `resume`: a session id to continue (forked, so the original stays as it was). */
 async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean, resume?: string): Promise<Reply> {
@@ -994,17 +1093,20 @@ async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, rea
 function parseCliOutput(out: string): CliResult | undefined {
   let r: CliResult | undefined;
   let changed = false;
+  let messageTokens: TokenUsage | undefined;
   for (const line of out.split(/\r?\n/)) {
     if (!line.startsWith("{")) continue;
     try {
       const j = JSON.parse(line);
       if (j?.type === "rate_limit_event") changed = readUsage(j) || changed;
+      else if (j?.type === "assistant") messageTokens = addTokenUsage(messageTokens, tokenUsageFrom(j.message?.usage));
       else if (j?.type === "result" || (j && "total_cost_usd" in j)) r = j;
     } catch {
       /* not a JSON line */
     }
   }
   if (changed) emit("usage", { ...usage });
+  if (r) r.tokens = tokensFromResult(r) ?? messageTokens;
   return r;
 }
 
@@ -1014,11 +1116,12 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
   const ceiling = await reserve(budget);
   let released = false;
   /** Give the reservation back and count what the call cost (once, however the call ends). */
-  const settle = (cost: number) => {
+  const settle = (cost: number, tokens?: TokenUsage) => {
     if (released) return;
     released = true;
     if (ceiling !== undefined) budget.reserved = Math.max(0, budget.reserved - ceiling);
     budget.spent += cost;
+    budget.tokens = addTokenUsage(budget.tokens, tokens);
   };
   return new Promise((resolve, reject) => {
     const args = [
@@ -1061,7 +1164,7 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
       const r = parseCliOutput(out);
       // Count the cost even when the call failed: the money is spent either way.
       const cost = typeof r?.total_cost_usd === "number" ? r.total_cost_usd : 0;
-      settle(cost);
+      settle(cost, r?.tokens);
       if (timedOut) {
         const limit = ctx.timeoutMs >= 60_000 ? `${Math.round(ctx.timeoutMs / 60_000)} min` : `${Math.round(ctx.timeoutMs / 1000)} s`;
         return reject(new Error(`${agent.name} timed out after ${limit}`));
@@ -1075,7 +1178,7 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
         const detail = typeof r.result === "string" ? `: ${r.result.slice(0, 200)}` : "";
         return reject(new Error(`${agent.name}: CLI returned ${r.subtype ?? `exit ${code}`}${detail}`));
       }
-      resolve({ text: r.result, cost, session: typeof r.session_id === "string" ? r.session_id : undefined });
+      resolve({ text: r.result, cost, tokens: r.tokens, session: typeof r.session_id === "string" ? r.session_id : undefined });
     });
     p.stdin.end(prompt);
   });
@@ -1731,9 +1834,14 @@ async function watchPullRequest(gb: GoalBranch, goal: string, o: Opts, lr: LastR
     try {
       cp = prepareGit();
       fixed = await runGoalInner(fixGoal, fixOpts, cp, ctx, fixLr, null, `fix CI of ${short(goal)}`);
-      emit("goal_end", { passed: fixed, cost: round4(ctx.budget.spent) });
+      emit("goal_end", { passed: fixed, cost: round4(ctx.budget.spent), ...(ctx.budget.tokens ? { tokens: ctx.budget.tokens } : {}) });
     } catch (e) {
-      emit("goal_end", { passed: false, error: msg(e), cost: round4(ctx.budget.spent) });
+      emit("goal_end", {
+        passed: false,
+        error: msg(e),
+        cost: round4(ctx.budget.spent),
+        ...(ctx.budget.tokens ? { tokens: ctx.budget.tokens } : {}),
+      });
       if (isFatal(e)) console.warn(`CI fix stopped: ${msg(e)}`);
     } finally {
       cost += ctx.budget.spent;
@@ -1972,6 +2080,7 @@ async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx, resume
       `Other agents may have changed files since, so re-read a file before you edit it.\n\n## Your task\n${task}`
     : "";
   let cost = 0;
+  let tokens: TokenUsage | undefined;
   let session = resume?.id;
   let prompt = resume ? resumed : cold;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1987,8 +2096,10 @@ async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx, resume
       r = await run(agent, model, prompt, ctx, false);
     }
     cost += r.cost;
+    tokens = addTokenUsage(tokens, r.tokens);
     const touched = (t.files ?? []).filter((f) => sig(f) !== before.get(f));
-    if (!t.files?.length || touched.length || !/Status:\s*COMPLETE/i.test(r.text)) return { agent: t.agent, out: r.text, touched, cost, session: r.session };
+    if (!t.files?.length || touched.length || !/Status:\s*COMPLETE/i.test(r.text))
+      return { agent: t.agent, out: r.text, touched, cost, tokens, session: r.session };
     console.warn(`phantom completion by ${t.agent}; re-dispatching`);
     // Same session when there is one and resuming is on: the agent sees what it claimed and is told what is missing.
     if (ctx.resume && r.session) {
@@ -2001,7 +2112,7 @@ async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx, resume
       prompt = cold;
     }
   }
-  return { agent: t.agent, out: "PHANTOM: no diff after 2 attempts", touched: [], cost };
+  return { agent: t.agent, out: "PHANTOM: no diff after 2 attempts", touched: [], cost, tokens };
 }
 
 /** A session from the round before, from a task of the same agent; one at most per agent and session. */
@@ -2121,6 +2232,7 @@ type LastRun = {
   status: "running" | "passed" | "failed";
   checkpoint?: string;
   cost: number;
+  tokens?: TokenUsage;
   state: unknown[];
   /** --branch: the goal's branch and the one it started from; --pr: the pull request's URL. */
   branch?: string;
@@ -2225,7 +2337,7 @@ async function learn(o: Opts) {
     ok = true;
   } finally {
     // The daily budget in the UI counts this cost too.
-    emit("learn_end", { ok, cost: round4(ctx.budget.spent) });
+    emit("learn_end", { ok, cost: round4(ctx.budget.spent), ...(ctx.budget.tokens ? { tokens: ctx.budget.tokens } : {}) });
     console.log(`cost: ${usd(ctx.budget.spent)}${o.maxCost !== undefined ? ` of ${usd(o.maxCost)}` : ""}`);
   }
 }
@@ -2311,7 +2423,7 @@ async function share(o: Opts) {
     }
     ok = true;
   } finally {
-    emit("share_end", { ok, branch, cost: round4(ctx.budget.spent) });
+    emit("share_end", { ok, branch, cost: round4(ctx.budget.spent), ...(ctx.budget.tokens ? { tokens: ctx.budget.tokens } : {}) });
     console.log(`cost: ${usd(ctx.budget.spent)}`);
   }
 }
@@ -2357,6 +2469,7 @@ async function tidyNotes(architect: Entry, o: Opts, ctx: RunCtx): Promise<number
   const before = existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8") : "";
   if (before.length <= TIDY_AT) return 0;
   const spent = ctx.budget.spent;
+  const tokensBefore = ctx.budget.tokens;
   let after = before.length;
   let ok = false;
   try {
@@ -2380,7 +2493,8 @@ async function tidyNotes(architect: Entry, o: Opts, ctx: RunCtx): Promise<number
     console.warn(`could not tidy notes.md (${msg(e)}); kept as it is`);
   }
   const cost = ctx.budget.spent - spent;
-  emit("notes_tidy", { ok, before: before.length, after, cost: round4(cost) });
+  const tokens = tokenUsageDelta(ctx.budget.tokens, tokensBefore);
+  emit("notes_tidy", { ok, before: before.length, after, cost: round4(cost), ...(tokens ? { tokens } : {}) });
   return cost;
 }
 
@@ -2394,7 +2508,14 @@ const LENS: Record<Lens, string> = {
     "Review this change for bugs and security problems (logic errors, unhandled edge cases and errors, broken contracts " +
     "between files, injection, missing authorization, secrets, unsafe input handling). Reject only for real defects, not style.",
 };
-async function reviewDiff(agent: Entry, lens: Lens, goal: string, cp: string, model: string, ctx: RunCtx): Promise<Review & { cost: number }> {
+async function reviewDiff(
+  agent: Entry,
+  lens: Lens,
+  goal: string,
+  cp: string,
+  model: string,
+  ctx: RunCtx,
+): Promise<Review & { cost: number; tokens?: TokenUsage }> {
   const patch = cp ? execFileSync("git", ["diff", cp, "--", ".", NOT_STATE], { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 }) : "";
   const prompt =
     `${ctx.repoContext ?? ""}Goal: ${goal}\n\n${LENS[lens]}\n\n` +
@@ -2405,7 +2526,7 @@ async function reviewDiff(agent: Entry, lens: Lens, goal: string, cp: string, mo
     REVIEW_FORMAT;
   try {
     const r = await run(agent, model, prompt, ctx, true);
-    return { ...asReview(extractJson<Review>(r.text)), cost: r.cost };
+    return { ...asReview(extractJson<Review>(r.text)), cost: r.cost, tokens: r.tokens };
   } catch (e) {
     if (isFatal(e)) throw e;
     console.warn(`${agent.name} could not review the change (${msg(e)}); going on without it`);
@@ -2414,7 +2535,14 @@ async function reviewDiff(agent: Entry, lens: Lens, goal: string, cp: string, mo
 }
 
 /** The plan critic: a read-only review of the plan before anything is built. Non-fatal errors approve the plan. */
-async function critique(critic: Entry, goal: string, plan: Plan, brief: string | null, model: string, ctx: RunCtx): Promise<Review & { cost: number }> {
+async function critique(
+  critic: Entry,
+  goal: string,
+  plan: Plan,
+  brief: string | null,
+  model: string,
+  ctx: RunCtx,
+): Promise<Review & { cost: number; tokens?: TokenUsage }> {
   const prompt =
     `Goal: ${goal}\n\n` +
     (brief ? `Project brief:\n${brief}\n\n` : "") +
@@ -2422,7 +2550,7 @@ async function critique(critic: Entry, goal: string, plan: Plan, brief: string |
     REVIEW_FORMAT;
   try {
     const r = await run(critic, model, prompt, ctx, true);
-    return { ...asReview(extractJson<Review>(r.text)), cost: r.cost };
+    return { ...asReview(extractJson<Review>(r.text)), cost: r.cost, tokens: r.tokens };
   } catch (e) {
     if (isFatal(e)) throw e;
     console.warn(`plan critic failed (${msg(e)}); going on with the plan`);
@@ -2707,7 +2835,12 @@ async function coverageCheck(o: Opts): Promise<{ queued: number; cost: number }>
     console.warn(`coverage check failed (${msg(e)}); not checked`);
   }
   writeFileAtomic(SPEC_STATE, JSON.stringify({ ...state, passes: passes + 1, checkedUpTo: last }));
-  emit("coverage", { pass: passes + 1, missing, cost: round4(ctx.budget.spent) });
+  emit("coverage", {
+    pass: passes + 1,
+    missing,
+    cost: round4(ctx.budget.spent),
+    ...(ctx.budget.tokens ? { tokens: ctx.budget.tokens } : {}),
+  });
   if (!missing.length) console.log("coverage check: the brief looks covered");
   else
     updateQueue((qq) => {
@@ -2843,7 +2976,7 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resum
         ctx,
       );
     }
-    emit("goal_end", { passed, cost: round4(ctx.budget.spent) });
+    emit("goal_end", { passed, cost: round4(ctx.budget.spent), ...(ctx.budget.tokens ? { tokens: ctx.budget.tokens } : {}) });
     return passed;
   } catch (e) {
     if (e instanceof UsageLimit) {
@@ -2854,6 +2987,7 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resum
       passed: false,
       error: msg(e),
       cost: round4(ctx.budget.spent),
+      ...(ctx.budget.tokens ? { tokens: ctx.budget.tokens } : {}),
       ...(e instanceof UsageLimit ? { usageLimit: true, resetAt: e.resetAt } : {}),
     });
     throw e;
@@ -2865,6 +2999,7 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resum
     if (!o.dryRun) {
       lr.status = passed ? "passed" : "failed";
       lr.cost = round4(ctx.budget.spent);
+      lr.tokens = ctx.budget.tokens;
       lr.checkpoint = cp && branchExists(cp) ? cp : undefined;
       writeLastRun(lr);
     }
@@ -2978,6 +3113,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
   for (let round = 1; round <= o.maxRounds; round++) {
     const spentBefore = ctx.budget.spent;
+    const tokensBefore = ctx.budget.tokens;
     // Fast path: the first round skips the architect; one generalist agent does the whole goal.
     const direct = o.fast && round === 1 && byName.has("dev");
     console.log(`\n=== round ${round}/${o.maxRounds} (${power}${direct ? ", direct attempt" : ""}) ===`);
@@ -2994,6 +3130,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const fresh = o.brief ? (round === 1 ? briefForGoal() : { text: readBrief(), stale: false }) : null;
     const brief = fresh ? fresh.text : null;
     const notes = o.notes ? readNotes() : "";
+    const planTokensBefore = ctx.budget.tokens;
     if (direct) plan = directPlan(goal, checks, brief || null, notes);
     else {
       emit("architect_start", { round });
@@ -3026,7 +3163,14 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
           planCost += again.cost;
           revised = true;
         }
-        emit("critic", { round, approved: review.approved, issues: review.issues, revised, cost: round4(review.cost) });
+        emit("critic", {
+          round,
+          approved: review.approved,
+          issues: review.issues,
+          revised,
+          cost: round4(review.cost),
+          ...(review.tokens ? { tokens: review.tokens } : {}),
+        });
       }
     }
     // --approve-plan: a human builds, edits or sends back the plan (any number of times) before anything is built.
@@ -3073,7 +3217,14 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
           `pyproject.toml, go.mod, ...); the orchestrator runs \`${cfg.setup}\` before the checks.\n\n`
         : "");
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
-    emit("plan", { round, summary: plan.summary, cost: round4(planCost), tasks: plan.tasks.map((t, id) => ({ id, ...t })) });
+    const planTokens = tokenUsageDelta(ctx.budget.tokens, planTokensBefore);
+    emit("plan", {
+      round,
+      summary: plan.summary,
+      cost: round4(planCost),
+      ...(planTokens ? { tokens: planTokens } : {}),
+      tasks: plan.tasks.map((t, id) => ({ id, ...t })),
+    });
     if (o.dryRun) return true;
 
     const idOf = new Map(plan.tasks.map((t, id) => [t, id]));
@@ -3096,7 +3247,16 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         const status = /Status:\s*(COMPLETE|PARTIAL|FAILED)/i.exec(r.out)?.[1]?.toUpperCase() ?? (r.out.startsWith("PHANTOM") ? "PHANTOM" : "UNKNOWN");
         statuses.set(t, status);
         if (r.session) roundSessions.push({ agent: t.agent, id: r.session, files: t.files ?? [], round });
-        emit("task_end", { round, id, agent: t.agent, phase: t.phase, status, touched: r.touched, cost: round4(r.cost) });
+        emit("task_end", {
+          round,
+          id,
+          agent: t.agent,
+          phase: t.phase,
+          status,
+          touched: r.touched,
+          cost: round4(r.cost),
+          ...(r.tokens ? { tokens: r.tokens } : {}),
+        });
         return { ...r, status };
       } catch (e) {
         statuses.set(t, "ERROR");
@@ -3185,7 +3345,15 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         ? Promise.all(
             diffReviewers.map(async ({ agent, lens }) => {
               const rv = await reviewDiff(agent, lens, goal, cp, modelFor(power, models, "qa", agent.name), ctx);
-              emit("review", { round, agent: agent.name, lens, approved: rv.approved, issues: rv.issues, cost: round4(rv.cost) });
+              emit("review", {
+                round,
+                agent: agent.name,
+                lens,
+                approved: rv.approved,
+                issues: rv.issues,
+                cost: round4(rv.cost),
+                ...(rv.tokens ? { tokens: rv.tokens } : {}),
+              });
               return { agent: agent.name, ...rv };
             }),
           )
@@ -3232,6 +3400,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
             failures: v.failures,
             touched: [],
             cost: round4(r.cost),
+            ...(r.tokens ? { tokens: r.tokens } : {}),
           });
           verdicts.push(v);
         } catch (e) {
@@ -3282,12 +3451,24 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       ...reviewFailures,
     ];
     const roundCost = round4(ctx.budget.spent - spentBefore);
+    const roundTokens = tokenUsageDelta(ctx.budget.tokens, tokensBefore);
     const checkSummary = checkResults.map(({ name, ok, code }) => ({ name, ok, code }));
-    lr.state.push({ round, power, plan: plan.summary, touched: results.flatMap((r) => r.touched), checks: checkSummary, passed, failures, cost: roundCost });
+    lr.state.push({
+      round,
+      power,
+      plan: plan.summary,
+      touched: results.flatMap((r) => r.touched),
+      checks: checkSummary,
+      passed,
+      failures,
+      cost: roundCost,
+      ...(roundTokens ? { tokens: roundTokens } : {}),
+    });
     lr.cost = round4(ctx.budget.spent);
+    lr.tokens = ctx.budget.tokens;
     writeLastRun(lr);
 
-    emit("round_end", { round, passed, failures, cost: roundCost });
+    emit("round_end", { round, passed, failures, cost: roundCost, ...(roundTokens ? { tokens: roundTokens } : {}) });
     if (passed) return (console.log("\nQA passed."), true);
     console.log(`QA failed (${failures.length}):\n- ${failures.join("\n- ")}`);
     previous = direct ? "" : previousRound(round, plan, statuses, cp);
@@ -3888,6 +4069,8 @@ async function main() {
       "ci-fixes": { type: "string" },
       "no-ci-watch": { type: "boolean", default: false },
       "no-visual": { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+      "save-agent": { type: "string" },
       github: { type: "string" },
       backlog: { type: "string" },
       setup: { type: "string" },
@@ -3947,10 +4130,15 @@ async function main() {
           .join("\n") || "queue empty",
       );
     case "agents":
+      if (typeof values["save-agent"] === "string") {
+        const path = saveAgent(values["save-agent"], readFileSync(0, "utf8"));
+        return console.log(JSON.stringify({ ok: true, path }));
+      }
+      if (values.json) return console.log(JSON.stringify({ agents: discoverAgents(), skills: discoverSkills() }));
       console.log(
         "agents:\n" +
           discoverAgents()
-            .map((a) => `  ${a.name}${a.builtin ? " (built-in)" : ""}: ${a.description}`)
+            .map((a) => `  ${a.name}${a.source === "builtin" ? " (built-in)" : ""}: ${a.description}`)
             .join("\n"),
       );
       return console.log(
@@ -4058,6 +4246,7 @@ export {
   asVerdict,
   asReview,
   TRANSIENT_RE,
+  saveAgent,
 };
 
 if (!process.env.ORCH_NO_MAIN)

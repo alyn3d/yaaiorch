@@ -1025,10 +1025,36 @@ fn retry_goal(app: AppHandle, repo: String, id: u64) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
-fn agents(app: AppHandle, repo: String) -> Result<String, String> {
+fn agents(app: AppHandle, repo: String) -> Result<Value, String> {
     let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
-    let out = node_cmd(&app, &dir, &["agents".into()])?.output().map_err(|e| format!("{NODE_HINT}: {e}"))?;
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    let out = node_cmd(&app, &dir, &["agents".into(), "--json".into()])?
+        .output()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("could not read agent roster: {e}"))
+}
+
+#[tauri::command(async)]
+fn save_agent(app: AppHandle, repo: String, name: String, content: String) -> Result<(), String> {
+    use std::io::Write;
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let mut child = node_cmd(&app, &dir, &["agents".into(), "--save-agent".into(), name])?
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
 }
 
 /// `orch learn`: a read-only pass that writes the project brief. A run like any other (slot, budget, log).
@@ -1364,6 +1390,7 @@ fn main() {
             retry_goal,
             intake_goals,
             agents,
+            save_agent,
             stop,
             clear_log,
             rollback,

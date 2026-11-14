@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { RunView as Run, TaskView } from "./types";
+import type { RunView as Run, TaskView, TokenUsage } from "./types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isTauri } from "./transport";
 
@@ -18,6 +18,19 @@ const fmt = (ms: number) => {
 };
 
 const money = (n?: number) => (n === undefined ? "" : `$${n.toFixed(2)}`);
+const tokenNumber = new Intl.NumberFormat();
+
+export function TokenCount({ tokens }: { tokens?: TokenUsage }) {
+  if (!tokens) return null;
+  return (
+    <span
+      className="cost token-count"
+      title={`Input includes cache reads and writes. Cache read: ${tokenNumber.format(tokens.cacheRead)}; cache creation: ${tokenNumber.format(tokens.cacheCreation)}.`}
+    >
+      {tokenNumber.format(tokens.input)} in · {tokenNumber.format(tokens.output)} out
+    </span>
+  );
+}
 
 const tone = (s: string) =>
   s === "running"
@@ -54,6 +67,7 @@ function Task({ t, now }: { t: TaskView; now: number }) {
         )}
         <span className="spacer" />
         {t.cost !== undefined && <span className="cost">{money(t.cost)}</span>}
+        <TokenCount tokens={t.tokens} />
         <span className="muted">{elapsed}</span>
       </div>
       <p className="desc">{t.task}</p>
@@ -179,6 +193,7 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
           {money(run.cost)}
           {run.maxCost !== undefined ? ` / ${money(run.maxCost)}` : ""}
         </span>
+        <TokenCount tokens={run.tokens} />
         <span className="muted">{fmt((run.status === "running" ? now : (run.rounds.at(-1)?.tasks.at(-1)?.endedAt ?? now)) - run.startedAt)}</span>
       </div>
       {/* The checkpoint and its rollback offer are shown by App from last-run.json, which stays correct after a rollback. */}
@@ -237,11 +252,17 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
                 {money(r.cost)}
               </span>
             )}
+            <TokenCount tokens={r.tokens} />
           </div>
           {r.summary && (
             <p>
               {r.summary}
-              {r.architectCost !== undefined && <span className="cost"> (plan {money(r.architectCost)})</span>}
+              {r.architectCost !== undefined && (
+                <>
+                  <span className="cost"> (plan {money(r.architectCost)})</span>
+                  <TokenCount tokens={r.architectTokens} />
+                </>
+              )}
             </p>
           )}
           {r.models && (
@@ -258,6 +279,7 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
                 ? "approved"
                 : `rejected (${r.critic.issues.length} issue${r.critic.issues.length === 1 ? "" : "s"}): ${r.critic.issues.join("; ")}${r.critic.revised ? ", plan revised" : ""}`}
               {r.critic.cost !== undefined && <span className="cost"> ({money(r.critic.cost)})</span>}
+              <TokenCount tokens={r.critic.tokens} />
             </p>
           )}
           {r.reviews?.map((rv) => (
@@ -265,6 +287,7 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
               {rv.lens === "goal" ? "Diff critic" : `Review (${rv.agent})`}:{" "}
               {rv.approved ? "approved" : `rejected (${rv.issues.length} issue${rv.issues.length === 1 ? "" : "s"}): ${rv.issues.join("; ")}`}
               {rv.cost !== undefined && <span className="cost"> ({money(rv.cost)})</span>}
+              <TokenCount tokens={rv.tokens} />
             </p>
           ))}
           {r.unowned && (

@@ -72,10 +72,13 @@ const prompt = readFileSync(0, "utf8");
 const log = (s) => env.FAKE_LOG && appendFileSync(env.FAKE_LOG, s + "\n");
 const cost = Number(env.FAKE_COST ?? 0.05);
 const cap = opt("--max-budget-usd");
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 2, cache_read_input_tokens: 3 };
 // Every call gets a new session id (a resumed call is forked, as with --fork-session).
 const session = `fake-${agent ?? "x"}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const reply = (result, extra = {}) =>
-  process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, result, total_cost_usd: cost, session_id: session, ...extra }));
+  process.stdout.write(
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, result, total_cost_usd: cost, usage, session_id: session, ...extra }),
+  );
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const agentsFile = opt("--agents");
@@ -86,7 +89,7 @@ if (agentsFile) {
     process.exit(1);
   }
 }
-log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap}`);
+log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap} builtin=${Boolean(agentsFile)}`);
 const resume = opt("--resume");
 if (resume) {
   log(`${agent}: resume=${resume} fork=${args.includes("--fork-session")} new=${session} files=${prompt.includes("Your files (touch only these):")}`);

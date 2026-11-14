@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "orch-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "orch-ui", "start"],
+      "port": 4317
+    }
+  ]
+}

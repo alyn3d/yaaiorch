@@ -3,7 +3,7 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -91,6 +91,26 @@ describe("badPath", () => {
       process.chdir(cwd);
       rmSync(repo, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("saveAgent", () => {
+  test("writes only valid repo-local agent definitions", () => {
+    const repo = mkdtempSync(join(tmpdir(), "yaaiorch-agent-"));
+    const cwd = process.cwd();
+    const definition = "---\nname: helper\ndescription: A focused helper\n---\n\nDo the work.\n";
+    try {
+      process.chdir(repo);
+      assert.equal(o.saveAgent("helper", definition), join(repo, ".claude", "agents", "helper.md"));
+      assert.equal(readFileSync(join(repo, ".claude", "agents", "helper.md"), "utf8"), definition);
+      assert.throws(() => o.saveAgent("../outside", definition), /agent name/);
+      assert.throws(() => o.saveAgent("helper", definition.replace("name: helper", "name: other")), /frontmatter name/);
+      assert.throws(() => o.saveAgent("helper", "---\nname: helper\n---\n\nDo the work.\n"), /description is required/);
+      assert.throws(() => o.saveAgent("helper", "---\nname: helper\ndescription: Missing body\n---\n\n"), /instructions are required/);
+    } finally {
+      process.chdir(cwd);
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 });
@@ -296,6 +316,7 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
       round: 1,
       summary: "s",
       cost: 0.05,
+      tokens: { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 },
       tasks: [
         { id: 0, agent: "be", phase: "build", task: "t", files: ["a.js"] },
         { id: 1, agent: "qa", phase: "verify", task: "v" },
@@ -307,15 +328,35 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     const run = fold([
       ...start,
       { type: "task_start", round: 1, id: 0, resumed: 1 },
-      { type: "task_end", round: 1, id: 0, status: "COMPLETE", touched: ["a.js"], cost: 0.05 },
-      { type: "review", round: 1, agent: "reviewer", lens: "bugs", approved: true, issues: [], cost: 0.05 },
+      {
+        type: "task_end",
+        round: 1,
+        id: 0,
+        status: "COMPLETE",
+        touched: ["a.js"],
+        cost: 0.05,
+        tokens: { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 },
+      },
+      {
+        type: "review",
+        round: 1,
+        agent: "reviewer",
+        lens: "bugs",
+        approved: true,
+        issues: [],
+        cost: 0.05,
+        tokens: { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 },
+      },
       { type: "checks", round: 1, results: [{ name: "test", ok: true }] },
-      { type: "round_end", round: 1, passed: true, failures: [], cost: 0.2 },
-      { type: "goal_end", passed: true, cost: 0.2 },
+      { type: "round_end", round: 1, passed: true, failures: [], cost: 0.2, tokens: { input: 45, output: 15, cacheRead: 9, cacheCreation: 6 } },
+      { type: "goal_end", passed: true, cost: 0.2, tokens: { input: 45, output: 15, cacheRead: 9, cacheCreation: 6 } },
     ]);
     assert.equal(run.status, "passed");
     assert.equal(run.cost, 0.2, "goal_end has the last word on cost");
+    assert.deepEqual(run.tokens, { input: 45, output: 15, cacheRead: 9, cacheCreation: 6 });
     const r = run.rounds[0];
+    assert.deepEqual(r.architectTokens, { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 });
+    assert.deepEqual(r.tokens, run.tokens);
     assert.deepEqual([r.architect, r.summary, r.passed, r.checks[0].name], ["done", "s", true, "test"]);
     assert.deepEqual(
       r.tasks.map((t) => [t.agent, t.status, t.resumed]),
@@ -324,6 +365,8 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
         ["qa", "queued", undefined],
       ],
     );
+    assert.deepEqual(r.tasks[0].tokens, { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 });
+    assert.deepEqual(r.reviews[0].tokens, { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 });
     assert.deepEqual(
       r.reviews.map((v) => [v.agent, v.lens, v.approved]),
       [["reviewer", "bugs", true]],
