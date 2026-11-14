@@ -288,6 +288,28 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
               )}
             </div>
           )}
+          {r.visual && (
+            <div className="row">
+              <p className="phase">Browser</p>
+              <span
+                className={`badge ${r.visual.problems.length ? "failed" : "done"}`}
+                title={`${r.visual.url} (${fmt(r.visual.ms)})\n${r.visual.shots.map((s) => s.file).join("\n")}`}
+              >
+                {r.visual.shots.length} screenshot{r.visual.shots.length === 1 ? "" : "s"}
+                {r.visual.problems.length ? `, ${r.visual.problems.length} problem${r.visual.problems.length === 1 ? "" : "s"}` : ""}
+              </span>
+              {r.visual.observations.length > 0 && (
+                <span className="muted" title={r.visual.observations.join("\n")}>
+                  {r.visual.observations.length} measured issue{r.visual.observations.length === 1 ? "" : "s"} for QA
+                </span>
+              )}
+            </div>
+          )}
+          {r.visual?.problems.map((p) => (
+            <p key={p} className="note">
+              Browser check: {p}
+            </p>
+          ))}
           {PHASES.map(({ key, label }) => {
             const ts = r.tasks.filter((t) => t.phase === key);
             return ts.length ? (

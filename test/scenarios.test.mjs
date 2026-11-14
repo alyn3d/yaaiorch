@@ -1736,3 +1736,85 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(orch(dir, []).out, /YAAIORCH \(Yet Another AI Orchestrator\) CLI/);
   });
 });
+
+// Browser checks drive a real Chrome, Edge or Chromium (none is bundled): skipped where `orch browser` finds none.
+describe("browser checks (fake claude, real browser)", { timeout: 300_000 }, () => {
+  const APP = join(ROOT, "test", "fixtures", "visual-app.mjs");
+  const probe = repo({ git: false });
+  const noBrowser = /none found/.test(orch(probe, ["browser"]).out) && "no Chrome, Edge or Chromium installed";
+  let port = 4600 + Math.floor(Math.random() * 300);
+
+  /** A repo whose config serves the fixture app on a fresh port, and a plan whose verify task names `visual`. */
+  function setup(visual, extra = {}) {
+    const dir = repo();
+    port++;
+    writeConfig(dir, { serve: { command: `node "${APP}" ${port}`, url: `http://127.0.0.1:${port}`, timeout: 30 }, ...extra });
+    const planFile = `${dir}.plan.json`;
+    writeFileSync(
+      planFile,
+      JSON.stringify({
+        summary: "fake plan",
+        tasks: [
+          { agent: "fe", phase: "build", task: "ui", files: ["src/ui.ts"] },
+          { agent: "qa", phase: "verify", task: "check it", visual },
+        ],
+      }),
+    );
+    return { dir, env: { FAKE_PLAN_FILE: planFile } };
+  }
+  const answers = (url) => spawnSync(process.execPath, ["-e", `fetch(${JSON.stringify(url)}).then(() => process.exit(0), () => process.exit(1))`]).status === 0;
+
+  test("screenshots and measurements reach QA; the dev server is stopped afterwards", { skip: noBrowser }, () => {
+    const { dir, env } = setup([
+      { path: "/", selector: "#panel", actions: [{ click: "#tab" }], viewports: [1280], themes: ["light", "dark"] },
+      { path: "/broken", viewports: [375] },
+    ]);
+    const r = orch(dir, ["run", "show the panel", "--max-rounds", "1"], env);
+    assert.equal(r.code, 0, r.out);
+    const v = r.last("visual");
+    assert.ok(v, r.out);
+    assert.deepEqual(v.problems, []);
+    assert.deepEqual(
+      v.shots.map((s) => `${s.path} ${s.viewport} ${s.theme}`),
+      ["/ 1280 light", "/ 1280 dark", "/broken 375 light"],
+    );
+    for (const s of v.shots) assert.ok(existsSync(join(dir, s.file)), s.file);
+    assert.ok(
+      v.observations.some((o) => /uncaught page errors: Error: fixture page error/.test(o)),
+      v.observations.join("\n"),
+    );
+    assert.ok(
+      v.observations.some((o) => /horizontal overflow: div#wide/.test(o)),
+      v.observations.join("\n"),
+    );
+    assert.ok(r.calls.includes("architect: browser checks offered"), r.calls.join("\n"));
+    assert.ok(r.calls.includes("qa: browser check shots=3 measured=true"), r.calls.join("\n"));
+    assert.equal(answers(`http://127.0.0.1:${port}`), false, "the dev server orch started is still running");
+    assert.equal(dirty(dir), "", "screenshots stay in .orchestrator");
+  });
+
+  test("a page that does not render fails the round", { skip: noBrowser }, () => {
+    const { dir, env } = setup([{ path: "/blank", viewports: [1280] }]);
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], env);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.last("round_end").failures.join("\n"), /browser check: \/blank at 1280px, light: the page is blank/);
+  });
+
+  test("--no-visual: no browser, no hint; doctor reports the browser only when serve is set", () => {
+    const { dir, env } = setup([{ path: "/" }]);
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--no-visual"], env);
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.ev("visual").length, 0);
+    assert.ok(!r.calls.includes("architect: browser checks offered"));
+    const doc = JSON.parse(orch(dir, ["doctor", "--json"]).out.trim().split(/\r?\n/).at(-1));
+    assert.equal(doc.find((f) => f.name === "browser")?.level, noBrowser ? "fail" : "ok");
+    const plain = repo();
+    assert.equal(
+      JSON.parse(orch(plain, ["doctor", "--json"]).out.trim().split(/\r?\n/).at(-1)).find((f) => f.name === "browser"),
+      undefined,
+    );
+    writeConfig(plain, { serve: { url: "https://example.com" } });
+    const bad = JSON.parse(orch(plain, ["doctor", "--json"]).out.trim().split(/\r?\n/).at(-1)).find((f) => f.name === "browser");
+    assert.match(bad.detail, /must be on this machine/);
+  });
+});

@@ -32,7 +32,8 @@
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
 //   FAKE_BAD_PLAN_ONCE=1     the first plan is not JSON
-//   FAKE_PLAN_FILE=<file>    the architect returns this plan (JSON) instead of the fixed one, for demos
+//   FAKE_PLAN_FILE=<file>    the architect returns this plan (JSON) instead of the fixed one, for demos and
+//                            for plans with browser checks ("visual" on the verify task)
 //   FAKE_LIMIT_ON=3,4        those call numbers return the real usage-limit reply (counted per repo
 //                            in .orchestrator/fake-calls, or in FAKE_LIMIT_FILE)
 //   FAKE_LIMIT_AFTER=<n>     every call after the n-th returns the usage-limit reply
@@ -208,6 +209,7 @@ if (prompt.includes("Review this change")) {
     if (prompt.includes("Do not repeat the previous plan")) log("architect: got stuck note");
     if (prompt.includes("A reviewer rejected your plan")) log("architect: got critic issues");
     if (prompt.includes("The user's brief this goal is part of")) log("architect: saw the brief");
+    if (prompt.includes("## Browser checks")) log("architect: browser checks offered");
     if (prompt.includes("fails its CI checks")) log(`architect: ci fix${prompt.includes("Expected 2, got 3") ? " with log" : ""}`);
     if (prompt.includes("cut short by the Claude usage limit")) log(`architect: resumed with ${(prompt.match(/^- orch: /gm) ?? []).length} commit(s)`);
     const human = /The person reviewing your plan rejected it:\n(.*)/.exec(prompt);
@@ -246,6 +248,8 @@ if (prompt.includes("Review this change")) {
   const sawNew = /ui\.ts/.test(prompt) && /api\.ts/.test(prompt);
   if (prompt.includes("## Project brief")) log("qa: got brief");
   if (prompt.includes("outside every task's file list")) log("qa: told about files outside the plan");
+  if (prompt.includes("## Browser check"))
+    log(`qa: browser check shots=${(prompt.match(/\.png: /g) ?? []).length} measured=${prompt.includes("uncaught page errors")}`);
   log(`qa: sawNewFiles=${sawNew}`);
   // FAKE_QA_FAIL_GOAL=<text>: fail every verdict for a goal whose text contains it.
   const goalLine = /^Goal: (.*)$/m.exec(prompt)?.[1] ?? "";

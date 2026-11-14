@@ -140,6 +140,14 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       return run && { ...run, waitingUntil: ev.until, waitingReason: ev.reason };
     case "checks":
       return run && upd(run, ev.round, (r) => ({ ...r, checks: ev.results }));
+    case "visual":
+      return (
+        run &&
+        upd(run, ev.round, (r) => ({
+          ...r,
+          visual: { url: ev.url, shots: ev.shots ?? [], problems: ev.problems ?? [], observations: ev.observations ?? [], ms: ev.ms ?? 0 },
+        }))
+      );
     case "checkpoint":
       return run && { ...run, checkpoint: ev.branch };
     case "stopped": // synthetic (useOrch): the process exited without a goal_end, e.g. killed by Stop

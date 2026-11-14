@@ -263,6 +263,21 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   { "checks": { "test": "python -m unittest discover -s tests -t ." }, "allow": ["Bash(make lint:*)"] }
   ```
 
+- **Browser checks** (optional; a web app with a dev server). Tell YAAIORCH how to start your app:
+
+  ```json
+  { "serve": { "url": "http://localhost:5173", "command": "npm run dev", "timeout": 120 } }
+  ```
+
+  The architect can then name pages for QA (`"visual"` on the verify task: path, the changed element's selector,
+  clicks to reach a tab or dialog, widths, light and dark theme). After the checks, YAAIORCH starts the dev server,
+  opens those pages headless in the Chrome, Edge, Chromium or Brave you have installed, and gives QA screenshots
+  plus what the browser measured (page errors, console errors, failed requests, horizontal overflow, layout shift).
+  A page that does not render fails the round. Screenshots stay in `.orchestrator/visual/`. Only localhost is
+  opened. For an app behind a login, run `orch browser login` once and log in in the window that opens; the checks
+  reuse that session (a browser profile of its own per repo, under `~/.yaaiorch/browser-profiles/`). No browser
+  installed? `orch browser install` downloads Chrome for Testing into `~/.yaaiorch/browser/`. `--no-visual` or
+  `"visual": false` turns the checks off.
 - **Git.** A run refuses a dirty tree, creates `orchestrator/checkpoint-<ts>`, and commits each round
   on your current branch. The checkpoint is deleted when the goal passes and all its work is committed; if a commit fails (a
   rejecting hook, say), the checkpoint is kept and the run tells you. `orch rollback` resets to

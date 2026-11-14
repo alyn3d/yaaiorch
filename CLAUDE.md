@@ -12,6 +12,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Layout
 - `orch.ts`: orchestrator CLI. Must sit next to `orch-ui/` (the UI looks for `../orch.ts`).
+- `orch-browser.ts`: browser checks (find Chrome/Edge/Chromium/Brave, the dev server, CDP capture over Node's WebSocket, `orch browser login|install`), bundled into `orch.mjs`.
 - `claude-bin.ts`: finds the `claude` executable once (Windows: an .exe directly, an npm .cmd shim unwrapped to node + its script), shared by `orch.ts` and `evals/run.ts`.
 - `orch-agents.ts`: built-in agent prompts, bundled into `orch.mjs`. Written to `.orchestrator/builtin-agents.json` at run time and passed to `claude --agents`. Reply formats are appended to prompts by `orch.ts`, not stored here.
 - `orch-ui/src`: React + TypeScript + SCSS. `transport.ts` picks HTTP/SSE (browser) or Tauri invoke/events.
@@ -22,7 +23,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks, task_start, task_end, round_end, stuck, critic, review, split_proposal, coverage, retry, blocked, queue_changed, resumed, intake, protected, secrets, ci, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
+architect_start, checkpoint, plan, checks, visual, task_start, task_end, round_end, stuck, critic, review, split_proposal, coverage, retry, blocked, queue_changed, resumed, intake, protected, secrets, ci, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage. Keep `server.ts`, `main.rs` and `reduce.ts`
 in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
 process exits without `goal_end`.
 
@@ -34,7 +35,7 @@ process exits without `goal_end`.
 - `npm run build`: typecheck + Vite build
 - `npm run lint` (ESLint, whole repo, config `orch-ui/eslint.config.mjs`), `npm run format` / `format:check` (Prettier, printWidth 160, `.prettierignore` at the root: code only, never eval fixtures). CI fails on either.
 - Rust: `cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings` (`rustfmt.toml`: max_width 160)
-- `npm test`: 72 end-to-end scenarios (`test/scenarios.test.mjs`) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers, `claude-bin.ts` and the UI's `reduce.ts`, `progress.ts`, `notifyText.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
+- `npm test`: 75 end-to-end scenarios (`test/scenarios.test.mjs`, three of them with a real browser) with the fake claude in `test/fake-claude/`, the browser server's request guard (`test/server.test.mjs`) and unit tests of orch.ts helpers, `claude-bin.ts`, `orch-browser.ts` and the UI's `reduce.ts`, `progress.ts`, `notifyText.ts` (`test/unit.test.mjs`, importing orch.ts with `ORCH_NO_MAIN=1`); no tokens. Add a scenario for new loop behaviour.
 - Rust spawn test (`#[ignore]`d): `TEST_REPO=<empty dir> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
@@ -69,6 +70,7 @@ process exits without `goal_end`.
 - `orch doctor --json` is the first-run check both UIs show as a banner.
 - Usage limit ("You've hit your … limit · resets …"): ends the goal as `UsageLimit` (never a task failure or stuck round). `--on-limit wait` (default; config `onLimit`): the work goes to `orchestrator/interrupted-*`, orch waits for the reset and retries (`run` and `loop`). `--on-limit stop`: the goal stays pending and orch exits 3. The eval runner always passes `--on-limit stop` and never records such runs: it stops (or waits with `--wait-on-limit`), and `--resume <stamp>` finishes later.
 - Models: `modelFor()` resolves per-agent override > per-role override (`--model`, then config `models`) > power tier. Roles: architect, impl, heavy, qa, dev. On stuck escalation alias overrides step up (haiku → sonnet → opus); full IDs stay. `round_start` carries the effective `models`. The UI's `Settings.tsx` mirrors the tier table for placeholders; keep it in sync with `POWER`.
+- Browser checks (config `serve` {url, command, timeout}; `--no-visual`): verify tasks may carry `visual` (pages, selector, click/wait actions, widths, themes; `validateTargets`, at most 5 per plan). After clean checks orch starts the dev server (`DEV_SERVER`, killed on exit), runs `captureVisual` on the repo's own profile (`profileDir`) and passes `visualReport` to QA. Problems (does not render) fail the round; observations (console, page errors, requests, overflow, CLS) are for QA. Only localhost (`isLocalUrl`); no browser is bundled. Scenarios in `test/scenarios.test.mjs` use a real browser and `test/fixtures/visual-app.mjs`, skipped when none is installed.
 - Testing without spending tokens: `CLAUDE_BIN=test/fake-claude/claude` (`claude.cmd` on Windows); switches are documented at the top of `fake-claude.mjs`. Spawn `claude` only through `spawnClaude` / `claudeSync` (or `resolveClaude`), never with `shell: true`.
 
 ## Evals (`evals/`, see its README)

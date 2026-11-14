@@ -23,6 +23,23 @@ import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { BUILTIN_AGENTS } from "./orch-agents";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
+import {
+  DevServer,
+  MAX_TARGETS,
+  browserLogin,
+  captureVisual,
+  findBrowser,
+  hasWebSocket,
+  installBrowser,
+  isLocalUrl,
+  parseServe,
+  profileDir,
+  validateTargets,
+  visualReport,
+  type ServeConfig,
+  type VisualResult,
+  type VisualTarget,
+} from "./orch-browser";
 
 const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root.
   orch run "<goal>"     one goal, loops architect -> build -> QA until QA passes
@@ -51,6 +68,9 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work is kept
                         on an orchestrator/discarded-* branch
   orch prune [--older-than DAYS]  delete orchestrator/* branches older than DAYS (14)
+  orch browser [status | login [URL] | install]   the browser the checks use (status); log in to the app once in
+                        a window on this repo's own browser profile, which the checks reuse (login); download
+                        Chrome for Testing into ~/.yaaiorch/browser when no Chrome, Edge, Chromium or Brave is installed
 Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
          --max-cost USD (per goal, no limit by default)  --agent-timeout MINUTES (30)
          --poll SECONDS (15)  --until-empty  --dry-run (plan only; not with loop)
@@ -105,6 +125,10 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   files in the round before continues its session); also "resume": false in config
          --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
                   are no checks); if that fails, later rounds run the full architect/build/QA loop
+         --no-visual   no browser checks. They run when .orchestrator/config.json has "serve": {"url":
+                  "http://localhost:5173", "command": "npm run dev"}: the architect names pages, orch starts the app
+                  and opens them in Chrome or Edge after the checks, and QA gets screenshots and measurements (a page
+                  that does not render fails the round); also "visual": false in config
 Agents: built-in (architect, fe, be, qa), overridden by ~/.claude/agents and ./.claude/agents.
 The architect and verifiers run read-only; implementers may edit.
 Checks: after each build phase the orchestrator runs the repo's checks itself and a non-zero exit
@@ -119,7 +143,8 @@ reset time from the CLI's message (or, with --on-limit stop, the goal is left pe
 
 const PHASES = ["foundation", "build", "verify"] as const;
 type Phase = (typeof PHASES)[number];
-type Task = { agent: string; phase: Phase; task: string; files?: string[]; heavy?: boolean; figma?: string; skills?: string[] };
+/** `visual` (verify tasks only): pages orch opens in a browser before this task runs; see orch-browser.ts. */
+type Task = { agent: string; phase: Phase; task: string; files?: string[]; heavy?: boolean; figma?: string; skills?: string[]; visual?: VisualTarget[] };
 /** `brief`: the architect's project brief, when there was none yet or the old one was wrong. */
 type Plan = { summary: string; tasks: Task[]; brief?: string };
 type Verdict = { passed: boolean; failures: string[]; notes?: string[] };
@@ -266,6 +291,10 @@ const STOP_FILE = join(DIR, "stop-after-goal");
 /** --approve-plan: the plan waiting for a human, and the answer `orch approve` writes. */
 const PLAN_PENDING = join(DIR, "plan-pending.json");
 const PLAN_DECISION = join(DIR, "plan-decision.json");
+/** Browser checks: what the architect is told about them this goal ("" when off), and the app's dev server. */
+let VISUAL_HINT = "";
+let DEV_SERVER: DevServer | null = null;
+const VISUAL_DIR = `${DIR}/visual`;
 const MAX_TASKS = 25;
 const MAX_FILES_PER_TASK = 60;
 
@@ -558,6 +587,10 @@ type Config = {
   setup?: string;
   /** Files whose change triggers `setup` (default: the usual manifests and lock files). */
   setupWhen?: string[];
+  /** Browser checks: how to start the app (a localhost url, and the command that serves it unless it already runs). */
+  serve?: ServeConfig;
+  /** false: no browser checks even with "serve". */
+  visual?: boolean;
 };
 type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
 
@@ -1217,6 +1250,10 @@ function validate(plan: Plan, roster: Entry[]) {
       throw new Error(`task ${i}: files must be a list of paths`);
     if (t.phase !== "verify" && !t.files?.length) throw new Error(`${t.phase} task ${i} (${t.agent}) lists no files`);
     if ((t.files?.length ?? 0) > MAX_FILES_PER_TASK) throw new Error(`task ${i} (${t.agent}) lists ${t.files!.length} files; at most ${MAX_FILES_PER_TASK}`);
+    if (t.visual !== undefined) {
+      if (t.phase !== "verify") throw new Error(`task ${i} (${t.agent}): only verify tasks may have "visual"`);
+      t.visual = validateTargets(t.visual, `task ${i} (${t.agent})`);
+    }
     for (const f of t.files ?? []) {
       const why = badPath(f);
       if (why) throw new Error(`task ${i} (${t.agent}): file "${f}" ${why}`);
@@ -1228,6 +1265,8 @@ function validate(plan: Plan, roster: Entry[]) {
     }
   });
   if (!plan.tasks.some((t) => t.phase === "verify")) throw new Error("plan has no verify task");
+  const pages = plan.tasks.reduce((n, t) => n + (t.visual?.length ?? 0), 0);
+  if (pages > MAX_TARGETS) throw new Error(`the verify tasks' "visual" lists name ${pages} pages together; at most ${MAX_TARGETS}`);
 }
 
 function asVerdict(v: Verdict): Verdict {
@@ -1841,6 +1880,28 @@ function doctor(): Finding[] {
   } catch (e) {
     f.push({ name: "checks", level: "fail", detail: msg(e) });
   }
+  // Browser checks: only when the repo asks for them, so a missing browser never nags anyone else.
+  try {
+    const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+    if (cfg.serve && cfg.visual !== false) {
+      const serve = parseServe(cfg.serve);
+      const b = findBrowser();
+      f.push(
+        !hasWebSocket()
+          ? { name: "browser", level: "fail", detail: "browser checks need Node.js 22 or newer" }
+          : b
+            ? { name: "browser", level: "ok", detail: `${b.path} (${b.via}); checks open ${serve.url}` }
+            : {
+                name: "browser",
+                level: "fail",
+                detail:
+                  'config "serve" turns on browser checks, but no Chrome, Edge, Chromium or Brave was found; run "orch browser install" or set YAAIORCH_BROWSER',
+              },
+      );
+    }
+  } catch (e) {
+    f.push({ name: "browser", level: "fail", detail: msg(e) });
+  }
   return f;
 }
 
@@ -1893,6 +1954,8 @@ type Opts = {
   issueComments: boolean;
   /** --pr: wait for the pull request's CI checks, and how many fix goals to run when they fail (-1: do not wait). */
   ciFixes: number;
+  /** With config "serve": open the pages verify tasks name in a browser and give QA the screenshots. */
+  visual: boolean;
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
@@ -1993,6 +2056,7 @@ async function makePlan(
         : "") +
     (notes ? `\nNotes from earlier goals in this repo (pitfalls and decisions; follow them unless this goal says otherwise):\n${notes}\n` : "") +
     specForPrompt() +
+    VISUAL_HINT +
     (previous ? `\n${previous}\n` : "") +
     (failures.length ? `\nPrevious QA failures to fix:\n- ${failures.join("\n- ")}\n` : "") +
     (note ? `\n${note}\n` : "") +
@@ -2812,6 +2876,39 @@ async function runGoal(goal: string, o: Opts, id?: number, brief?: string, resum
   }
 }
 
+/** Browser checks for this goal: the dev server and the browser, or null when they are off or cannot run. */
+function visualSetup(cfg: Config, o: Opts): { serve: ServeConfig; exe: string } | null {
+  VISUAL_HINT = "";
+  if (!cfg.serve || !o.visual) return null;
+  const serve = parseServe(cfg.serve);
+  if (!hasWebSocket()) {
+    console.warn("browser checks off: they need Node.js 22 or newer");
+    return null;
+  }
+  const b = findBrowser();
+  if (!b) {
+    console.warn('browser checks off: no Chrome, Edge, Chromium or Brave found; run "orch browser install" or set YAAIORCH_BROWSER');
+    return null;
+  }
+  if (!DEV_SERVER || JSON.stringify(DEV_SERVER.cfg) !== JSON.stringify(serve)) {
+    DEV_SERVER?.stop();
+    const server = new DevServer(serve);
+    process.on("exit", () => server.stop());
+    DEV_SERVER = server;
+  }
+  rmSync(VISUAL_DIR, { recursive: true, force: true });
+  VISUAL_HINT =
+    `\n## Browser checks\nAfter the checks, the orchestrator can open the app (${serve.url}) in a real browser before QA. When the goal ` +
+    `changes what users see, give the verify task a "visual" list; QA then gets screenshots of those pages and what the browser ` +
+    `measured (page errors, console errors, failed requests, horizontal overflow), and a page that does not render fails the round:\n` +
+    `"visual": [{"path": "/route/in/the/app", "selector": "<CSS selector of the changed part; optional>", "actions": [{"click": "<selector>"}, ` +
+    `{"wait": "<selector> or milliseconds"}], "viewports": [1280, 375], "themes": ["light", "dark"]}]\n` +
+    `At most ${MAX_TARGETS} pages in all. Actions only reach the state to check (a tab, a menu, a dialog): never submit forms or change ` +
+    `data. Leave "visual" out when users cannot see the change.\n`;
+  console.log(`browser checks: ${serve.url}${serve.command ? ` (started with \`${serve.command}\` when needed)` : ""}, browser ${b.path}`);
+  return { serve, exe: b.path };
+}
+
 async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: LastRun, resumed: string[] | null = null, title?: string): Promise<boolean> {
   PROTECT = o.protect;
   SECRET_SCAN = o.secretScan;
@@ -2833,6 +2930,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   let checks = loadChecks(cfg);
   writeAgentSettings(cfg, checks, o.plugins);
+  const browserCheck = visualSetup(cfg, o);
   /** Checks come from package.json too, which the agents may create or change: read them again each round. */
   const refreshChecks = () => {
     const next = loadChecks(cfg);
@@ -3063,6 +3161,16 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
     const verdicts: Verdict[] = [];
     let checkResults: Check[] = [];
+    let visual: VisualResult | null = null;
+    /** Which of the round's browser-checked pages belong to each verify task. */
+    const pagesOf = new Map<Task, number[]>();
+    for (const t of verify) {
+      const first = [...pagesOf.values()].reduce((n, ps) => n + ps.length, 0);
+      pagesOf.set(
+        t,
+        (t.visual ?? []).map((_, j) => first + j),
+      );
+    }
     let reviewsP: Promise<(Review & { agent: string; cost: number })[]> = Promise.resolve([]);
     if (foundationFailed)
       verify.forEach(skip); // building on a broken foundation is pointless to verify
@@ -3082,6 +3190,20 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
             }),
           )
         : Promise.resolve([]);
+      // Browser check: the pages the verify tasks name, in a real browser, before QA (which gets the screenshots).
+      const pages = verify.flatMap((t) => t.visual ?? []);
+      if (browserCheck && DEV_SERVER && clean && pages.length) {
+        const down = setup ? await DEV_SERVER.restart() : await DEV_SERVER.ensure();
+        const rel = `${VISUAL_DIR}/round-${round}`;
+        visual = down
+          ? { url: browserCheck.serve.url, shots: [], problems: [down], observations: [], ms: 0 }
+          : await captureVisual({ exe: browserCheck.exe, profile: profileDir(), base: browserCheck.serve.url, targets: pages, outDir: rel, relDir: rel });
+        console.log(
+          `browser check: ${visual.shots.length} screenshot(s), ${visual.problems.length} problem(s), ${visual.observations.length} observation(s)` +
+            (visual.problems.length ? `\n- ${visual.problems.join("\n- ")}` : ""),
+        );
+        emit("visual", { round, ...visual });
+      }
       const report = results.map((r) => `[${r.agent}] ${r.out}`).join("\n");
       const diff =
         (cp ? `\n\nChanges since the checkpoint:\n${diffSummary(cp)}` : "") +
@@ -3094,7 +3216,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
           const r = await run(
             byName.get(t.agent)!,
             modelFor(power, models, "qa", t.agent),
-            `${ctx.repoContext ?? ""}Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${VERDICT_FORMAT}`,
+            `${ctx.repoContext ?? ""}Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${visual ? visualReport(visual, pagesOf.get(t) ?? []) : ""}${VERDICT_FORMAT}`,
             ctx,
             true,
           );
@@ -3122,6 +3244,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
 
     const reviews = await reviewsP;
     const reviewFailures = reviews.filter((r) => !r.approved).flatMap((r) => r.issues.map((i) => `${r.agent} (review): ${i}`));
+    const visualFailures = visual?.problems.map((p) => `browser check: ${p}`) ?? [];
     // Exit codes beat opinions: a failed check fails the round whatever QA says.
     const checkFailures = checkResults.filter((c) => !c.ok).map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
     // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
@@ -3129,6 +3252,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const passed =
       !errors.length &&
       !checkFailures.length &&
+      !visualFailures.length &&
       verifiedBy &&
       !reviewFailures.length &&
       !(o.strictFiles && unowned.length) &&
@@ -3148,7 +3272,15 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
           `${x.what} in ${x.file}: secrets must never be committed. Remove it and read it from the environment or a config file that is not committed instead.`,
       ),
     ];
-    failures = [...errors, ...checkFailures, ...ownershipFailures, ...safetyFailures, ...verdicts.flatMap((v) => v.failures), ...reviewFailures];
+    failures = [
+      ...errors,
+      ...checkFailures,
+      ...visualFailures,
+      ...ownershipFailures,
+      ...safetyFailures,
+      ...verdicts.flatMap((v) => v.failures),
+      ...reviewFailures,
+    ];
     const roundCost = round4(ctx.budget.spent - spentBefore);
     const checkSummary = checkResults.map(({ name, ok, code }) => ({ name, ok, code }));
     lr.state.push({ round, power, plan: plan.summary, touched: results.flatMap((r) => r.touched), checks: checkSummary, passed, failures, cost: roundCost });
@@ -3671,6 +3803,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
         : [".github/workflows/"];
   const secretScan = !values["no-secret-scan"] && cfg.secretScan !== false;
   const issueComments = !values["no-issue-comments"] && cfg.issueComments !== false;
+  const visual = !values["no-visual"] && cfg.visual !== false;
   const ciFixesRaw = Number(values["ci-fixes"] ?? cfg.ciFixes ?? 2);
   if (!Number.isInteger(ciFixesRaw) || ciFixesRaw < 0 || ciFixesRaw > 5)
     throw new Error(`--ci-fixes must be 0 to 5, got "${values["ci-fixes"] ?? cfg.ciFixes}"`);
@@ -3705,6 +3838,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     secretScan,
     issueComments,
     ciFixes,
+    visual,
     strictFiles,
     maxCostTotal,
   };
@@ -3753,6 +3887,7 @@ async function main() {
       "no-issue-comments": { type: "boolean", default: false },
       "ci-fixes": { type: "string" },
       "no-ci-watch": { type: "boolean", default: false },
+      "no-visual": { type: "boolean", default: false },
       github: { type: "string" },
       backlog: { type: "string" },
       setup: { type: "string" },
@@ -3875,6 +4010,24 @@ async function main() {
       if (values.json) console.log(JSON.stringify(findings));
       else for (const x of findings) console.log(`${x.level === "ok" ? "ok  " : x.level === "warn" ? "warn" : "FAIL"}  ${x.name}: ${x.detail}`);
       return process.exit(findings.some((x) => x.level === "fail") ? 1 : 0);
+    }
+    case "browser": {
+      const [sub, arg] = rest;
+      if (sub === "install") return console.log(`installed: ${await installBrowser()}`);
+      const b = findBrowser();
+      if (sub === "login") {
+        if (!b) throw new Error('no browser found; run "orch browser install" or set YAAIORCH_BROWSER');
+        const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+        const url = arg ?? (cfg.serve ? parseServe(cfg.serve).url : undefined);
+        if (!url) throw new Error('usage: orch browser login URL (or set "serve" in .orchestrator/config.json)');
+        if (!isLocalUrl(url)) throw new Error(`orch browser login opens this machine's app (localhost) only, not ${url}`);
+        console.log(`Log in to the app in the window that opened, then close the window. Profile: ${profileDir()}`);
+        await browserLogin(b.path, profileDir(), url);
+        return console.log("done: the browser checks in this repo use this login");
+      }
+      if (sub && sub !== "status") throw new Error("usage: orch browser [status | login [URL] | install]");
+      console.log(b ? `browser: ${b.path} (${b.via})` : 'browser: none found; run "orch browser install" or set YAAIORCH_BROWSER');
+      return console.log(`profile for this repo: ${profileDir()}`);
     }
     case "rollback":
       acquireRunLock("rollback");

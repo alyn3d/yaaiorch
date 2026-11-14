@@ -56,6 +56,14 @@ describe("validate", () => {
     ]);
     assert.throws(() => o.validate(p, roster), /owned by both fe and be/);
   });
+  test("visual: verify tasks only, checked, defaults filled in, at most 5 pages in all", () => {
+    const p = { summary: "s", tasks: [{ agent: "qa", phase: "verify", task: "v", visual: [{ path: "/settings", selector: "#x" }] }] };
+    o.validate(p, roster);
+    assert.deepEqual(p.tasks[0].visual, [{ path: "/settings", selector: "#x", viewports: [1280, 375], themes: ["light"] }]);
+    assert.throws(() => o.validate(plan([{ agent: "fe", phase: "build", task: "t", files: ["a"], visual: [{ path: "/" }] }]), roster), /only verify tasks/);
+    const many = (n) => ({ agent: "qa", phase: "verify", task: "v", visual: Array.from({ length: n }, () => ({ path: "/" })) });
+    assert.throws(() => o.validate({ summary: "s", tasks: [many(3), many(3)] }, roster), /6 pages together; at most 5/);
+  });
 });
 
 describe("badPath", () => {
@@ -403,5 +411,107 @@ describe("priority from labels", () => {
     assert.equal(o.priorityOf(["priority/low"]), 5);
     assert.equal(o.priorityOf(["bug", "enhancement"]), undefined);
     assert.equal(o.priorityOf(["p0", "p10"]), undefined);
+  });
+});
+
+describe("browser checks (orch-browser.ts)", () => {
+  let b;
+  let reduce;
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    b = await tsImport(pathToFileURL(join(root, "orch-browser.ts")).href, import.meta.url);
+    ({ reduce } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "reduce.ts")).href, import.meta.url));
+  });
+
+  test("only this machine's app", () => {
+    for (const u of ["http://localhost:5173", "http://127.0.0.1:3000/club", "http://[::1]:8080", "https://app.localhost"])
+      assert.equal(b.isLocalUrl(u), true, u);
+    for (const u of ["https://example.com", "http://localhost.evil.com", "file:///etc/passwd", "http://10.0.0.5", "not a url"])
+      assert.equal(b.isLocalUrl(u), false, u);
+    assert.throws(() => b.parseServe({ url: "https://example.com" }), /must be on this machine/);
+    assert.throws(() => b.parseServe({ url: "http://localhost:1", command: "" }), /non-empty string/);
+    assert.throws(() => b.parseServe({ url: "http://localhost:1", timeout: 0 }), /timeout/);
+    assert.deepEqual(b.parseServe({ url: "http://localhost:1", command: "npm run dev", extra: 1 }), { url: "http://localhost:1", command: "npm run dev" });
+  });
+
+  test("targets: paths in the app, safe actions, limits", () => {
+    const bad = [
+      [{ path: "https://example.com/" }, /path must start with "\/"/],
+      [{ path: "//evil.com/x" }, /path must start/],
+      [{ path: "/a b" }, /path must start/],
+      [{ path: "/", actions: [{ type: "hello" }] }, /must be \{"click"/],
+      [{ path: "/", actions: [{ click: "" }] }, /CSS selector/],
+      [{ path: "/", actions: [{ wait: 60_000 }] }, /CSS selector/],
+      [{ path: "/", viewports: [100] }, /viewports/],
+      [{ path: "/", viewports: [1, 2, 3, 4] }, /viewports/],
+      [{ path: "/", themes: ["sepia"] }, /themes/],
+    ];
+    for (const [t, why] of bad) assert.throws(() => b.validateTargets([t], "task 1"), why, JSON.stringify(t));
+    assert.throws(() => b.validateTargets([], "task 1"), /non-empty/);
+    assert.deepEqual(
+      b.validateTargets([{ path: "/x?tab=2", actions: [{ click: "#a" }, { wait: 200 }, { wait: ".b" }], viewports: [375, 375], themes: ["dark"] }], "t"),
+      [{ path: "/x?tab=2", actions: [{ click: "#a" }, { wait: 200 }, { wait: ".b" }], viewports: [375], themes: ["dark"] }],
+    );
+  });
+
+  test("screenshot names and the report QA gets", () => {
+    assert.equal(b.shotName(0, "/", 1280, "light"), "1-home-1280-light.png");
+    assert.equal(b.shotName(2, "/Settings/Profile?tab=1", 375, "dark"), "3-settings-profile-375-dark.png");
+    const r = {
+      url: "http://localhost:5173",
+      shots: [
+        { target: 0, path: "/", viewport: 1280, theme: "light", file: ".orchestrator/visual/round-1/1-home-1280-light.png" },
+        { target: 1, path: "/b", viewport: 375, theme: "dark", file: ".orchestrator/visual/round-1/2-b-375-dark.png" },
+      ],
+      problems: ["/c answered HTTP 404"],
+      observations: ["/: console errors: boom"],
+      ms: 10,
+    };
+    const mine = b.visualReport(r, [1]);
+    assert.match(mine, /## Browser check/);
+    assert.match(mine, /2-b-375-dark\.png: \/b at 375px, dark theme/);
+    assert.doesNotMatch(mine, /1-home/);
+    assert.match(mine, /already fail the round\):\n- \/c answered HTTP 404/);
+    assert.match(mine, /console errors: boom/);
+    assert.equal(b.visualReport({ ...r, shots: [], problems: [], observations: [] }, []), "");
+  });
+
+  test("where browsers are looked for", () => {
+    const win = b.browserCandidates("win32", { ProgramFiles: "C:\\PF", LOCALAPPDATA: "C:\\L" });
+    assert.equal(win[0], "C:\\PF\\Google\\Chrome\\Application\\chrome.exe");
+    assert.ok(win.some((p) => p.includes("msedge.exe")));
+    assert.ok(b.browserCandidates("darwin", {}, "/Users/u").includes("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
+    assert.deepEqual(b.browserCandidates("linux").slice(0, 2), ["google-chrome", "google-chrome-stable"]);
+    assert.equal(b.cftPlatform("win32", "x64"), "win64");
+    assert.equal(b.cftPlatform("darwin", "arm64"), "mac-arm64");
+    assert.equal(b.cftPlatform("linux", "arm64"), undefined);
+    assert.ok(b.cftExecutable("linux64").endsWith(join("chrome-linux64", "chrome")));
+    assert.notEqual(b.profileDir("/a/repo"), b.profileDir("/b/repo"));
+  });
+
+  test("the run view folds the visual event into its round", () => {
+    const events = [
+      { type: "goal_start", goal: "g", maxRounds: 1, dryRun: false },
+      { type: "round_start", round: 1, power: "heavy" },
+      { type: "plan", round: 1, summary: "s", tasks: [{ id: 0, agent: "qa", phase: "verify", task: "v" }] },
+      {
+        type: "visual",
+        round: 1,
+        url: "http://localhost:1",
+        shots: [{ path: "/", viewport: 375, theme: "light", file: "f.png" }],
+        problems: ["p"],
+        observations: [],
+        ms: 5,
+      },
+    ];
+    const run = events.reduce((acc, e, i) => reduce(acc, { t: i, ...e }), null);
+    assert.deepEqual(run.rounds[0].visual, {
+      url: "http://localhost:1",
+      shots: [{ path: "/", viewport: 375, theme: "light", file: "f.png" }],
+      problems: ["p"],
+      observations: [],
+      ms: 5,
+    });
   });
 });

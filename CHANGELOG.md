@@ -6,6 +6,17 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Browser checks for QA.** With `"serve": {"url": "http://localhost:5173", "command": "npm run dev"}` in
+  `.orchestrator/config.json`, the architect can give a verify task a `visual` list of pages (path, the changed
+  element's selector, clicks to reach a state, widths, light and dark). After the checks, orch starts the dev server
+  (and keeps it for the goal), opens each page in your installed Chrome, Edge, Chromium or Brave, headless and over
+  the DevTools protocol (no new dependency), and saves screenshots to `.orchestrator/visual/`. QA opens them and gets
+  what the browser measured: uncaught page errors, console errors, failed requests, horizontal overflow, layout shift.
+  A page that does not render (HTTP error, blank page, build error overlay, missing selector, a click that finds
+  nothing, a redirect off localhost) fails the round. `orch browser login` logs in to the app once on the repo's
+  own browser profile, which the checks reuse; `orch browser install` downloads Chrome for Testing when no browser
+  is installed; `orch doctor` reports the browser; `--no-visual` / `"visual": false` turns the checks off. Needs
+  Node.js 22 (the desktop app's bundled Node.js has it). The run view shows a **Browser** row per round.
 - **Open in VS Code** on every repo page, with a menu for Cursor, Windsurf, VS Code Insiders and the system file
   manager. Editors open through their URL scheme (`vscode://file/...`), so nothing is spawned; the app remembers
   the editor you used last.

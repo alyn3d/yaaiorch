@@ -80,6 +80,8 @@ export type RoundView = {
   reviews?: { agent: string; lens: "goal" | "bugs"; approved: boolean; issues: string[]; cost?: number }[];
   /** From an `unowned` event: files changed outside every task's list (`strict`: that failed the round). */
   unowned?: { files: string[]; strict: boolean };
+  /** From a `visual` event: the browser check before QA (`problems` failed the round; screenshots under .orchestrator/visual/). */
+  visual?: { url: string; shots: { path: string; viewport: number; theme: string; file: string }[]; problems: string[]; observations: string[]; ms: number };
 };
 export type RunView = {
   goal: string;
