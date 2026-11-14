@@ -470,7 +470,18 @@ describe("browser checks (orch-browser.ts)", () => {
     };
     const mine = b.visualReport(r, [1]);
     assert.match(mine, /## Browser check/);
-    assert.match(mine, /2-b-375-dark\.png: \/b at 375px, dark theme/);
+    assert.match(mine, /2-b-375-dark\.png: \/b at 375px, dark theme \(required\)/);
+    // One required screenshot per page and theme: the narrowest.
+    const shot = (target, viewport, theme) => ({ target, path: `/p${target}`, viewport, theme, file: `${target}-${viewport}-${theme}.png` });
+    const all = b.visualReport(
+      { ...r, shots: [shot(0, 1280, "light"), shot(0, 375, "light"), shot(0, 1280, "dark"), shot(0, 375, "dark"), shot(1, 1280, "light")] },
+      [0, 1],
+    );
+    const req = all.split("\n").filter((l) => l.endsWith("(required)"));
+    assert.deepEqual(
+      req.map((l) => l.split(":")[0]),
+      ["- 0-375-light.png", "- 0-375-dark.png", "- 1-1280-light.png"],
+    );
     assert.doesNotMatch(mine, /1-home/);
     assert.match(mine, /already fail the round\):\n- \/c answered HTTP 404/);
     assert.match(mine, /console errors: boom/);

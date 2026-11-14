@@ -126,11 +126,21 @@ export function shotName(target: number, path: string, viewport: number, theme: 
 export function visualReport(r: VisualResult, targets: number[]): string {
   const shots = r.shots.filter((s) => targets.includes(s.target));
   if (!shots.length && !r.problems.length && !r.observations.length) return "";
+  // One screenshot per page and theme must be looked at (the narrowest, where layouts break first); in a real run
+  // QA otherwise opened only the two it found most telling and never saw one page's dark theme.
+  const narrowest = new Map<string, Shot>();
+  for (const s of shots) {
+    const key = `${s.target} ${s.theme}`;
+    const cur = narrowest.get(key);
+    if (!cur || s.viewport < cur.viewport) narrowest.set(key, s);
+  }
+  const required = new Set(narrowest.values());
   return (
     `\n\n## Browser check\nThe orchestrator opened the app (${r.url}) in a real browser after the checks.` +
     (shots.length
-      ? `\nScreenshots: open each with your Read tool and judge them against the goal (layout, content, both themes and widths):\n` +
-        shots.map((s) => `- ${s.file}: ${s.path} at ${s.viewport}px, ${s.theme} theme`).join("\n")
+      ? `\nScreenshots: open every one marked "required" with your Read tool (one per page and theme), and the others ` +
+        `when something looks off or the goal is about that width. Judge them against the goal: layout, content, both themes.\n` +
+        shots.map((s) => `- ${s.file}: ${s.path} at ${s.viewport}px, ${s.theme} theme${required.has(s) ? " (required)" : ""}`).join("\n")
       : "") +
     (r.problems.length ? `\nProblems (these already fail the round):\n- ${r.problems.join("\n- ")}` : "") +
     (r.observations.length
