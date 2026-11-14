@@ -217,5 +217,21 @@
     "difficulty": "multi-round: house rules checked by npm run lint (JSDoc tags, no console, a test per module) that a first attempt tends to miss",
     "goal": "Add src/retry.js exporting an async function retry(fn, options) that calls fn(attempt) (attempt counts from 1; fn may be sync or async) until it succeeds and returns its result. Options: attempts (total tries, default 3, a positive integer, else RangeError), delayMs (wait before the second try, default 100, a number >= 0, else RangeError), factor (each later wait is multiplied by it, default 2) and shouldRetry(err) (return false to rethrow at once; default retries every error). After the last attempt, throw its error. A non-function fn is a TypeError. Add tests.",
     "grade": "node --test test/__hidden__/retry.test.js test/text.test.js && node scripts/lint.mjs"
+  },
+  {
+    "id": "web-dashboard-bug",
+    "fixture": "web-dashboard",
+    "kind": "visual",
+    "difficulty": "visual: three separate causes of sideways scroll on phones and an unreadable dark-mode header, graded in a browser",
+    "goal": "Users report two bugs on /dashboard. On phones (375px wide) the page scrolls sideways and the Export CSV button is cut off at the right edge. In dark mode the table's column headers cannot be read. Fix both. On a desktop in light mode the page must look as it does now: the toolbar buttons on one row, the four stats on one row, and the table headers keep their light gray background.",
+    "grade": "node --test test/__hidden__/dashboard.test.mjs test/site.test.mjs"
+  },
+  {
+    "id": "web-pricing",
+    "fixture": "web-site",
+    "kind": "visual",
+    "difficulty": "visual: responsive cards and a site-wide dark theme, graded in a browser",
+    "goal": "Add a /pricing page (public/pricing.html) with three plan cards, Free, Pro and Team: side by side on desktop, stacked in one column on phones, and never wider than the screen. Give each card the class \"plan\" and put the plan's name in an h2 inside it. Add a dark theme for the whole site that follows the system setting (prefers-color-scheme), with readable text. Link Pricing from the header nav on every page.",
+    "grade": "node --test test/__hidden__/pricing.test.mjs test/site.test.mjs"
   }
 ]

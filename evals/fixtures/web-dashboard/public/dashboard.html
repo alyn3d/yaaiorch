@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tidewater · Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">Tidewater</a>
+      <nav>
+        <a href="/">Home</a>
+        <a href="/dashboard">Dashboard</a>
+      </nav>
+    </header>
+    <main class="page">
+      <h1>Dashboard</h1>
+      <div class="toolbar">
+        <button class="tool" type="button">Last 30 days</button>
+        <button class="tool" type="button">All members</button>
+        <button class="tool" type="button">Refresh</button>
+        <button class="tool primary" id="export" type="button">Export CSV</button>
+      </div>
+      <section class="stats">
+        <div class="stat"><span class="stat-value">1,284</span><span class="stat-label">Notes</span></div>
+        <div class="stat"><span class="stat-value">36</span><span class="stat-label">Members</span></div>
+        <div class="stat"><span class="stat-value">412</span><span class="stat-label">Shared</span></div>
+        <div class="stat"><span class="stat-value">99.2%</span><span class="stat-label">Synced</span></div>
+      </section>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Notes</th>
+            <th>Shared</th>
+            <th>Last active</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Ada Moreno</td>
+            <td>214</td>
+            <td>48</td>
+            <td>Today</td>
+          </tr>
+          <tr>
+            <td>Sam Okafor</td>
+            <td>187</td>
+            <td>31</td>
+            <td>Yesterday</td>
+          </tr>
+          <tr>
+            <td>Lin Park</td>
+            <td>96</td>
+            <td>12</td>
+            <td>3 days ago</td>
+          </tr>
+        </tbody>
+      </table>
+    </main>
+  </body>
+</html>

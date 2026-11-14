@@ -17,6 +17,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   own browser profile, which the checks reuse; `orch browser install` downloads Chrome for Testing when no browser
   is installed; `orch doctor` reports the browser; `--no-visual` / `"visual": false` turns the checks off. Needs
   Node.js 22 (the desktop app's bundled Node.js has it). The run view shows a **Browser** row per round.
+- **Visual eval cases** `web-dashboard-bug` and `web-pricing`, graded in a real browser (overflow at 375px, card
+  layout, dark-mode contrast), and the `+novisual` config suffix, to measure the browser checks:
+  `node evals/run.ts --cases web-dashboard-bug,web-pricing --power economy,economy+novisual --repeat 3`.
 - **Open in VS Code** on every repo page, with a menu for Cursor, Windsurf, VS Code Insiders and the system file
   manager. Editors open through their URL scheme (`vscode://file/...`), so nothing is spawned; the app remembers
   the editor you used last.

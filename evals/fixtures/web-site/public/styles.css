@@ -1,0 +1,52 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 16px/1.5 system-ui, sans-serif;
+  background: #ffffff;
+  color: #1b1f24;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid #e1e5ea;
+}
+
+.site-header nav {
+  display: flex;
+  gap: 16px;
+}
+
+.site-header a {
+  color: #1b1f24;
+  text-decoration: none;
+}
+
+.brand {
+  font-weight: 700;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 48px 24px;
+}
+
+.lead {
+  color: #5b6470;
+  font-size: 18px;
+}
+
+.button {
+  display: inline-block;
+  padding: 10px 18px;
+  border-radius: 8px;
+  background: #0b6bcb;
+  color: #ffffff;
+  text-decoration: none;
+}

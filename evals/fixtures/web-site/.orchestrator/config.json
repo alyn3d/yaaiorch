@@ -1,0 +1,4 @@
+{
+  "checks": { "test": "npm test" },
+  "serve": { "url": "http://127.0.0.1:5320", "command": "node server.mjs 5320", "timeout": 30 }
+}

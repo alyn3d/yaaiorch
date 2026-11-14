@@ -29,7 +29,7 @@ Runs orch for real (this spends money). Options:
 | option | default | meaning |
 |---|---|---|
 | `--cases a,b` | all | case ids from `cases.json` |
-| `--power economy,heavy` | economy | orch configurations to compare (`none` to skip orch): a tier, optionally with `+fast` (`--fast`), `+nomem` (`--no-brief --no-notes`) `+critic` (`--critic`) `+noresume` (`--no-resume`), `+diffcritic` (`--diff-critic`) or `+review` (`--review`), combinable, e.g. `economy,economy+nomem` |
+| `--power economy,heavy` | economy | orch configurations to compare (`none` to skip orch): a tier, optionally with `+fast` (`--fast`), `+nomem` (`--no-brief --no-notes`) `+critic` (`--critic`) `+noresume` (`--no-resume`), `+diffcritic` (`--diff-critic`), `+review` (`--review`) or `+novisual` (`--no-visual`), combinable, e.g. `economy,economy+nomem` |
 | `--single sonnet,opus` | | also run the **control group**: one `claude -p` call per case with this model, the same goal, permissions, check commands and budget |
 | `--repeat N` | 1 | runs per case and tier (LLM runs vary; use 3+ for decisions) |
 | `--parallel N` | 1 | runs at once |
@@ -99,6 +99,8 @@ means QA or the checks are too lenient.
 | shop-refunds | node-shop | feature | long: partial refunds, restock, proportional tax with exact remainder, net report |
 | tickets-series | node-tickets | series | 3 goals: tags with validation, tag filter (old tickets without tags), tag stats |
 | api-series | node-api | series | 3 goals: create, update and delete, filters |
+| web-dashboard-bug | web-dashboard | visual | medium: three separate causes of sideways scroll at 375px, an unreadable dark-mode header, desktop unchanged |
+| web-pricing | web-site | visual | medium: cards side by side on desktop and stacked on phones, a site-wide dark theme |
 
 **Series** cases (`goals` instead of `goal`) run several goals one after another on the same repo, like a
 user working through a backlog, and are graded once at the end with hidden tests covering every goal. A
@@ -129,6 +131,16 @@ git-ignored elsewhere, so add it with `git add -f`.
 
 `greenfield-inventory` starts from an almost empty repo (`fixtures/empty`): its first goal sets up a Node project, its
 second builds a module in it. It measures building from nothing, including checks the agents create themselves.
+
+The **visual** cases (`web-*`) are static sites with a dev server (`server.mjs`) and `"serve"` in their config, so
+orch's browser checks run on them. Their hidden tests grade in a real browser too (`evals/lib/page.mjs`: overflow
+at 375px, card positions, WCAG contrast in dark mode), so grading needs Chrome, Edge or Chromium installed (or
+`YAAIORCH_BROWSER`). The runner gives each run's app a port of its own. They measure what the browser checks are
+worth:
+
+```bash
+node evals/run.ts --cases web-dashboard-bug,web-pricing --power economy,economy+novisual --repeat 3
+```
 
 `api-patch-contract` and `lib-retry-lint` (kind `multi-round`) are built to need a fix round: their fixtures have
 house rules that only the repo's own checks enforce (`node-api-strict`: a route registry, an API doc table and test

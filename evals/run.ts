@@ -12,7 +12,8 @@
 //   --cases a,b          case ids (default: all)          --power economy,heavy  orch tiers (default: economy; "none" for no orch runs;
 //                                                                              suffixes: +fast (--fast), +nomem (--no-brief --no-notes),
 //                                                                              +critic (--critic), +noresume (--no-resume),
-//                                                                              +diffcritic (--diff-critic), +review (--review), e.g. economy+nomem)
+//                                                                              +diffcritic (--diff-critic), +review (--review), +novisual
+//                                                                              (--no-visual), e.g. economy+nomem)
 //   --single m1,m2       also run a single agent with these models (control group), e.g. sonnet,opus
 //   --orch-model SPEC    passed to orch as --model for every orch run, e.g. "architect=opus,impl=haiku"
 //   --repeat N           runs per case and tier (1)       --parallel N           runs at once (1)
@@ -113,6 +114,7 @@ const SUFFIXES: Record<string, string[]> = {
   noresume: ["--no-resume"],
   diffcritic: ["--diff-critic"],
   review: ["--review"],
+  novisual: ["--no-visual"],
 };
 const tierOf = (label: string) => label.split("+")[0];
 const suffixArgs = (label: string) =>
@@ -155,6 +157,7 @@ function setupRepo(dir: string, c: Case, ...overlays: string[]) {
   mkdirSync(dir, { recursive: true });
   cpSync(join(EVALS, "fixtures", c.fixture), dir, { recursive: true });
   const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+  servePort(dir);
   git("init", "-q", "-b", "main");
   git("-c", "user.name=evals", "-c", "user.email=evals@localhost", "add", "-A");
   git("-c", "user.name=evals", "-c", "user.email=evals@localhost", "commit", "-q", "-m", `fixture ${c.fixture}`);
@@ -164,9 +167,28 @@ function setupRepo(dir: string, c: Case, ...overlays: string[]) {
   for (const o of overlays) cpSync(o, dir, { recursive: true });
 }
 
+/**
+ * Browser checks (config "serve"): each run's app gets a port of its own, so parallel runs never check each
+ * other's dev server. The fixture's port is replaced in both the url and the command.
+ */
+let nextPort = 20_000 + Math.floor(Math.random() * 20_000);
+function servePort(dir: string) {
+  const file = join(dir, ".orchestrator", "config.json");
+  if (!existsSync(file)) return;
+  const cfg = JSON.parse(readFileSync(file, "utf8"));
+  const old = cfg.serve?.url && new URL(cfg.serve.url).port;
+  if (!old) return;
+  const port = String(nextPort++);
+  cfg.serve.url = cfg.serve.url.replace(`:${old}`, `:${port}`);
+  if (cfg.serve.command) cfg.serve.command = cfg.serve.command.replaceAll(old, port);
+  writeFileSync(file, JSON.stringify(cfg, null, 2));
+}
+
 function grade(dir: string, c: Case) {
   cpSync(join(EVALS, "hidden", c.id), dir, { recursive: true });
-  const r = spawnSync(c.grade, { cwd: dir, shell: true, encoding: "utf8", timeout: 180_000, windowsHide: true });
+  // Browser-graded cases (web-*) load evals/lib/page.mjs from here.
+  const env = { ...process.env, YAAIORCH_EVALS: EVALS };
+  const r = spawnSync(c.grade, { cwd: dir, shell: true, encoding: "utf8", timeout: 180_000, windowsHide: true, env });
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n${r.error.message}` : ""}`;
   writeFileSync(join(dir, "..", `${dir.split(/[\\/]/).pop()}.grade.log`), output);
   return { pass: r.status === 0, tail: output.trim().split(/\r?\n/).slice(-8).join("\n") };
