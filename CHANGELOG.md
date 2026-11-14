@@ -9,6 +9,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - Opt-in agent decision cards with suggested or free-text answers, independent parallel questions and read-only history.
 
 ### Changed
+- Built-in agents request task acceptance criteria, focused tests and clearer verification and blocker reports.
 - Updated the project site and screenshot to show run history and task timelines.
 
 ## [0.5.2] - 2026-11-14
