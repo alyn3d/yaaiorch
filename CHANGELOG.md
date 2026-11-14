@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Power, rounds, per-goal and queue budgets are remembered separately for each repo in the desktop app and browser UI.
+
 ### Changed
 - Updated the project site and screenshot to highlight browser checks, task reports, round diffs, token counts and the agent roster.
 

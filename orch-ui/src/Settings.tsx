@@ -23,6 +23,10 @@ const ROLE_LABELS: Record<Role, string> = {
 };
 
 export type RunSettings = {
+  power: Power;
+  maxRounds: number;
+  maxCost: string;
+  queueBudget: string;
   /** Empty string: use the tier's model. */
   models: Record<Role, string>;
   /** "be=opus, fe=claude-sonnet-5-5" */
@@ -47,6 +51,10 @@ export type RunSettings = {
 };
 
 export const DEFAULT_SETTINGS: RunSettings = {
+  power: "heavy",
+  maxRounds: 5,
+  maxCost: "",
+  queueBudget: "",
   models: { architect: "", impl: "", heavy: "", qa: "", dev: "" },
   agentModels: "",
   onLimit: "wait",
@@ -84,28 +92,54 @@ export function modelSpec(s: RunSettings): { spec?: string; error?: string } {
   return { spec: pairs.join(",") || undefined };
 }
 
-/** Settings remembered per repo in this browser (a convenience; nothing breaks without storage). */
-export function useRepoSettings(repo: string | null | undefined) {
-  const key = `yaaiorch.settings:${repo ?? ""}`;
-  const [settings, setSettings] = useState<RunSettings>(DEFAULT_SETTINGS);
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(key);
-      const s = saved ? JSON.parse(saved) : {};
-      setSettings({ ...DEFAULT_SETTINGS, ...s, models: { ...DEFAULT_SETTINGS.models, ...s.models }, plugins: { ...DEFAULT_PLUGINS, ...s.plugins } });
-    } catch {
-      setSettings(DEFAULT_SETTINGS);
-    }
-  }, [key]);
-  const update = (next: RunSettings) => {
-    setSettings(next);
-    try {
-      localStorage.setItem(key, JSON.stringify(next));
-    } catch {
-      /* private mode or storage blocked */
-    }
-  };
-  return [settings, update] as const;
+const settingsKey = (repo: string) => `yaaiorch.settings:${repo}`;
+const isPower = (value: unknown): value is Power => value === "max" || value === "heavy" || value === "balanced" || value === "economy";
+const isBudget = (value: unknown): value is string => typeof value === "string" && (value === "" || Number.isFinite(Number(value)));
+
+export function loadRepoSettings(repo: string): { settings: RunSettings; error?: string } {
+  try {
+    const saved = localStorage.getItem(settingsKey(repo));
+    if (!saved) return { settings: DEFAULT_SETTINGS };
+    const s = JSON.parse(saved);
+    if (!s || typeof s !== "object" || Array.isArray(s)) throw new Error("Invalid settings");
+    const invalid =
+      (s.power !== undefined && !isPower(s.power)) ||
+      (s.maxRounds !== undefined && (typeof s.maxRounds !== "number" || !Number.isFinite(s.maxRounds))) ||
+      (s.maxCost !== undefined && !isBudget(s.maxCost)) ||
+      (s.queueBudget !== undefined && !isBudget(s.queueBudget));
+    return {
+      settings: {
+        ...DEFAULT_SETTINGS,
+        ...s,
+        power: isPower(s.power) ? s.power : DEFAULT_SETTINGS.power,
+        maxRounds: typeof s.maxRounds === "number" && Number.isFinite(s.maxRounds) ? s.maxRounds : DEFAULT_SETTINGS.maxRounds,
+        maxCost: isBudget(s.maxCost) ? s.maxCost : DEFAULT_SETTINGS.maxCost,
+        queueBudget: isBudget(s.queueBudget) ? s.queueBudget : DEFAULT_SETTINGS.queueBudget,
+        models: { ...DEFAULT_SETTINGS.models, ...s.models },
+        plugins: { ...DEFAULT_PLUGINS, ...s.plugins },
+      },
+      error: invalid ? "Some saved repo settings were invalid and were reset to defaults." : undefined,
+    };
+  } catch {
+    return { settings: DEFAULT_SETTINGS, error: "Could not read saved repo settings. Defaults are in use." };
+  }
+}
+
+export function saveRepoSettings(repo: string, settings: RunSettings): string | undefined {
+  try {
+    localStorage.setItem(settingsKey(repo), JSON.stringify(settings));
+    return undefined;
+  } catch {
+    return "Could not save repo settings. Changes will be lost when this repo is closed or reloaded.";
+  }
+}
+
+/** Settings remembered per repo in the browser or desktop webview. */
+export function useRepoSettings(repo: string) {
+  const [saved, setSaved] = useState(() => loadRepoSettings(repo));
+  useEffect(() => setSaved(loadRepoSettings(repo)), [repo]);
+  const update = (settings: RunSettings) => setSaved({ settings, error: saveRepoSettings(repo, settings) });
+  return [saved.settings, update, saved.error] as const;
 }
 
 export function SettingsPanel({ repo, power, settings, onChange }: { repo: string; power: Power; settings: RunSettings; onChange: (s: RunSettings) => void }) {

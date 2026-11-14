@@ -168,7 +168,7 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Token counts** next to cost in live and persisted run summaries, rounds, tasks, planning and reviews.
 - [x] **Agent roster page**: view built-in, user-level and project agents plus discovered skills; edit
   project agents or save repo-local overrides without changing global Claude Code definitions.
-- [ ] **Per-repo settings** (power, max rounds, budget) remembered by the desktop app.
+- [x] **Per-repo settings** (power, max rounds, budget) remembered by the desktop app.
 - [ ] **One backend**: share line parsing and event buffering instead of keeping `server.ts` and
   `main.rs` in sync (or let the desktop app start `server.ts`).
 - [ ] **Shared event types** between `orch.ts` and the UI (one discriminated union). **good first issue**

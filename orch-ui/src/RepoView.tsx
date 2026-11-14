@@ -17,11 +17,8 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
   const { state, log, run } = session;
   const repo = state.repo;
   const [goal, setGoal] = useState("");
-  const [power, setPower] = useState<Power>("heavy");
-  const [maxRounds, setMaxRounds] = useState(5);
-  const [maxCost, setMaxCost] = useState("");
-  /** The queue's budget: all goals of a loop together (--max-cost-total). */
-  const [queueBudget, setQueueBudget] = useState("");
+  const [settings, setSettings, settingsError] = useRepoSettings(repo);
+  const { power, maxRounds, maxCost, queueBudget } = settings;
   /** A GitHub label to import issues with; Loop (watch) keeps pulling new ones in. */
   const [label, setLabel] = useState(() => {
     try {
@@ -66,7 +63,6 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
   const findings = useFindings(repo, busy);
   // An empty or out-of-range field must not reach orch.ts as 0 or NaN.
   const cap = Number(maxCost);
-  const [settings, setSettings] = useRepoSettings(repo);
   const models = modelSpec(settings);
   const opts = {
     power,
@@ -146,6 +142,12 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
         </section>
       )}
 
+      {settingsError && (
+        <section className="callout warn" role="alert">
+          {settingsError}
+        </section>
+      )}
+
       {checkpoint && (
         <section className="callout warn">
           <div className="callout-text">
@@ -186,7 +188,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
         <div className="composer-bar">
           <label>
             Power
-            <select value={power} onChange={(e) => setPower(e.target.value as Power)}>
+            <select value={power} onChange={(e) => setSettings({ ...settings, power: e.target.value as Power })}>
               {POWERS.map((p) => (
                 <option key={p}>{p}</option>
               ))}
@@ -194,11 +196,18 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           </label>
           <label>
             Rounds
-            <input type="number" min={1} max={20} value={maxRounds} onChange={(e) => setMaxRounds(Number(e.target.value))} />
+            <input type="number" min={1} max={20} value={maxRounds} onChange={(e) => setSettings({ ...settings, maxRounds: Number(e.target.value) })} />
           </label>
           <label title="Stop the goal once agent calls have cost this much (USD). Empty: no limit.">
             Max $
-            <input type="number" min={0} step={0.5} placeholder="none" value={maxCost} onChange={(e) => setMaxCost(e.target.value)} />
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              placeholder="none"
+              value={maxCost}
+              onChange={(e) => setSettings({ ...settings, maxCost: e.target.value })}
+            />
           </label>
           <label className="check">
             <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} /> Plan only
@@ -338,7 +347,14 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
               </button>
               <label title="A budget for all the goals the queue runs together (Process queue, Loop, Queue and start); it stops before the next goal once spent. Each goal's own Max $ still applies. Empty: no limit.">
                 Budget $
-                <input type="number" min={0} step={1} placeholder="none" value={queueBudget} onChange={(e) => setQueueBudget(e.target.value)} />
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  placeholder="none"
+                  value={queueBudget}
+                  onChange={(e) => setSettings({ ...settings, queueBudget: e.target.value })}
+                />
               </label>
             </div>
             <div className="queue-actions intake">

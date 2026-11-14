@@ -252,6 +252,70 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
   });
 });
 
+describe("per-repo run settings", () => {
+  let settings;
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    settings = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "Settings.tsx")).href, import.meta.url);
+  });
+
+  function storage(t) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const data = new Map();
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key) => data.get(key) ?? null,
+        setItem: (key, value) => data.set(key, value),
+      },
+    });
+    t.after(() => (previous ? Object.defineProperty(globalThis, "localStorage", previous) : delete globalThis.localStorage));
+    return data;
+  }
+
+  test("preserves old advanced settings and restores separate repo values", (t) => {
+    const data = storage(t);
+    data.set("yaaiorch.settings:repo-a", JSON.stringify({ fast: true, models: { qa: "sonnet" }, plugins: { on: false } }));
+    const old = settings.loadRepoSettings("repo-a");
+    assert.equal(old.error, undefined);
+    assert.equal(old.settings.power, "heavy");
+    assert.equal(old.settings.maxRounds, 5);
+    assert.equal(old.settings.models.qa, "sonnet");
+    assert.equal(old.settings.models.impl, "");
+    assert.deepEqual(old.settings.plugins, { on: false, off: [], hooks: true });
+
+    const a = { ...old.settings, power: "economy", maxRounds: 8, maxCost: "2.5", queueBudget: "30" };
+    const b = { ...settings.loadRepoSettings("repo-b").settings, power: "max", maxRounds: 2, maxCost: "", queueBudget: "10" };
+    assert.equal(settings.saveRepoSettings("repo-a", a), undefined);
+    assert.equal(settings.saveRepoSettings("repo-b", b), undefined);
+    assert.deepEqual(settings.loadRepoSettings("repo-a").settings, a);
+    assert.deepEqual(settings.loadRepoSettings("repo-b").settings, b);
+    assert.equal(settings.loadRepoSettings("repo-c").settings.power, "heavy");
+  });
+
+  test("reports invalid stored values and unavailable storage", (t) => {
+    const data = storage(t);
+    data.set("yaaiorch.settings:bad", JSON.stringify({ power: "unknown", maxRounds: "8", maxCost: {}, queueBudget: "invalid", fast: true }));
+    const result = settings.loadRepoSettings("bad");
+    assert.match(result.error, /invalid/);
+    assert.deepEqual(
+      [result.settings.power, result.settings.maxRounds, result.settings.maxCost, result.settings.queueBudget, result.settings.fast],
+      ["heavy", 5, "", "", true],
+    );
+    data.set("yaaiorch.settings:bad", "{");
+    assert.match(settings.loadRepoSettings("bad").error, /Could not read/);
+    globalThis.localStorage.getItem = () => {
+      throw new Error("blocked");
+    };
+    globalThis.localStorage.setItem = () => {
+      throw new Error("blocked");
+    };
+    assert.match(settings.loadRepoSettings("bad").error, /Could not read/);
+    assert.match(settings.saveRepoSettings("bad", result.settings), /Could not save/);
+  });
+});
+
 describe("brief progress (orch-ui/src/progress.ts)", () => {
   let p;
   before(async () => {

@@ -236,7 +236,7 @@ A start that waits is `queued` with a `waitReason`: the usage limit, the budget,
 | `Overview.tsx` | The **Overview** tab (shown from two repos on): one row per repo with its phase (planning, building, verifying, checks, waiting), goal, round, tasks done and running agents, cost against its cap, pending queue, and Open / Stop. |
 | `repoStatus.ts` | `repoStatus()`: a repo's status dot and label, shared by the tabs and the overview. |
 | `RepoView.tsx` | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log. |
-| `Settings.tsx` | Usage-limit choice, fast path, models per role and agent; remembered per repo in local storage. |
+| `Settings.tsx` | Power, rounds, per-goal and queue budgets, usage-limit choice, fast path, models per role and agent; remembered per repo in local storage. |
 | `reduce.ts` | Pure fold of `OrchEvent`s into a `RunView` (rounds -> tasks). A reload replays the stored events through it. |
 | `RunView.tsx` | Task cards grouped Foundation / Build / Verify, with status, elapsed time, owned and changed files, failures. |
 | `types.ts` | Shared types. |

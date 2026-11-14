@@ -206,7 +206,8 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   together (Process queue, Loop, Queue and start; `--max-cost-total`), next to each goal's own **Max $**; the New
   project dialog has a **Total $** for the same. Above the queue, the latest brief's progress: a bar, "7 of 23
   goals done", failed and blocked counts, what it cost, a rough time left and the goal running now; the
-  overview shows "7/23" per repo.
+  overview shows "7/23" per repo. Power, rounds, **Max $**, **Budget $** and advanced run settings are remembered
+  separately for each repo in the desktop app or browser's local storage.
 - **Goals that build on each other.** The split says which earlier goals each one needs (shown as "after 1, 3";
   unsaid means all earlier ones). A failed goal is tried again one power tier higher (`--retries N`, default 1;
   not after the budget ran out); if it still fails, the goals that need it are marked **blocked** and skipped
