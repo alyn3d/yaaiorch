@@ -7,7 +7,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync, symlinkSync, appendFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync, symlinkSync, appendFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,7 +76,7 @@ function orchAsync(dir, args, env = {}) {
   child.stdout.on("data", (d) => (out += d));
   child.stderr.on("data", (d) => (out += d));
   const done = new Promise((ok) => child.on("close", (code) => ok({ code, out })));
-  return { child, done };
+  return { child, done, output: () => out };
 }
 const until = async (cond, ms = 30_000) => {
   const end = Date.now() + ms;
@@ -96,6 +96,71 @@ const writeConfig = (dir, cfg) => {
 
 // spawnSync blocks, so the scenarios run one after another; the timeout makes a hang fail instead of stalling CI.
 describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
+  test("checks-start reaches the UI while a check is still running", async () => {
+    const dir = repo();
+    writeConfig(dir, { checks: { slow: 'node -e "setTimeout(()=>{}, 2500)"' } });
+    const run = orchAsync(dir, ["run", "slow check", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    try {
+      await until(() => run.output().includes('"type":"checks_start"'));
+      assert.equal(run.child.exitCode, null);
+      assert.doesNotMatch(run.output(), /"type":"checks"/);
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.match(out, /"type":"checks"/);
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+  });
+
+  test("task activity streams before completion, is bounded, private and attributed to the right task", async () => {
+    const dir = repo();
+    const secret = "sk-ant-" + "x".repeat(30);
+    const run = orchAsync(dir, ["run", "activity", "--max-rounds", "1"], {
+      FAKE_QA: "pass",
+      FAKE_ACTIVITY: "be,qa",
+      FAKE_ACTIVITY_WAIT: "1500",
+      FAKE_ACTIVITY_SECRET: secret,
+    });
+    const historyDir = join(dir, ".orchestrator", "runs");
+    try {
+      await until(() => {
+        if (!existsSync(historyDir)) return false;
+        const [file] = readdirSync(historyDir);
+        return !!file && readFileSync(join(historyDir, file), "utf8").includes('"type":"task_activity"');
+      });
+      assert.equal(run.child.exitCode, null, "activity arrives while the goal is running");
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.doesNotMatch(out, new RegExp(secret));
+      const [file] = readdirSync(historyDir);
+      const text = readFileSync(join(historyDir, file), "utf8");
+      assert.doesNotMatch(text, new RegExp(secret));
+      const events = text
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      for (const agent of ["be", "qa"]) {
+        const start = events.findIndex((e) => e.type === "task_start" && e.agent === agent);
+        const id = events[start].id;
+        const updates = events.filter((e) => e.type === "task_activity" && e.id === id);
+        assert.equal(updates.length, 50);
+        assert.deepEqual(
+          updates.slice(0, 3).map((e) => e.activity),
+          ["read", "edit", "other"],
+        );
+        assert.equal(updates.at(-1).activity, "limit");
+        const end = events.findIndex((e) => e.type === "task_end" && e.id === id);
+        assert.ok(start < events.indexOf(updates[0]) && events.indexOf(updates.at(-1)) < end);
+        assert.deepEqual(Object.keys(updates[0]).sort(), ["activity", "id", "round", "t", "type"]);
+      }
+      assert.ok(events.findIndex((e) => e.type === "checks_start") < events.findIndex((e) => e.type === "checks"));
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+  });
+
   test("run history records separate goal attempts, even without streamed events", () => {
     const dir = repo();
     const first = orch(dir, ["run", "first goal", "--max-rounds", "1"], { FAKE_QA: "pass" });

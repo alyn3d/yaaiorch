@@ -1109,13 +1109,78 @@ const TRANSIENT_RE =
   /API Error: (?:5\d\d|429)\b|overloaded_error|\bapi_error\b|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|fetch failed|Connection error|Request timed out/i;
 
 type Reply = { text: string; cost: number; tokens?: TokenUsage; session?: string };
+type ToolActivity = "read" | "search" | "edit" | "command" | "skill" | "web" | "agent" | "other";
+type ActivityCallback = (activity: ToolActivity) => void;
+
+/** Only tool categories leave the agent stream; inputs, paths, commands and assistant text stay private. */
+function activityReader(onActivity: ActivityCallback) {
+  const categories: Record<string, ToolActivity> = {
+    Read: "read",
+    Glob: "search",
+    Grep: "search",
+    Edit: "edit",
+    MultiEdit: "edit",
+    Write: "edit",
+    Bash: "command",
+    PowerShell: "command",
+    Skill: "skill",
+    WebFetch: "web",
+    WebSearch: "web",
+    Agent: "agent",
+    Task: "agent",
+  };
+  let pending = "";
+  let dropping = false;
+  const line = (text: string) => {
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return; // CLI output may also contain non-JSON lines.
+    }
+    if (!value || typeof value !== "object" || !("type" in value) || value.type !== "assistant" || !("message" in value)) return;
+    const message = value.message;
+    if (!message || typeof message !== "object" || !("content" in message) || !Array.isArray(message.content)) return;
+    for (const block of message.content) {
+      if (!block || typeof block !== "object" || block.type !== "tool_use" || typeof block.name !== "string") continue;
+      onActivity(Object.hasOwn(categories, block.name) ? categories[block.name] : "other");
+    }
+  };
+  return (chunk: string) => {
+    let start = 0;
+    while (start < chunk.length) {
+      const end = chunk.indexOf("\n", start);
+      const part = chunk.slice(start, end < 0 ? undefined : end);
+      if (!dropping) {
+        if (pending.length + part.length > 1_000_000) {
+          pending = "";
+          dropping = true;
+        } else pending += part;
+      }
+      if (end < 0) break;
+      if (!dropping) line(pending);
+      pending = "";
+      dropping = false;
+      start = end + 1;
+    }
+  };
+}
+
+function taskActivity(round: number, id: number): ActivityCallback {
+  let count = 0;
+  return (activity) => {
+    if (count < 49) emit("task_activity", { round, id, activity });
+    else if (count === 49) emit("task_activity", { round, id, activity: "limit" });
+    count++;
+  };
+}
 
 /** `resume`: a session id to continue (forked, so the original stays as it was). */
-async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean, resume?: string): Promise<Reply> {
+async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean, resume?: string, activity?: ActivityCallback): Promise<Reply> {
   for (let attempt = 1; ; attempt++) {
     await respectUsageCap(ctx);
     try {
-      return await runOnce(agent, model, prompt, ctx, readOnly, resume);
+      return await runOnce(agent, model, prompt, ctx, readOnly, resume, activity);
     } catch (e) {
       const text = msg(e);
       if (attempt >= 2 || isFatal(e) || /timed out after \d/.test(text) || !TRANSIENT_RE.test(text)) throw e;
@@ -1147,7 +1212,15 @@ function parseCliOutput(out: string): CliResult | undefined {
   return r;
 }
 
-async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean, resume?: string): Promise<Reply> {
+async function runOnce(
+  agent: Entry,
+  model: string,
+  prompt: string,
+  ctx: RunCtx,
+  readOnly: boolean,
+  resume?: string,
+  activity?: ActivityCallback,
+): Promise<Reply> {
   const { budget } = ctx;
   if (budget.cap !== undefined && budget.spent >= budget.cap) throw new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`);
   const ceiling = await reserve(budget);
@@ -1194,7 +1267,11 @@ async function runOnce(agent: Entry, model: string, prompt: string, ctx: RunCtx,
     }, ctx.timeoutMs);
     p.stdout.setEncoding("utf8"); // decode across chunk boundaries
     let out = "";
-    p.stdout.on("data", (d: string) => (out += d));
+    const readActivity = activity && activityReader(activity);
+    p.stdout.on("data", (d: string) => {
+      out += d;
+      readActivity?.(d);
+    });
     p.on("error", (e) => (clearTimeout(timer), settle(0), reject(e)));
     p.on("close", (code) => {
       clearTimeout(timer);
@@ -2150,7 +2227,14 @@ type Opts = {
 };
 
 /** Run one build task; trust the diff, not the report. Re-dispatch once on phantom completion. */
-async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx, resume?: { id: string; round: number }): Promise<Result> {
+async function execute(
+  t: Task,
+  agent: Entry,
+  model: string,
+  ctx: RunCtx,
+  resume?: { id: string; round: number },
+  activity?: ActivityCallback,
+): Promise<Result> {
   const task =
     (t.files?.length ? `${t.task}\n\nYour files (touch only these):\n${t.files.map((f) => `- ${f}`).join("\n")}` : t.task) +
     (t.figma ? `\n\nFigma: ${t.figma}` : "") +
@@ -2170,13 +2254,13 @@ async function execute(t: Task, agent: Entry, model: string, ctx: RunCtx, resume
     const before = new Map((t.files ?? []).map((f) => [f, sig(f)]));
     let r: Reply;
     try {
-      r = await run(agent, model, prompt, ctx, false, session);
+      r = await run(agent, model, prompt, ctx, false, session, activity);
     } catch (e) {
       // The session may be gone (cleaned up, another machine): start cold once. Never after a timeout or a fatal error.
       if (!session || isFatal(e) || /timed out after \d/.test(msg(e))) throw e;
       console.warn(`${t.agent}: resuming its session failed (${msg(e).slice(0, 160)}); starting cold`);
       prompt = cold;
-      r = await run(agent, model, prompt, ctx, false);
+      r = await run(agent, model, prompt, ctx, false, undefined, activity);
     }
     cost += r.cost;
     tokens = addTokenUsage(tokens, r.tokens);
@@ -3337,7 +3421,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       try {
         const role: Role = t.agent === "dev" ? "dev" : t.heavy ? "heavy" : "impl";
         const model = modelFor(agentPower.get(t.agent) ?? power, agentModels.get(t.agent) ?? models, role, t.agent);
-        const r = await execute(t, byName.get(t.agent)!, model, ctx, prev && { id: prev.id, round: prev.round });
+        const r = await execute(t, byName.get(t.agent)!, model, ctx, prev && { id: prev.id, round: prev.round }, taskActivity(round, id));
         const status = /Status:\s*(COMPLETE|PARTIAL|FAILED)/i.exec(r.out)?.[1]?.toUpperCase() ?? (r.out.startsWith("PHANTOM") ? "PHANTOM" : "UNKNOWN");
         statuses.set(t, status);
         if (r.session) roundSessions.push({ agent: t.agent, id: r.session, files: t.files ?? [], round });
@@ -3432,6 +3516,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     if (foundationFailed)
       verify.forEach(skip); // building on a broken foundation is pointless to verify
     else {
+      emit("checks_start", { round });
       const setup = runSetup(cfg, !!cp);
       refreshChecks();
       checkResults = setup && !setup.ok ? [setup] : [...(setup ? [setup] : []), ...runChecks(checks)];
@@ -3458,6 +3543,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       // Browser check: the pages the verify tasks name, in a real browser, before QA (which gets the screenshots).
       const pages = verify.flatMap((t) => t.visual ?? []);
       if (browserCheck && DEV_SERVER && clean && pages.length) {
+        emit("visual_start", { round });
         const down = setup ? await DEV_SERVER.restart() : await DEV_SERVER.ensure();
         const rel = `${VISUAL_DIR}/round-${round}`;
         visual = down
@@ -3485,6 +3571,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
             `${ctx.repoContext ?? ""}Goal: ${goal}\n${t.task}\n\nImplementer reports:\n${report}${diff}${visual ? visualReport(visual, pagesOf.get(t) ?? []) : ""}${VERDICT_FORMAT}`,
             ctx,
             true,
+            undefined,
+            taskActivity(round, id),
           );
           reportText = r.text;
           const v = asVerdict(extractJson<Verdict>(r.text));
@@ -4360,6 +4448,7 @@ export {
   asReview,
   TRANSIENT_RE,
   saveAgent,
+  activityReader,
 };
 
 if (!process.env.ORCH_NO_MAIN)

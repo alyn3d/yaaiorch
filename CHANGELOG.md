@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Run visualization**: per-round phase timelines, a focused failure summary and bounded live task activity categories.
+- **Parallel task timeline**: see task durations and overlap in live and recorded rounds.
 - **Run history**: record each goal attempt's events locally and replay past runs in the desktop app or browser UI, including interrupted attempts.
 - Power, rounds, per-goal and queue budgets are remembered separately for each repo in the desktop app and browser UI.
 

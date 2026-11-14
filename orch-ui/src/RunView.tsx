@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { RoundDiff, RunView as Run, TaskView, TokenUsage } from "./types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isTauri } from "./transport";
+import { ACTIVITY_LABELS, failureSummary, roundPhases, taskTimeline } from "./runProgress";
 
 /** A link out of the app: the desktop app's webview does not open new windows, so ask the system browser. */
 function openExternal(e: React.MouseEvent, url: string) {
@@ -95,6 +96,21 @@ function Task({ t, now }: { t: TaskView; now: number }) {
       {t.files.length > 0 && <p className="muted files">{t.files.join(", ")}</p>}
       {t.touched.length > 0 && <p className="muted files">changed: {t.touched.join(", ")}</p>}
       {t.error && <p className="error">{t.error}</p>}
+      {t.activity && t.activity.length > 0 && (
+        <details className="disclosure task-activity">
+          <summary>
+            {t.activity[t.activity.length - 1].kind === "limit" ? "" : "Latest: "}
+            {ACTIVITY_LABELS[t.activity[t.activity.length - 1].kind]}
+          </summary>
+          <ol>
+            {t.activity.map((a, i) => (
+              <li key={`${a.t}-${i}`}>
+                <time dateTime={new Date(a.t).toISOString()}>{new Date(a.t).toLocaleTimeString()}</time> {ACTIVITY_LABELS[a.kind]}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
       {t.report && (
         <details className="disclosure task-report">
           <summary>Agent report</summary>
@@ -120,6 +136,44 @@ const PHASES: { key: TaskView["phase"]; label: string }[] = [
   { key: "build", label: "Build (parallel)" },
   { key: "verify", label: "Verify" },
 ];
+
+function TaskTimeline({ tasks, now, live, round }: { tasks: TaskView[]; now: number; live: boolean; round: number }) {
+  const timeline = taskTimeline(tasks, now, live);
+  if (!timeline) return null;
+  return (
+    <div className="task-timeline" aria-label={`Round ${round} task timeline`}>
+      <div className="row">
+        <p className="phase">Task timeline</p>
+        <span className="spacer" />
+        <span className="muted">From first task · {fmt(timeline.span)}</span>
+      </div>
+      <ol>
+        {timeline.rows.map(({ task, start, offset, left, width, end, knownEnd, running }) => (
+          <li key={task.id}>
+            <div className="timeline-task" title={task.task}>
+              <span className="agent">{task.agent}</span>
+              <span className="muted">{task.phase}</span>
+            </div>
+            <div className="timeline-track" aria-hidden="true">
+              <span className={`timeline-bar ${tone(task.status)}`} style={{ left: `min(${left}%, calc(100% - 2px))`, width: `${width}%` }} />
+            </div>
+            <span
+              className="timeline-time"
+              title={
+                task.status === "STOPPED"
+                  ? "Start offset · observed duration until the stop was detected or the last recorded event · status"
+                  : "Start offset from the first task · duration · status"
+              }
+            >
+              +{fmt(offset)} · {knownEnd ? `${fmt(end - start)}${running ? " so far" : task.status === "STOPPED" ? " observed" : ""}` : "end not recorded"} ·{" "}
+              {task.status.toLowerCase()}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
 
 /** --approve-plan: the waiting plan, with Build it, an editable copy, and Send back with a reason. */
 function Approval({ a, onAnswer }: { a: NonNullable<Run["approval"]>; onAnswer: (body: Record<string, unknown>) => Promise<boolean> }) {
@@ -209,6 +263,7 @@ function Approval({ a, onAnswer }: { a: NonNullable<Run["approval"]>; onAnswer: 
 
 export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record<string, unknown>) => Promise<boolean> }) {
   const now = useNow(run.status === "running");
+  const failure = failureSummary(run);
   return (
     <section className="card run-card">
       <div className="card-head">
@@ -232,6 +287,17 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
       {run.checkpoint && run.status === "running" && <p className="muted">Checkpoint: {run.checkpoint}</p>}
       {run.error && <p className="error">{run.error}</p>}
       {run.historyError && <p className="error">{run.historyError}</p>}
+      {failure && (
+        <aside className="failure-summary" aria-label={`Round ${failure.round} issues`}>
+          <strong>{failure.previous ? `Previous round ${failure.round}` : `Round ${failure.round}`} needs attention</strong>
+          <ul className="failures">
+            {failure.issues.map((issue, i) => (
+              <li key={i}>{issue}</li>
+            ))}
+          </ul>
+          {failure.note && <p>{failure.note}</p>}
+        </aside>
+      )}
       {run.approval && run.status === "running" && onAnswer && (
         <Approval key={run.approval.round + run.approval.summary} a={run.approval} onAnswer={onAnswer} />
       )}
@@ -278,7 +344,7 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
               </span>
             )}
             {r.architect === "running" && <span className="badge running">architect planning</span>}
-            {r.passed !== undefined && <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>}
+            {r.passed !== undefined && <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "Round passed" : "Round failed"}</span>}
             <span className="spacer" />
             {r.cost !== undefined && (
               <span className="cost" title="Cost of this round">
@@ -287,6 +353,23 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
             )}
             <TokenCount tokens={r.tokens} />
           </div>
+          <ol className="phase-timeline" aria-label={`Round ${r.round} phases`}>
+            {roundPhases(run, r).map((phase) => (
+              <li key={phase.label} className={phase.state}>
+                <span>{phase.label}</span>
+                <small>
+                  {phase.state === "active"
+                    ? "in progress"
+                    : phase.state === "skipped"
+                      ? "not run"
+                      : phase.state === "attention"
+                        ? "needs attention"
+                        : phase.state}
+                </small>
+              </li>
+            ))}
+          </ol>
+          <TaskTimeline tasks={r.tasks} now={now} live={run.status === "running" && run.rounds.at(-1) === r && r.passed === undefined} round={r.round} />
           {r.summary && (
             <p>
               {r.summary}

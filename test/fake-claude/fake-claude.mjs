@@ -21,6 +21,7 @@
 //   FAKE_FAIL_AGENT=<name>   that implementer exits 1
 //   FAKE_HANG_AGENT=<name>   that implementer never returns
 //   FAKE_SLOW=<seconds>      implementers sleep first
+//   FAKE_ACTIVITY=<agents>    stream tool requests for these agents; FAKE_ACTIVITY_WAIT holds each call open (ms)
 //   FAKE_NOWRITE=1           implementers claim COMPLETE but write nothing
 //   FAKE_REPORT=<text>      implementer report text before its status line
 //   FAKE_NO_SESSION=1        a call with --resume fails like the real CLI when the session is gone
@@ -91,6 +92,19 @@ if (agentsFile) {
   }
 }
 log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap} builtin=${Boolean(agentsFile)}`);
+if (env.FAKE_ACTIVITY?.split(",").includes(agent)) {
+  const content = [
+    { type: "tool_use", name: "Read", input: { file_path: env.FAKE_ACTIVITY_SECRET } },
+    { type: "tool_use", name: "Edit", input: { new_string: env.FAKE_ACTIVITY_SECRET } },
+    { type: "tool_use", name: env.FAKE_ACTIVITY_SECRET, input: {} },
+    ...Array.from({ length: 52 }, () => ({ type: "tool_use", name: "Grep", input: {} })),
+  ];
+  const line = JSON.stringify({ type: "assistant", message: { content } }) + "\n";
+  process.stdout.write(line.slice(0, 25));
+  await sleep(10);
+  process.stdout.write(line.slice(25));
+  await sleep(Number(env.FAKE_ACTIVITY_WAIT ?? 0));
+}
 const resume = opt("--resume");
 if (resume) {
   log(`${agent}: resume=${resume} fork=${args.includes("--fork-session")} new=${session} files=${prompt.includes("Your files (touch only these):")}`);

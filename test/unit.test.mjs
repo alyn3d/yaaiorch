@@ -31,6 +31,28 @@ describe("extractJson", () => {
   });
 });
 
+describe("task activity stream", () => {
+  test("reads split JSON lines, ignores content, and resumes after an oversized line", () => {
+    const activities = [];
+    const read = o.activityReader((activity) => activities.push(activity));
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", name: "Read", input: { file_path: "private" } },
+          { type: "tool_use", name: "custom-secret-tool" },
+        ],
+      },
+    });
+    read(line.slice(0, 12));
+    assert.deepEqual(activities, []);
+    read(line.slice(12) + "\nnot json\n");
+    read("x".repeat(1_000_001));
+    read("\n" + JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "secret" } }] } }) + "\n");
+    assert.deepEqual(activities, ["read", "other", "command"]);
+  });
+});
+
 describe("validate", () => {
   const roster = ["fe", "be", "qa"].map((name) => ({ name, description: name }));
   const plan = (tasks) => ({ summary: "s", tasks: [...tasks, { agent: "qa", phase: "verify", task: "check" }] });
@@ -365,11 +387,12 @@ describe("open in editor (orch-ui/src/editorLinks.ts)", () => {
 });
 
 describe("run view (orch-ui/src/reduce.ts)", () => {
-  let reduce;
+  let reduce, roundPhases, failureSummary, taskTimeline;
   before(async () => {
     const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
     const { tsImport } = await import(pathToFileURL(api).href);
     ({ reduce } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "reduce.ts")).href, import.meta.url));
+    ({ roundPhases, failureSummary, taskTimeline } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "runProgress.ts")).href, import.meta.url));
   });
   const fold = (events) => events.reduce((run, e, i) => reduce(run, { t: 1000 + i, ...e }), null);
   const start = [
@@ -477,6 +500,122 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
   test("history failures are visible in the live run", () => {
     const run = fold([...start, { type: "history_error", error: "Could not save run history" }]);
     assert.equal(run.historyError, "Could not save run history");
+  });
+
+  test("phase timeline follows observed events, including approval, checks, fast and plan-only runs", () => {
+    const phases = (events) => {
+      const run = fold(events);
+      return roundPhases(run, run.rounds.at(-1)).map((p) => [p.label, p.state]);
+    };
+    assert.deepEqual(phases(start.slice(0, 2)), [
+      ["Plan", "active"],
+      ["Foundation", "pending"],
+      ["Build", "pending"],
+      ["Checks", "pending"],
+      ["QA", "pending"],
+    ]);
+    assert.equal(phases([...start.slice(0, 2), { type: "approval_wait", round: 1 }])[0][1], "waiting");
+    const building = [...start, { type: "task_start", round: 1, id: 0 }];
+    assert.deepEqual(phases(building), [
+      ["Plan", "done"],
+      ["Foundation", "skipped"],
+      ["Build", "active"],
+      ["Checks", "pending"],
+      ["QA", "pending"],
+    ]);
+    const checking = [...building, { type: "task_end", round: 1, id: 0, status: "COMPLETE" }, { type: "checks_start", round: 1 }];
+    assert.equal(phases(checking)[3][1], "active");
+    const browser = [...checking, { type: "checks", round: 1, results: [] }, { type: "visual_start", round: 1 }];
+    assert.deepEqual(phases(browser).slice(3), [
+      ["Checks", "skipped"],
+      ["Browser", "active"],
+      ["QA", "pending"],
+    ]);
+    assert.equal(phases([...browser, { type: "goal_end", passed: false }])[4][1], "interrupted");
+    const dry = [{ type: "goal_start", goal: "g", maxRounds: 1, dryRun: true }, ...start.slice(1), { type: "goal_end", passed: true }];
+    assert.deepEqual(
+      phases(dry).map((p) => p[1]),
+      ["done", "skipped", "skipped", "skipped", "skipped"],
+    );
+    assert.equal(phases([{ ...start[0] }, { type: "round_start", round: 1, mode: "direct" }])[0][1], "skipped");
+    const old = [...building, { type: "task_end", round: 1, id: 0, status: "COMPLETE" }, { type: "checks", round: 1, results: [{ ok: false }] }];
+    assert.equal(phases(old)[3][1], "failed", "old recordings without checks_start still show completed checks");
+  });
+
+  test("failure summary highlights the latest issue and known escalation without hiding a live retry", () => {
+    const events = [...start, { type: "checks", round: 1, results: [{ name: "test", ok: false, code: 1 }] }];
+    assert.match(failureSummary(fold(events)).issues[0], /test.*exit 1/);
+    const failed = [
+      ...events,
+      { type: "round_end", round: 1, passed: false, failures: ["test output"], cost: 0 },
+      { type: "stuck", round: 1, action: "escalate", reason: "same failure", power: "max" },
+      { type: "round_start", round: 2 },
+    ];
+    const summary = failureSummary(fold(failed));
+    assert.deepEqual(summary.issues, ["test output"]);
+    assert.equal(summary.previous, true);
+    assert.match(summary.note, /next round runs at power max/);
+    assert.equal(failureSummary(fold([...failed, { type: "goal_end", passed: true }])), null);
+  });
+
+  test("task activity is bounded, matched by round and task, and ignored outside an active task", () => {
+    let run = fold([...start, { type: "task_start", round: 1, id: 0 }]);
+    run = reduce(run, { type: "task_activity", round: 1, id: 1, activity: "edit", t: 1 });
+    for (let i = 0; i < 12; i++) run = reduce(run, { type: "task_activity", round: 1, id: 0, activity: "read", t: i + 10 });
+    run = reduce(run, { type: "task_activity", round: 1, id: 0, activity: "unknown", t: 30 });
+    assert.equal(run.rounds[0].tasks[0].activity.length, 8);
+    assert.equal(run.rounds[0].tasks[0].activity[0].t, 14);
+    assert.equal(run.rounds[0].tasks[1].activity, undefined);
+    run = reduce(run, { type: "task_end", round: 1, id: 0, status: "COMPLETE", t: 40 });
+    run = reduce(run, { type: "task_activity", round: 1, id: 0, activity: "edit", t: 41 });
+    assert.equal(run.rounds[0].tasks[0].activity.at(-1).kind, "read");
+  });
+
+  test("task timeline positions parallel and sequential work and advances only live tasks", () => {
+    const run = fold([
+      ...start,
+      { type: "task_start", round: 1, id: 0, t: 10000 },
+      { type: "task_start", round: 1, id: 1, t: 12000 },
+      { type: "task_end", round: 1, id: 0, status: "COMPLETE", t: 14000 },
+    ]);
+    const timeline = taskTimeline(run.rounds[0].tasks, 18000, true);
+    assert.equal(timeline.span, 8000);
+    assert.deepEqual(
+      timeline.rows.map((r) => [r.task.id, r.offset, r.left, r.width, r.running]),
+      [
+        [0, 0, 0, 50, false],
+        [1, 2000, 25, 75, true],
+      ],
+    );
+    const ended = fold([
+      ...start,
+      { type: "task_start", round: 1, id: 0, t: 10000 },
+      { type: "task_end", round: 1, id: 0, status: "COMPLETE", t: 14000 },
+      { type: "task_start", round: 1, id: 1, t: 16000 },
+      { type: "task_end", round: 1, id: 1, status: "PASS", t: 18000 },
+      { type: "goal_end", passed: true, t: 19000 },
+    ]);
+    const replay = taskTimeline(ended.rounds[0].tasks, 90000, false);
+    assert.deepEqual(
+      replay.rows.map((r) => [r.offset, r.width, r.running]),
+      [
+        [0, 50, false],
+        [6000, 25, false],
+      ],
+    );
+    assert.equal(replay.span, 8000);
+  });
+
+  test("task timeline omits unstarted tasks and does not invent missing or invalid end times", () => {
+    const run = fold([...start, { type: "task_start", round: 1, id: 0, t: 0 }]);
+    assert.equal(taskTimeline(run.rounds[0].tasks, 0, true).rows[0].start, 0);
+    assert.equal(taskTimeline(run.rounds[0].tasks, 0, true).rows.length, 1);
+    const unknown = taskTimeline(run.rounds[0].tasks, 90000, false);
+    assert.equal(unknown.rows[0].knownEnd, false);
+    assert.equal(unknown.span, 0);
+    assert.equal(taskTimeline([{ ...run.rounds[0].tasks[0], startedAt: NaN }], 1, true), null);
+    const reversed = taskTimeline([{ ...run.rounds[0].tasks[0], status: "FAILED", endedAt: -1 }], 1, false);
+    assert.equal(reversed.rows[0].knownEnd, false);
   });
 
   test("stopped: a run killed mid-task fails and its open tasks show STOPPED; a finished run is left alone", () => {

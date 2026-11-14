@@ -1,4 +1,5 @@
 import type { OrchEvent, RoundView, RunView, TaskView, TokenUsage } from "./types";
+import { isActivity } from "./runProgress";
 
 const addTokens = (a?: TokenUsage, b?: TokenUsage): TokenUsage | undefined => {
   if (!a) return b;
@@ -70,6 +71,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
         upd({ ...run, cost: run.cost + (ev.cost ?? 0), tokens: addTokens(run.tokens, ev.tokens) }, ev.round, (r) => ({
           ...r,
           architect: "done",
+          planned: true,
           architectCost: ev.cost,
           architectTokens: ev.tokens,
           summary: ev.summary,
@@ -87,6 +89,12 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       );
     case "task_start":
       return run && upd(run, ev.round, (r) => updTask(r, ev.id, (t) => ({ ...t, status: "running", startedAt: ev.t, resumed: ev.resumed })));
+    case "task_activity":
+      return run && isActivity(ev.activity)
+        ? upd(run, ev.round, (r) =>
+            updTask(r, ev.id, (t) => (t.status === "running" ? { ...t, activity: [...(t.activity ?? []), { kind: ev.activity, t: ev.t }].slice(-8) } : t)),
+          )
+        : run;
     case "task_end":
       return (
         run &&
@@ -170,6 +178,10 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       return run && { ...run, waitingUntil: ev.until, waitingReason: ev.reason };
     case "checks":
       return run && upd(run, ev.round, (r) => ({ ...r, checks: ev.results }));
+    case "checks_start":
+      return run && upd(run, ev.round, (r) => ({ ...r, checksStarted: true }));
+    case "visual_start":
+      return run && upd(run, ev.round, (r) => ({ ...r, visualStarted: true }));
     case "visual":
       return (
         run &&

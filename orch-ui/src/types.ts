@@ -74,6 +74,7 @@ export type HistoryEntry = {
   error?: string;
 };
 export type HistoryRecording = { events: OrchEvent[]; truncated: boolean };
+export type ActivityKind = "read" | "search" | "edit" | "command" | "skill" | "web" | "agent" | "other" | "limit";
 export type TaskView = {
   id: number;
   agent: string;
@@ -86,6 +87,7 @@ export type TaskView = {
   error?: string;
   report?: string;
   reportTruncated?: boolean;
+  activity?: { kind: ActivityKind; t: number }[];
   cost?: number;
   tokens?: TokenUsage;
   startedAt?: number;
@@ -101,11 +103,14 @@ export type RoundView = {
   /** "direct" for the fast path's single-agent attempt. */
   mode?: string;
   architect: "running" | "done";
+  planned?: boolean;
   architectCost?: number;
   architectTokens?: TokenUsage;
   summary: string;
   tasks: TaskView[];
   checks?: { name: string; command: string; ok: boolean; code: number | null; ms: number }[];
+  checksStarted?: boolean;
+  visualStarted?: boolean;
   passed?: boolean;
   failures: string[];
   cost?: number;

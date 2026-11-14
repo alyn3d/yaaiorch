@@ -155,9 +155,12 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `round_start` | round, power, models (effective model per role), mode? (`direct` on the fast path), agentPower? ({agent: power} for agents escalated on their own) |
 | `architect_start` | round |
 | `plan` | round, summary, cost, tasks[] (each with `id`) |
+| `checks_start` | round: setup and checks are starting |
 | `checks` | round, results[] ({name, command, ok, code, ms}) |
+| `visual_start` | round: browser checks are starting |
 | `visual` | round, url, shots[] ({target, path, viewport, theme, file}), problems[], observations[], ms: the browser check before QA |
 | `task_start` | round, id, agent, phase, resumed? (the round whose session it continues) |
+| `task_activity` | round, id, activity (`read`, `search`, `edit`, `command`, `skill`, `web`, `agent`, `other`, `limit`): a tool request observed in an assistant stream; never its input or name for unknown tools |
 | `task_end` | round, id, agent, phase, status, touched[], cost?, failures?, error?, report? (first 4,000 characters, recognized secrets redacted), reportTruncated? |
 | `round_diff` | round, diff ({text?, truncated?, unavailable?}; captured after the build, even if the round ends early) |
 | `round_end` | round, passed, failures[], cost, diff ({text?, truncated?, unavailable?}; first 100,000 characters of this round's Git changes) |
@@ -189,6 +192,10 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `usage` | fiveHour?, week? (each {pct, resetsAt epoch ms}): the subscription's usage after an agent call |
 
 The UI turns some live events into desktop notifications (`notifyText.ts`: goal_end, approval_wait, waiting, loop_stop with reason budget; replayed events never notify), through the Tauri notification plugin in the desktop app or the browser's Notification API, when **Notify** is on and the window is not focused.
+The CLI parses complete assistant stream lines as they arrive for task activity, without changing its final result
+parsing. Only fixed tool categories are emitted, at most 50 events per task (the last signals the cap); the reducer
+keeps the most recent eight. Activity does not prove a requested tool succeeded. Old histories still replay without
+the new start or activity events.
 
 Costs are USD from the CLI's `total_cost_usd`, rounded to 4 decimals. Agents run with `--output-format stream-json
 --verbose`: orch takes the final `result` line, and reads the subscription's usage from the CLI's
@@ -239,6 +246,7 @@ A start that waits is `queued` with a `waitReason`: the usage limit, the budget,
 | `RepoView.tsx` | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log. |
 | `RunHistory.tsx` | Lists repo-local goal attempts and replays a selected event stream through `reduce.ts`, without live approval controls. |
 | `Settings.tsx` | Power, rounds, per-goal and queue budgets, usage-limit choice, fast path, models per role and agent; remembered per repo in local storage. |
+| `runProgress.ts` | Derives phase states, task timeline positions and the current or previous round's failure summary; maps safe task-activity categories to labels. |
 | `reduce.ts` | Pure fold of `OrchEvent`s into a `RunView` (rounds -> tasks). A reload replays the stored events through it. |
 | `RunView.tsx` | Task cards grouped Foundation / Build / Verify, with status, elapsed time, owned and changed files, failures. |
 | `types.ts` | Shared types. |

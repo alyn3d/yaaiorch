@@ -270,7 +270,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
                     <div className="row">
                       <strong>Round {r.round}</strong>
                       {r.power && <span className="badge">{r.power}</span>}
-                      <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "QA passed" : "QA failed"}</span>
+                      <span className={`badge ${r.passed ? "done" : "failed"}`}>{r.passed ? "Round passed" : "Round failed"}</span>
                       <span className="spacer" />
                       {r.cost !== undefined && <span className="cost">${r.cost.toFixed(2)}</span>}
                       <TokenCount tokens={r.tokens} />

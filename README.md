@@ -117,6 +117,13 @@ On Windows `cmd`: `set "ORCH_REPO=C:\path\to\repo" && npm start`. Open more repo
 UI (or `ORCH_REPOS`, separated by `;` on Windows and `:` elsewhere); they are remembered.
 Expand **Agent report** on a task card to see its truncated response, or **Round diff** to inspect that round's
 Git changes. Round diffs are also available in the last-run summary; sensitive or unisolatable diffs are hidden.
+Each round's timeline shows observed planning, task, check, browser and QA states; failures and known escalation
+are highlighted above it. Task cards show recent tool-request categories as agents work, when provided by Claude
+Code. These are requests, not proof a tool completed: no tool inputs, commands or file contents are shown.
+At most 50 activity events per task are recorded (the last signals the limit); cards retain the latest eight.
+The task timeline shows each started task's elapsed time and overlap, including in recorded runs. Unstarted tasks
+are omitted, and tasks without a recorded end are marked instead of assuming when they finished. For interrupted
+tasks, the observed duration ends when the UI detected the stop or at the last event in an unfinished recording.
 
 ### Several repos at once
 
