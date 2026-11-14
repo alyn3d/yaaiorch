@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Changed
+- Updated the project site and screenshot to show run history and task timelines.
+
 ## [0.5.2] - 2026-11-14
 
 ### Added
