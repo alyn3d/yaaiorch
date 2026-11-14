@@ -20,7 +20,7 @@ import {
 import { homedir, hostname } from "node:os";
 import { join, basename, dirname, resolve, relative, isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { BUILTIN_AGENTS } from "./orch-agents";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
@@ -64,6 +64,7 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
                         can direct the agents, so use a label only people you trust can set
   orch approve [--reject "WHY"] [--plan-stdin]   answer a run waiting with --approve-plan: build the plan (edited:
                         a plan as JSON on stdin), or send it back to the architect with your reason
+  orch answer ID        answer an agent's question with text from stdin
   orch share [--dry-run]  propose what orch learned (brief and lasting notes) as a CLAUDE.md section, committed
                         on an orchestrator/claude-md-* branch for you to review and merge (--dry-run: print it)
   orch plugins [--json] [--details]  Claude Code plugins installed for this repo (--details: token cost)
@@ -119,6 +120,7 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   and queue what is missing (at most twice per brief); also "coverage": false in config
          --approve-plan   after planning, wait until you approve the plan ("orch approve", or the UI), edit it or
                   send it back with a reason; also "approvePlan": true in config
+         --ask            allow agents to pause for your decisions; also "ask": true in config; --no-ask turns it off
          --branch   run each goal on its own branch, orch/<id>-<slug>, and switch back afterwards: your branch is
                   never changed (the goal's work stays on its branch); also "branch": true in config
          --pr   with --branch: when a goal passes, push its branch to origin and open a pull request with gh
@@ -305,6 +307,7 @@ const STOP_FILE = join(DIR, "stop-after-goal");
 /** --approve-plan: the plan waiting for a human, and the answer `orch approve` writes. */
 const PLAN_PENDING = join(DIR, "plan-pending.json");
 const PLAN_DECISION = join(DIR, "plan-decision.json");
+const QUESTIONS_DIR = join(DIR, "questions");
 /** Browser checks: what the architect is told about them this goal ("" when off), and the app's dev server. */
 let VISUAL_HINT = "";
 let DEV_SERVER: DevServer | null = null;
@@ -402,6 +405,11 @@ function acquireRunLock(cmd: string) {
       } catch {
         /* someone else removed it first; try again */
       }
+    }
+  }
+  if (existsSync(QUESTIONS_DIR)) {
+    for (const name of readdirSync(QUESTIONS_DIR)) {
+      if (/^[0-9a-f-]{36}\.(?:json|answer\.json|claim|answer\.\d+\.tmp)$/.test(name)) rmSync(join(QUESTIONS_DIR, name), { force: true });
     }
   }
   const beat = setInterval(() => {
@@ -646,6 +654,7 @@ type Config = {
   branch?: boolean;
   pr?: boolean;
   approvePlan?: boolean;
+  ask?: boolean;
   coverage?: boolean;
   retries?: number;
   /** loop --intake: "github:LABEL" and/or "backlog:FILE". */
@@ -943,7 +952,16 @@ async function reserve(budget: Budget): Promise<number | undefined> {
 /** Percent caps on the subscription's usage windows (1-100); unset = no cap. */
 type UsageCap = { fiveHour?: number; week?: number };
 /** `repoContext`: the brief and recent lessons, put in front of every implementer and QA prompt. */
-type RunCtx = { budget: Budget; timeoutMs: number; usageCap: UsageCap; onLimit: "wait" | "stop"; repoContext?: string; resume?: boolean };
+type RunCtx = {
+  budget: Budget;
+  timeoutMs: number;
+  usageCap: UsageCap;
+  onLimit: "wait" | "stop";
+  repoContext?: string;
+  resume?: boolean;
+  ask?: boolean;
+  questionRound?: number;
+};
 
 // ---------- subscription usage: read from the CLI's rate_limit_event (stream-json) ----------
 type Window = "fiveHour" | "week";
@@ -1041,7 +1059,8 @@ class UsageLimit extends Error {
 }
 const LIMIT_RE = /\b(?:hit|reached) your [^\n.]{0,40}?limit\b/i;
 /** Fatal errors end the whole goal; anything else is a task failure for the next round. */
-const isFatal = (e: unknown): e is BudgetExceeded | UsageLimit => e instanceof BudgetExceeded || e instanceof UsageLimit;
+const isFatal = (e: unknown): e is BudgetExceeded | UsageLimit | QuestionResumeError =>
+  e instanceof BudgetExceeded || e instanceof UsageLimit || e instanceof QuestionResumeError;
 
 /** Wall-clock time h:mm in an IANA zone, as epoch ms, today or tomorrow (whichever is next). */
 function nextWallTime(h: number, min: number, zone: string | undefined, now = Date.now()): number {
@@ -1176,7 +1195,152 @@ function taskActivity(round: number, id: number): ActivityCallback {
 }
 
 /** `resume`: a session id to continue (forked, so the original stays as it was). */
-async function run(agent: Entry, model: string, prompt: string, ctx: RunCtx, readOnly: boolean, resume?: string, activity?: ActivityCallback): Promise<Reply> {
+async function run(
+  agent: Entry,
+  model: string,
+  prompt: string,
+  ctx: RunCtx,
+  readOnly: boolean,
+  resume?: string,
+  activity?: ActivityCallback,
+  questionTask?: number,
+): Promise<Reply> {
+  const questionFormat =
+    `\n\nIf a consequential decision needs the user's input, stop and reply with only ` +
+    `@@ORCH_QUESTION@@ followed by JSON: {"question":"one clear question","options":["suggested answer","another answer"]}. ` +
+    `Offer up to five short options; the user may also write their own answer. Otherwise follow the reply format above.`;
+  let totalCost = 0;
+  let totalTokens: TokenUsage | undefined;
+  let answered = false;
+  if (ctx.ask) prompt += questionFormat;
+  for (;;) {
+    let reply: Reply;
+    try {
+      reply = await runWithRetry(agent, model, prompt, ctx, readOnly, resume, activity);
+    } catch (e) {
+      if (answered && !isFatal(e)) throw new QuestionResumeError(`${agent.name}: could not continue after the answer: ${msg(e)}`, { cause: e });
+      throw e;
+    }
+    totalCost += reply.cost;
+    totalTokens = addTokenUsage(totalTokens, reply.tokens);
+    const text = reply.text.trim();
+    if (!ctx.ask || !text.startsWith("@@ORCH_QUESTION@@")) return { ...reply, cost: totalCost, tokens: totalTokens };
+    if (!reply.session) throw new QuestionResumeError(`${agent.name}: cannot ask a question without a session ID`);
+    const question = parseQuestion(text.slice("@@ORCH_QUESTION@@".length));
+    let answer: string;
+    try {
+      answer = await awaitQuestion(agent.name, ctx.questionRound, question, questionTask);
+    } catch (e) {
+      throw new QuestionResumeError(`${agent.name}: could not receive the answer: ${msg(e)}`, { cause: e });
+    }
+    answered = true;
+    resume = reply.session;
+    prompt = `The user answered your question: ${JSON.stringify(answer)}\nContinue your original task and follow its reply format.` + questionFormat;
+  }
+}
+
+class QuestionResumeError extends Error {}
+
+type AgentQuestion = { question: string; options: string[] };
+function parseQuestion(text: string): AgentQuestion {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (e) {
+    throw new QuestionResumeError("agent returned an invalid question", { cause: e });
+  }
+  if (!value || typeof value !== "object" || !("question" in value) || !("options" in value))
+    throw new QuestionResumeError("agent returned an invalid question");
+  const { question, options } = value;
+  if (
+    typeof question !== "string" ||
+    !question.trim() ||
+    question.length > 2000 ||
+    !Array.isArray(options) ||
+    options.length > 5 ||
+    !options.every((o: unknown) => typeof o === "string" && !!o.trim() && o.length <= 500)
+  )
+    throw new QuestionResumeError("agent returned an invalid question or options");
+  return { question: redactOutput(question.trim()), options: options.map((o: string) => redactOutput(o.trim())) };
+}
+
+const pendingQuestionFiles = new Set<string>();
+process.on("exit", () => {
+  for (const file of pendingQuestionFiles) {
+    try {
+      rmSync(file, { force: true });
+    } catch (e) {
+      console.error(`could not remove pending question: ${msg(e)}`);
+    }
+  }
+});
+
+async function awaitQuestion(agent: string, round: number | undefined, question: AgentQuestion, taskId?: number): Promise<string> {
+  const id = randomUUID();
+  const pending = join(QUESTIONS_DIR, `${id}.json`);
+  const answerFile = join(QUESTIONS_DIR, `${id}.answer.json`);
+  const claim = join(QUESTIONS_DIR, `${id}.claim`);
+  const lock = JSON.parse(readFileSync(RUN_LOCK, "utf8")) as LockInfo;
+  pendingQuestionFiles.add(pending);
+  pendingQuestionFiles.add(answerFile);
+  pendingQuestionFiles.add(claim);
+  try {
+    writeFileAtomic(pending, JSON.stringify({ id, lockId: lock.id, agent, round, ...question }));
+    emit("question_wait", { id, agent, round, ...(taskId !== undefined ? { taskId } : {}), ...question });
+    console.log(`\n${agent} asks: ${question.question}\n${question.options.map((o) => `  - ${o}`).join("\n")}\nAnswer with: orch answer ${id} (text on stdin)`);
+    for (;;) {
+      if (existsSync(answerFile)) {
+        const answer: unknown = JSON.parse(readFileSync(answerFile, "utf8"));
+        if (typeof answer !== "string" || !answer.trim() || answer.length > 4000) throw new Error("invalid answer to agent question");
+        emit("question_answered", { id });
+        return answer;
+      }
+      await sleep(250);
+    }
+  } finally {
+    for (const file of [pending, answerFile, claim]) {
+      rmSync(file, { force: true });
+      pendingQuestionFiles.delete(file);
+    }
+  }
+}
+
+function answerQuestion(id: string | undefined) {
+  if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) throw new Error("usage: orch answer ID (answer on stdin)");
+  const pending = join(QUESTIONS_DIR, `${id}.json`);
+  if (!existsSync(pending) || !existsSync(RUN_LOCK)) throw new Error("no active question with that ID");
+  const q = JSON.parse(readFileSync(pending, "utf8")) as { lockId: string };
+  const lock = JSON.parse(readFileSync(RUN_LOCK, "utf8")) as LockInfo;
+  if (q.lockId !== lock.id || Date.now() - statSync(RUN_LOCK).mtimeMs >= LOCK_STALE_MS || (lock.host === hostname() && !pidAlive(lock.pid)))
+    throw new Error("no active question with that ID");
+  const answer = readFileSync(0, "utf8").trim();
+  if (!answer || answer.length > 4000) throw new Error("answer must be between 1 and 4000 characters");
+  const file = join(QUESTIONS_DIR, `${id}.answer.json`);
+  const claim = join(QUESTIONS_DIR, `${id}.claim`);
+  const tmp = join(QUESTIONS_DIR, `${id}.answer.${process.pid}.tmp`);
+  const fd = openSync(claim, "wx", 0o600);
+  closeSync(fd);
+  try {
+    if (!existsSync(pending)) throw new Error("no active question with that ID");
+    writeFileSync(tmp, JSON.stringify(answer), { flag: "wx", mode: 0o600 });
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    rmSync(claim, { force: true });
+    throw e;
+  }
+  console.log("answer sent");
+}
+
+async function runWithRetry(
+  agent: Entry,
+  model: string,
+  prompt: string,
+  ctx: RunCtx,
+  readOnly: boolean,
+  resume?: string,
+  activity?: ActivityCallback,
+): Promise<Reply> {
   for (let attempt = 1; ; attempt++) {
     await respectUsageCap(ctx);
     try {
@@ -1984,6 +2148,7 @@ async function watchPullRequest(gb: GoalBranch, goal: string, o: Opts, lr: LastR
       timeoutMs: o.agentTimeoutMs,
       usageCap: o.usageCap,
       onLimit: o.onLimit,
+      ask: o.ask,
     };
     const fixLr: LastRun = { goal: fixGoal, status: "running", cost: 0, state: [] };
     let cp = "";
@@ -2208,6 +2373,7 @@ type Opts = {
   pr: boolean;
   /** Wait for a human to approve, edit or reject each plan before building. */
   approvePlan: boolean;
+  ask: boolean;
   /** When the queue runs dry, check the brief (spec.md) against the code and queue what is missing. */
   coverage: boolean;
   /** loop: how often a failed goal is tried again, one power tier higher each time, before its dependents are blocked. */
@@ -2234,6 +2400,7 @@ async function execute(
   ctx: RunCtx,
   resume?: { id: string; round: number },
   activity?: ActivityCallback,
+  questionTask?: number,
 ): Promise<Result> {
   const task =
     (t.files?.length ? `${t.task}\n\nYour files (touch only these):\n${t.files.map((f) => `- ${f}`).join("\n")}` : t.task) +
@@ -2254,13 +2421,13 @@ async function execute(
     const before = new Map((t.files ?? []).map((f) => [f, sig(f)]));
     let r: Reply;
     try {
-      r = await run(agent, model, prompt, ctx, false, session, activity);
+      r = await run(agent, model, prompt, ctx, false, session, activity, questionTask);
     } catch (e) {
       // The session may be gone (cleaned up, another machine): start cold once. Never after a timeout or a fatal error.
-      if (!session || isFatal(e) || /timed out after \d/.test(msg(e))) throw e;
+      if (!session || e instanceof QuestionResumeError || isFatal(e) || /timed out after \d/.test(msg(e))) throw e;
       console.warn(`${t.agent}: resuming its session failed (${msg(e).slice(0, 160)}); starting cold`);
       prompt = cold;
-      r = await run(agent, model, prompt, ctx, false, undefined, activity);
+      r = await run(agent, model, prompt, ctx, false, undefined, activity, questionTask);
     }
     cost += r.cost;
     tokens = addTokenUsage(tokens, r.tokens);
@@ -3143,6 +3310,7 @@ async function runRecordedGoal(goal: string, o: Opts, id?: number, brief?: strin
     // An attempt cut short by the usage limit left its work on a branch: carry on from it instead of redoing it.
     const resumed = cp && resumeFrom ? applyParked(resumeFrom) : null;
     passed = await runGoalInner(goal, o, cp, ctx, lr, resumed);
+    ctx.ask = false;
     if (o.notes && !o.dryRun) {
       const rounds = lr.state as { failures: string[] }[];
       appendNotes(goal, passed, rounds.length, goalNotes, rounds[0]?.failures ?? [], rounds.at(-1)?.failures ?? []);
@@ -3286,8 +3454,10 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   /** Implementer sessions from the round before, continued by the next round's tasks (empty after a stuck round). */
   let sessions: Session[] = [];
   ctx.resume = o.resume;
+  ctx.ask = o.ask;
 
   for (let round = 1; round <= o.maxRounds; round++) {
+    ctx.questionRound = round;
     const spentBefore = ctx.budget.spent;
     const tokensBefore = ctx.budget.tokens;
     const roundBase = cp ? git("rev-parse", "HEAD") : "";
@@ -3421,7 +3591,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       try {
         const role: Role = t.agent === "dev" ? "dev" : t.heavy ? "heavy" : "impl";
         const model = modelFor(agentPower.get(t.agent) ?? power, agentModels.get(t.agent) ?? models, role, t.agent);
-        const r = await execute(t, byName.get(t.agent)!, model, ctx, prev && { id: prev.id, round: prev.round }, taskActivity(round, id));
+        const r = await execute(t, byName.get(t.agent)!, model, ctx, prev && { id: prev.id, round: prev.round }, taskActivity(round, id), id);
         const status = /Status:\s*(COMPLETE|PARTIAL|FAILED)/i.exec(r.out)?.[1]?.toUpperCase() ?? (r.out.startsWith("PHANTOM") ? "PHANTOM" : "UNKNOWN");
         statuses.set(t, status);
         if (r.session) roundSessions.push({ agent: t.agent, id: r.session, files: t.files ?? [], round });
@@ -3573,6 +3743,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
             true,
             undefined,
             taskActivity(round, id),
+            id,
           );
           reportText = r.text;
           const v = asVerdict(extractJson<Verdict>(r.text));
@@ -4169,6 +4340,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   // A pull request needs a branch of its own.
   const branch = pr || !!values.branch || cfg.branch === true;
   const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
+  const ask = !values["no-ask"] && (!!values.ask || cfg.ask === true);
   const coverage = !values["no-coverage"] && cfg.coverage !== false;
   const intake = parseIntake(values.intake ?? cfg.intake);
   const protect =
@@ -4210,6 +4382,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     branch,
     pr,
     approvePlan,
+    ask,
     coverage,
     retries,
     intake,
@@ -4250,6 +4423,8 @@ async function main() {
       "diff-critic": { type: "boolean", default: false },
       branch: { type: "boolean", default: false },
       "approve-plan": { type: "boolean", default: false },
+      ask: { type: "boolean", default: false },
+      "no-ask": { type: "boolean", default: false },
       reject: { type: "string" },
       "plan-stdin": { type: "boolean", default: false },
       "spec-file": { type: "string" },
@@ -4276,7 +4451,6 @@ async function main() {
       review: { type: "boolean", default: false },
       reviewers: { type: "string" },
       details: { type: "boolean", default: false },
-      json: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
     },
   });
@@ -4355,6 +4529,9 @@ async function main() {
     }
     case "approve":
       return approve(values);
+    case "answer":
+      if (rest.length !== 1) throw new Error("usage: orch answer ID (answer on stdin)");
+      return answerQuestion(rest[0]);
     case "intake": {
       const sources = [
         ...(values.github ? parseIntake(`github:${values.github}`) : []),

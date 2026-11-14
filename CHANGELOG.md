@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Opt-in agent decision cards with suggested or free-text answers, independent parallel questions and read-only history.
+
 ### Changed
 - Updated the project site and screenshot to show run history and task timelines.
 

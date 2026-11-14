@@ -13,6 +13,8 @@ export function notificationFor(repo: string, goal: string | undefined, e: Ev): 
         : { title: `${repo}: goal failed`, body: [what, typeof e.error === "string" ? e.error : ""].filter(Boolean).join("\n") || "QA did not pass." };
     case "approval_wait":
       return { title: `${repo}: plan waiting for you`, body: typeof e.summary === "string" && e.summary ? e.summary : "Build it, edit it or send it back." };
+    case "question_wait":
+      return { title: `${repo}: agent needs your input`, body: typeof e.agent === "string" ? `${e.agent} has a question.` : "An agent has a question." };
     case "waiting": {
       const until = typeof e.until === "number" ? new Date(e.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "later";
       return e.reason === "usage_cap"

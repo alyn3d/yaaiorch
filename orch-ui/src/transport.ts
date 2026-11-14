@@ -190,6 +190,7 @@ const COMMANDS: Record<string, string> = {
   learn: "learn_repo",
   share: "share_repo",
   approve: "approve_plan",
+  answer: "answer_question",
   retry: "retry_goal",
   intake: "intake_goals",
   split: "split_brief",

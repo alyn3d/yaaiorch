@@ -136,6 +136,7 @@ export type RunView = {
   ci?: { state: string; failed: string[] };
   /** --approve-plan: the plan waiting for an answer (`approval_wait`), cleared by `approval`. */
   approval?: { round: number; summary: string; tasks: { agent: string; phase: string; task: string; files?: string[] }[]; error?: string };
+  questions?: { id: string; agent: string; round?: number; taskId?: number; question: string; options: string[]; answered: boolean }[];
   maxRounds: number;
   dryRun: boolean;
   status: "running" | "passed" | "failed";

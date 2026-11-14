@@ -243,13 +243,20 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   `.venv/`) are kept out of git. The command runs packages' install scripts with your rights, so use it only for
   projects you would install yourself (`npm install --ignore-scripts` is safer).
 - **Notifications** (**Notify** in the header, off until you turn it on): a desktop notification when a goal
-  passes or fails, a plan waits for your approval, or a run waits for the usage limit or your usage cap, only
+  passes or fails, an agent or plan needs your input, or a run waits for the usage limit or your usage cap, only
   while the window is not in front. The desktop app uses the system's notifications; the browser asks for
   permission when you turn it on.
 - **Plan approval** (optional, **Approve plans** in the run settings, `--approve-plan`): after planning, the
   run waits for you. The run panel shows the plan with **Build it**, **Edit plan** (as JSON, checked before it
   is used) and **Send back** with a reason, which the architect plans again with. In a terminal: `orch approve`,
   `orch approve --reject "why"`, or edit `.orchestrator/plan-pending.json` and `orch approve --plan-stdin <` it.
+- **Agent questions** (optional, **Agent questions** in run settings, `--ask`, or `"ask": true` in config):
+  when an agent needs a consequential decision it can pause and show suggested answers or accept your own text.
+  Parallel agents can ask independently; the run waits until each is answered or stopped. In a terminal, send the
+  answer on stdin to `orch answer <question-id>`; `--no-ask` overrides the config. This uses a completed Claude turn and a forked session to continue,
+  rather than an interactive Claude tool; an agent must choose to ask. Answers are not included in question events,
+  but are briefly stored in `.orchestrator/questions/` and are sent to the agent, which may repeat them in its output.
+  Historical questions are read-only.
 - **A branch and a pull request per goal** (optional, **Branch per goal** / **Open pull request** in the run
   settings, `--branch` / `--pr`): each goal runs on its own `orch/<id>-<slug>` branch and orch switches back
   afterwards, so your branch is never changed. With `--pr`, a passed goal's branch is pushed to `origin` and

@@ -47,6 +47,7 @@ export type RunSettings = {
   pr: boolean;
   /** Wait for you to approve, edit or reject each plan before building (--approve-plan). */
   approvePlan: boolean;
+  ask: boolean;
   plugins: PluginSettings;
 };
 
@@ -66,6 +67,7 @@ export const DEFAULT_SETTINGS: RunSettings = {
   branch: false,
   pr: false,
   approvePlan: false,
+  ask: false,
   plugins: DEFAULT_PLUGINS,
 };
 
@@ -182,6 +184,9 @@ export function SettingsPanel({ repo, power, settings, onChange }: { repo: strin
           title="After planning, the run waits for you: build the plan, edit it, or send it back to the architect with a reason. Nothing is built until you answer."
         >
           <input type="checkbox" checked={settings.approvePlan} onChange={(e) => onChange({ ...settings, approvePlan: e.target.checked })} /> Approve plans
+        </label>
+        <label className="check" title="Allow agents to pause and ask you to make a decision. Runs can wait indefinitely for your answer.">
+          <input type="checkbox" checked={settings.ask} onChange={(e) => onChange({ ...settings, ask: e.target.checked })} /> Agent questions
         </label>
         <label
           className="check"

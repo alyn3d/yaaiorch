@@ -25,6 +25,8 @@
 //   FAKE_NOWRITE=1           implementers claim COMPLETE but write nothing
 //   FAKE_REPORT=<text>      implementer report text before its status line
 //   FAKE_NO_SESSION=1        a call with --resume fails like the real CLI when the session is gone
+//   FAKE_ASK=fe,be           those agents ask one question each when offered the question protocol
+//   FAKE_ASK_NO_SESSION=1    omit the session ID from the question reply
 //   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
 //   FAKE_TIDY=bad            the notes tidy call returns no usable notes
 //   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
@@ -70,7 +72,7 @@ if (args[0] === "plugin") {
 const opt = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
 const env = process.env;
 const agent = opt("--agent");
-const prompt = readFileSync(0, "utf8");
+let prompt = readFileSync(0, "utf8");
 const log = (s) => env.FAKE_LOG && appendFileSync(env.FAKE_LOG, s + "\n");
 const cost = Number(env.FAKE_COST ?? 0.05);
 const cap = opt("--max-budget-usd");
@@ -171,6 +173,20 @@ if (cap !== null && cost > Number(cap)) {
   log(`${agent}: over budget`);
   process.stdout.write(JSON.stringify({ type: "result", subtype: "error_max_budget_usd", is_error: true, total_cost_usd: cost }));
   process.exit(1);
+}
+
+const questionFlag = `.orchestrator/fake-question-${agent}`;
+if (env.FAKE_ASK?.split(",").includes(agent) && prompt.includes("@@ORCH_QUESTION@@") && !existsSync(questionFlag)) {
+  writeFileSync(questionFlag, prompt);
+  reply(
+    `@@ORCH_QUESTION@@${JSON.stringify({ question: `How should ${agent} proceed?`, options: ["Option A", "Option B"] })}`,
+    env.FAKE_ASK_NO_SESSION ? { session_id: null } : {},
+  );
+  process.exit(0);
+}
+if (prompt.startsWith("The user answered your question:") && existsSync(questionFlag)) {
+  log(`${agent}: answer=${JSON.parse(prompt.split("\n")[0].slice("The user answered your question: ".length))}`);
+  prompt = readFileSync(questionFlag, "utf8");
 }
 
 if (prompt.includes("Review this change")) {

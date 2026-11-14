@@ -261,6 +261,10 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
     assert.deepEqual(n("shop", "Add  CSV\nexport", { type: "goal_end", passed: true }), { title: "shop: goal passed", body: "Add CSV export" });
     assert.deepEqual(n("shop", "g", { type: "goal_end", passed: false, error: "budget used up" }), { title: "shop: goal failed", body: "g\nbudget used up" });
     assert.equal(n("shop", "g", { type: "approval_wait", summary: "two tasks" }).title, "shop: plan waiting for you");
+    assert.deepEqual(n("shop", "g", { type: "question_wait", agent: "be", question: "private details" }), {
+      title: "shop: agent needs your input",
+      body: "be has a question.",
+    });
     assert.match(n("shop", "g", { type: "waiting", reason: "usage_limit", until: Date.now() + 60_000 }).title, /usage limit/);
     assert.match(n("shop", "g", { type: "waiting", reason: "usage_cap", until: Date.now() }).title, /usage cap/);
     assert.deepEqual(n("shop", "g", { type: "blocked", id: 4, note: "needs #2, which failed" }), {
@@ -395,6 +399,23 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     ({ roundPhases, failureSummary, taskTimeline } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "runProgress.ts")).href, import.meta.url));
   });
   const fold = (events) => events.reduce((run, e, i) => reduce(run, { t: 1000 + i, ...e }), null);
+  test("questions remain independently answered in the replay", () => {
+    const run = fold([
+      { type: "goal_start", goal: "g", maxRounds: 1 },
+      { type: "question_wait", id: "a", agent: "be", question: "First?", options: ["Yes"] },
+      { type: "question_wait", id: "b", agent: "fe", question: "Second?", options: [] },
+      { type: "question_answered", id: "b" },
+      { type: "stopped" },
+    ]);
+    assert.deepEqual(
+      run.questions.map((q) => [q.id, q.answered]),
+      [
+        ["a", false],
+        ["b", true],
+      ],
+    );
+    assert.equal(run.status, "failed");
+  });
   const start = [
     { type: "goal_start", goal: "g", maxRounds: 3, dryRun: false, maxCost: 2 },
     { type: "round_start", round: 1, power: "heavy", models: { impl: "sonnet" } },
@@ -410,6 +431,27 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
       ],
     },
   ];
+
+  test("phase timeline shows a question wait only when all active tasks in the phase are waiting", () => {
+    const planning = fold([...start.slice(0, 2), { type: "question_wait", id: "p", round: 1, agent: "architect", question: "Which?", options: [] }]);
+    assert.equal(roundPhases(planning, planning.rounds[0])[0].state, "waiting");
+    const plan = {
+      ...start[2],
+      tasks: [...start[2].tasks, { id: 2, agent: "fe", phase: "build", task: "u", files: ["b.js"] }],
+    };
+    const building = fold([
+      ...start.slice(0, 2),
+      plan,
+      { type: "task_start", round: 1, id: 0 },
+      { type: "task_start", round: 1, id: 2 },
+      { type: "question_wait", id: "a", round: 1, taskId: 0, agent: "be", question: "First?", options: [] },
+    ]);
+    assert.equal(roundPhases(building, building.rounds[0])[2].state, "active");
+    const waiting = reduce(building, { type: "question_wait", id: "b", round: 1, taskId: 2, agent: "fe", question: "Second?", options: [], t: 10 });
+    assert.equal(roundPhases(waiting, waiting.rounds[0])[2].state, "waiting");
+    const answered = reduce(waiting, { type: "question_answered", id: "a", t: 11 });
+    assert.equal(roundPhases(answered, answered.rounds[0])[2].state, "active");
+  });
 
   test("a goal from start to pass: tasks, costs, reviews, checks", () => {
     const run = fold([

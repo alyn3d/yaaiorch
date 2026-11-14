@@ -593,6 +593,7 @@ struct Extra {
     branch: Option<bool>,
     pr: Option<bool>,
     approve_plan: Option<bool>,
+    ask: Option<bool>,
     /// A GitHub label: loops pull new issues with it in (--intake github:LABEL).
     intake_label: Option<String>,
     plugins: Option<PluginOpts>,
@@ -679,6 +680,9 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if extra.approve_plan.unwrap_or(false) {
         v.push("--approve-plan".into());
+    }
+    if let Some(ask) = extra.ask {
+        v.push(if ask { "--ask" } else { "--no-ask" }.into());
     }
     if let Some(l) = extra.intake_label.as_deref().filter(|l| valid_label(l)) {
         v.extend(["--intake".into(), format!("github:{l}")]);
@@ -890,6 +894,7 @@ fn run_goal(
     branch: Option<bool>,
     pr: Option<bool>,
     approve_plan: Option<bool>,
+    ask: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
@@ -910,6 +915,7 @@ fn run_goal(
         branch,
         pr,
         approve_plan,
+        ask,
         plugins,
     };
     let mut args = vec!["run".to_string()];
@@ -940,6 +946,7 @@ fn run_loop(
     branch: Option<bool>,
     pr: Option<bool>,
     approve_plan: Option<bool>,
+    ask: Option<bool>,
     intake_label: Option<String>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
@@ -956,6 +963,7 @@ fn run_loop(
         branch,
         pr,
         approve_plan,
+        ask,
         intake_label,
         plugins,
     };
@@ -1202,6 +1210,34 @@ fn approve_plan(app: AppHandle, repo: String, plan: Option<Value>, reject: Optio
     Ok(())
 }
 
+#[tauri::command(async)]
+fn answer_question(app: AppHandle, repo: String, id: String, answer: String) -> Result<(), String> {
+    use std::io::Write;
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let mut child = node_cmd(&app, &dir, &["answer".into(), id])?
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("could not open orch stdin")?
+        .write_all(answer.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch answer failed")
+            .to_string());
+    }
+    Ok(())
+}
+
 /// `orch share`: proposes a CLAUDE.md section on an orchestrator/claude-md-* branch (the working tree is untouched).
 #[tauri::command]
 fn share_repo(
@@ -1412,6 +1448,7 @@ fn main() {
             learn_repo,
             share_repo,
             approve_plan,
+            answer_question,
             split_brief,
             accept_split,
             stop_after,
@@ -1495,6 +1532,14 @@ mod tests {
         assert_eq!(tail("orch: ready"), v(&["--intake", "github:orch: ready"]));
         assert!(tail("a;rm -rf /").is_empty());
         assert!(tail("").is_empty());
+    }
+
+    #[test]
+    fn question_flags() {
+        let flags_for = |ask| flags("heavy", 1, false, &Extra { ask, ..Default::default() })[4..].to_vec();
+        assert_eq!(flags_for(Some(true)), ["--ask"]);
+        assert_eq!(flags_for(Some(false)), ["--no-ask"]);
+        assert!(flags_for(None).is_empty());
     }
 
     #[test]

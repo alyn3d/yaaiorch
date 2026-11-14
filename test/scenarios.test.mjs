@@ -776,6 +776,126 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.match(orch(dir, ["approve"]).out, /no plan is waiting/);
   });
 
+  test("--ask: parallel questions accept independent suggested and free-text answers and resume their sessions", async () => {
+    const dir = repo();
+    const planFile = join(dir, ".orchestrator", "fake-plan.json");
+    mkdirSync(dirname(planFile), { recursive: true });
+    writeFileSync(
+      planFile,
+      JSON.stringify({
+        summary: "parallel",
+        tasks: [
+          { agent: "be", phase: "build", task: "api", files: ["src/api.ts"] },
+          { agent: "fe", phase: "build", task: "ui", files: ["src/ui.ts"] },
+          { agent: "qa", phase: "verify", task: "verify" },
+        ],
+      }),
+    );
+    const run = orchAsync(dir, ["run", "decide", "--max-rounds", "1", "--ask"], { FAKE_ASK: "be,fe", FAKE_PLAN_FILE: planFile });
+    const events = () =>
+      run
+        .output()
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("@@ORCH@@ "))
+        .map((line) => JSON.parse(line.slice(9)));
+    const answer = (id, value) => spawnSync(process.execPath, [TSX, ORCH, "answer", id], { cwd: dir, input: value, encoding: "utf8" });
+    try {
+      await until(() => events().filter((e) => e.type === "question_wait").length === 2);
+      const questions = events().filter((e) => e.type === "question_wait");
+      assert.equal(run.child.exitCode, null);
+      assert.notEqual(questions[0].id, questions[1].id);
+      assert.deepEqual(questions.map((q) => q.taskId).sort(), [0, 1]);
+      assert.notEqual(answer("../bad", "x").status, 0);
+      assert.notEqual(answer(questions[0].id, " ").status, 0);
+      assert.equal(answer(questions[0].id, questions[0].options[0]).status, 0);
+      assert.equal(answer(questions[1].id, "A custom choice").status, 0);
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.equal(events().filter((e) => e.type === "question_answered").length, 2);
+      assert.equal(events().find((e) => e.type === "goal_end").cost, 0.3);
+      assert.doesNotMatch(out, /A custom choice/);
+      const log = readFileSync(`${dir}.fake.log`, "utf8");
+      assert.match(log, /answer=Option A/);
+      assert.match(log, /answer=A custom choice/);
+      assert.match(log, /resume=fake-/);
+      assert.notEqual(answer(questions[0].id, "too late").status, 0);
+      const historyDir = join(dir, ".orchestrator", "runs");
+      const history = readFileSync(join(historyDir, readdirSync(historyDir)[0]), "utf8");
+      assert.doesNotMatch(history, /A custom choice/);
+      assert.equal(readdirSync(join(dir, ".orchestrator", "questions")).length, 0);
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+  });
+
+  test("--ask: missing session ID fails explicitly instead of waiting", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "missing session", "--ask", "--max-rounds", "1"], { FAKE_ASK: "architect", FAKE_ASK_NO_SESSION: "1" });
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /cannot ask a question without a session ID/);
+    assert.equal(r.ev("question_wait").length, 0);
+  });
+
+  test("--ask: a reviewer question error cannot silently approve the review", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "review question", "--ask", "--review", "--max-rounds", "1"], {
+      FAKE_ASK: "reviewer",
+      FAKE_ASK_NO_SESSION: "1",
+    });
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /cannot ask a question without a session ID/);
+    assert.doesNotMatch(r.out, /going on without it/);
+  });
+
+  test("--no-ask overrides questions enabled in repo config", () => {
+    const dir = repo();
+    writeConfig(dir, { ask: true });
+    const r = orch(dir, ["run", "do not ask", "--no-ask", "--dry-run"], { FAKE_ASK: "architect" });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.ev("question_wait").length, 0);
+  });
+
+  test("--ask: a stopped question cannot be answered", async () => {
+    const dir = repo();
+    const run = orchAsync(dir, ["run", "stop question", "--ask", "--max-rounds", "1"], { FAKE_ASK: "architect" });
+    const pendingDir = join(dir, ".orchestrator", "questions");
+    try {
+      await until(() => existsSync(pendingDir) && readdirSync(pendingDir).some((f) => f.endsWith(".json")));
+      const id = readdirSync(pendingDir)
+        .find((f) => f.endsWith(".json"))
+        .slice(0, -5);
+      run.child.kill();
+      await run.done;
+      const answer = spawnSync(process.execPath, [TSX, ORCH, "answer", id], { cwd: dir, input: "too late", encoding: "utf8" });
+      assert.notEqual(answer.status, 0);
+      assert.match(answer.stderr + answer.stdout, /no active question/);
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+  });
+
+  test("--ask: a failed continuation reports the error rather than starting the task cold", async () => {
+    const dir = repo();
+    const run = orchAsync(dir, ["run", "resume failure", "--ask", "--max-rounds", "1"], { FAKE_ASK: "architect", FAKE_NO_SESSION: "1" });
+    const pendingDir = join(dir, ".orchestrator", "questions");
+    try {
+      await until(() => existsSync(pendingDir) && readdirSync(pendingDir).some((f) => f.endsWith(".json")));
+      const id = readdirSync(pendingDir)
+        .find((f) => f.endsWith(".json"))
+        .slice(0, -5);
+      const answer = spawnSync(process.execPath, [TSX, ORCH, "answer", id], { cwd: dir, input: "yes", encoding: "utf8" });
+      assert.equal(answer.status, 0, answer.stderr);
+      const { code, out } = await run.done;
+      assert.notEqual(code, 0);
+      assert.match(out, /could not continue after the answer/);
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+  });
+
   test("greenfield: checks are read again after the build, so a package.json written this round is checked", () => {
     const dir = repo();
     const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_BE_FILE: "package.json" });

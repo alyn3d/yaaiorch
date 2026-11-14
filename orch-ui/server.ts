@@ -360,6 +360,7 @@ const flags = (b: {
   branch?: boolean;
   pr?: boolean;
   approvePlan?: boolean;
+  ask?: boolean;
   /** A GitHub label: loops pull new issues with it in (--intake github:LABEL). */
   intakeLabel?: string;
   plugins?: PluginOpts;
@@ -381,6 +382,7 @@ const flags = (b: {
   ...(b.branch ? ["--branch"] : []),
   ...(b.pr ? ["--pr"] : []),
   ...(b.approvePlan ? ["--approve-plan"] : []),
+  ...(b.ask === true ? ["--ask"] : b.ask === false ? ["--no-ask"] : []),
   ...(typeof b.intakeLabel === "string" && LABEL.test(b.intakeLabel) ? ["--intake", `github:${b.intakeLabel}`] : []),
   ...pluginFlags(b.plugins),
 ];
@@ -449,6 +451,14 @@ const approvePlan = (s: Session, b: { plan?: unknown; reject?: string }) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     );
     child.stdin?.end(b.plan && typeof b.reject !== "string" ? JSON.stringify(b.plan) : "");
+  });
+
+const answerQuestion = (s: Session, id: string, answer: string) =>
+  new Promise<void>((ok, fail) => {
+    const child = execFile(process.execPath, [TSX_CLI, ORCH, "answer", id], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    );
+    child.stdin?.end(answer);
   });
 
 const body = (req: http.IncomingMessage) =>
@@ -723,6 +733,11 @@ http
         }
         if (url.pathname === "/api/approve") {
           await approvePlan(s, b);
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/answer") {
+          if (typeof b.id !== "string" || typeof b.answer !== "string") return json(400, { error: "question ID and answer required" });
+          await answerQuestion(s, b.id, b.answer);
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/share") {

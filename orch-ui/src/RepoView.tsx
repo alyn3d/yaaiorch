@@ -80,6 +80,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     branch: settings.branch || settings.pr,
     pr: settings.pr,
     approvePlan: settings.approvePlan,
+    ask: settings.ask,
     plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;
@@ -99,6 +100,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     settings.diffCritic && "diff critic",
     settings.review && "review lens",
     settings.approvePlan && "approve plans",
+    settings.ask && "agent questions",
     (settings.branch || settings.pr) && (settings.pr ? "pull request" : "branch per goal"),
   ].filter(Boolean) as string[];
   const name = repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
@@ -250,7 +252,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
       <div className="repo-grid">
         <div className="col-main">
           {run ? (
-            <RunPanel run={run} onAnswer={(b) => call("approve", b)} />
+            <RunPanel run={run} onAnswer={(b) => call("approve", b)} onQuestionAnswer={(b) => call("answer", b)} />
           ) : (
             <section className="card">
               <div className="card-head">

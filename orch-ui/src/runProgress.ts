@@ -51,14 +51,23 @@ function tasksState(tasks: TaskView[], planned: boolean, live: boolean): PhaseSt
 export function roundPhases(run: RunView, round: RoundView): Phase[] {
   const live = run.status === "running" && run.rounds.at(-1) === round && round.passed === undefined;
   const planned = !!round.planned || !!round.summary || round.tasks.length > 0;
+  const pendingQuestions = live ? (run.questions ?? []).filter((q) => !q.answered && q.round === round.round) : [];
   const plan: PhaseState =
-    round.mode === "direct" ? "skipped" : run.approval?.round === round.round && live ? "waiting" : planned ? "done" : live ? "active" : "interrupted";
-  const forPhase = (phase: TaskView["phase"]) =>
-    tasksState(
-      round.tasks.filter((t) => t.phase === phase),
-      planned,
-      live,
-    );
+    round.mode === "direct"
+      ? "skipped"
+      : (run.approval?.round === round.round && live) || (!planned && pendingQuestions.length)
+        ? "waiting"
+        : planned
+          ? "done"
+          : live
+            ? "active"
+            : "interrupted";
+  const forPhase = (phase: TaskView["phase"]) => {
+    const tasks = round.tasks.filter((t) => t.phase === phase);
+    const running = tasks.filter((t) => t.status === "running");
+    if (live && running.length && running.every((t) => pendingQuestions.some((q) => q.taskId === t.id))) return "waiting";
+    return tasksState(tasks, planned, live);
+  };
   const checks: PhaseState = round.checks
     ? !round.checks.length
       ? "skipped"

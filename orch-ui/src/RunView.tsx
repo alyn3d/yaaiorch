@@ -261,7 +261,67 @@ function Approval({ a, onAnswer }: { a: NonNullable<Run["approval"]>; onAnswer: 
   );
 }
 
-export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record<string, unknown>) => Promise<boolean> }) {
+function QuestionCard({
+  question,
+  active,
+  onAnswer,
+}: {
+  question: NonNullable<Run["questions"]>[number];
+  active: boolean;
+  onAnswer?: (body: Record<string, unknown>) => Promise<boolean>;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const answer = async (value: string) => {
+    setBusy(true);
+    if (!(await onAnswer?.({ id: question.id, answer: value }))) setBusy(false);
+  };
+  return (
+    <div className="approval">
+      <div className="row">
+        <strong>
+          {question.agent}
+          {question.round ? ` · Round ${question.round}` : ""}
+        </strong>
+        <span className={`badge ${question.answered ? "done" : "warn"}`}>{question.answered ? "answered" : active ? "waiting for you" : "unanswered"}</span>
+      </div>
+      <p>{question.question}</p>
+      {active && onAnswer && (
+        <>
+          <div className="row">
+            {question.options.map((option, i) => (
+              <button key={i} disabled={busy} onClick={() => answer(option)}>
+                {option}
+              </button>
+            ))}
+          </div>
+          <div className="row">
+            <input
+              aria-label={`Answer ${question.agent}`}
+              placeholder="Or write your own answer"
+              maxLength={4000}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+            <button className="primary" disabled={busy || !text.trim()} onClick={() => answer(text.trim())}>
+              Send answer
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function RunPanel({
+  run,
+  onAnswer,
+  onQuestionAnswer,
+}: {
+  run: Run;
+  onAnswer?: (body: Record<string, unknown>) => Promise<boolean>;
+  onQuestionAnswer?: (body: Record<string, unknown>) => Promise<boolean>;
+}) {
   const now = useNow(run.status === "running");
   const failure = failureSummary(run);
   return (
@@ -301,6 +361,9 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
       {run.approval && run.status === "running" && onAnswer && (
         <Approval key={run.approval.round + run.approval.summary} a={run.approval} onAnswer={onAnswer} />
       )}
+      {run.questions?.map((q) => (
+        <QuestionCard key={q.id} question={q} active={!q.answered && run.status === "running" && !!onQuestionAnswer} onAnswer={onQuestionAnswer} />
+      ))}
       {run.branch && (
         <p className="muted">
           Branch: {run.branch.name} (from {run.branch.base}, which stays unchanged)

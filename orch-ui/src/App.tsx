@@ -205,7 +205,7 @@ export function App() {
             <span className="spacer" />
             <label
               className="check switch"
-              title="A desktop notification when a goal passes or fails, a plan waits for your approval, or a run waits for the usage limit (only while this window is not in front)"
+              title="A desktop notification when a goal passes or fails, an agent or plan needs your input, or a run waits for the usage limit (only while this window is not in front)"
             >
               <input type="checkbox" role="switch" checked={notifyOn} onChange={(e) => void setNotifyOn(e.target.checked).then(setNotifyOnState)} /> Notify
             </label>
