@@ -5,6 +5,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-14
+
 ### Added
 - **Run visualization**: per-round phase timelines, a focused failure summary and bounded live task activity categories.
 - **Parallel task timeline**: see task durations and overlap in live and recorded rounds.
@@ -351,7 +353,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/alyn3d/yaaiorch/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/alyn3d/yaaiorch/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/alyn3d/yaaiorch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/alyn3d/yaaiorch/compare/v0.3.0...v0.4.0
