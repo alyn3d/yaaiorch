@@ -19,6 +19,7 @@ export type Item = {
   priority?: number;
 };
 export type TokenUsage = { input: number; output: number; cacheRead: number; cacheCreation: number };
+export type RoundDiff = { text?: string; truncated?: boolean; unavailable?: string };
 export type Round = {
   round: number;
   plan: string;
@@ -28,6 +29,7 @@ export type Round = {
   power?: Power;
   cost?: number;
   tokens?: TokenUsage;
+  diff?: RoundDiff;
 };
 /** .orchestrator/last-run.json, written by orch.ts. `checkpoint` is set only while that branch still exists. */
 export type LastRun = {
@@ -71,6 +73,8 @@ export type TaskView = {
   touched: string[];
   failures: string[];
   error?: string;
+  report?: string;
+  reportTruncated?: boolean;
   cost?: number;
   tokens?: TokenUsage;
   startedAt?: number;
@@ -95,6 +99,7 @@ export type RoundView = {
   failures: string[];
   cost?: number;
   tokens?: TokenUsage;
+  diff?: RoundDiff;
   /** From a `stuck` event: why the next round escalates, or why the goal stopped. */
   note?: string;
   /** From a `critic` event: the plan critic's review (`revised`: the architect re-planned after a rejection). */

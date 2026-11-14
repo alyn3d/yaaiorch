@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { RunView as Run, TaskView, TokenUsage } from "./types";
+import type { RoundDiff, RunView as Run, TaskView, TokenUsage } from "./types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isTauri } from "./transport";
 
@@ -29,6 +29,27 @@ export function TokenCount({ tokens }: { tokens?: TokenUsage }) {
     >
       {tokenNumber.format(tokens.input)} in · {tokenNumber.format(tokens.output)} out
     </span>
+  );
+}
+
+export function DiffViewer({ diff }: { diff?: RoundDiff }) {
+  if (!diff) return null;
+  return (
+    <details className="disclosure round-diff">
+      <summary>Round diff</summary>
+      {diff.unavailable ? (
+        <p className="muted">{diff.unavailable}</p>
+      ) : diff.text ? (
+        <>
+          <pre tabIndex={0} aria-label="Round diff">
+            {diff.text}
+          </pre>
+          {diff.truncated && <p className="muted">Diff truncated at 100,000 characters.</p>}
+        </>
+      ) : (
+        <p className="muted">No changes in this round.</p>
+      )}
+    </details>
   );
 }
 
@@ -74,6 +95,15 @@ function Task({ t, now }: { t: TaskView; now: number }) {
       {t.files.length > 0 && <p className="muted files">{t.files.join(", ")}</p>}
       {t.touched.length > 0 && <p className="muted files">changed: {t.touched.join(", ")}</p>}
       {t.error && <p className="error">{t.error}</p>}
+      {t.report && (
+        <details className="disclosure task-report">
+          <summary>Agent report</summary>
+          <pre tabIndex={0} aria-label={`${t.agent} report`}>
+            {t.report}
+          </pre>
+          {t.reportTruncated && <p className="muted">Report truncated at 4,000 characters.</p>}
+        </details>
+      )}
       {t.failures.length > 0 && (
         <ul className="failures">
           {t.failures.map((f, i) => (
@@ -346,6 +376,7 @@ export function RunPanel({ run, onAnswer }: { run: Run; onAnswer?: (body: Record
               </div>
             ) : null;
           })}
+          <DiffViewer diff={r.diff} />
         </div>
       ))}
     </section>

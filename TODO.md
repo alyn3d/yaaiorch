@@ -164,7 +164,7 @@ Each item should show its effect in the evals before it becomes the default.
 ## 0.6: product and packaging
 
 - [ ] **Run history**: append events to `.orchestrator/runs/<id>.jsonl`, list and replay past runs.
-- [ ] **Per-task output** on the task cards (truncated report in `task_end`), and a diff viewer per round.
+- [x] **Per-task output** on the task cards (truncated report in `task_end`), and a diff viewer per round.
 - [x] **Token counts** next to cost in live and persisted run summaries, rounds, tasks, planning and reviews.
 - [x] **Agent roster page**: view built-in, user-level and project agents plus discovered skills; edit
   project agents or save repo-local overrides without changing global Claude Code definitions.

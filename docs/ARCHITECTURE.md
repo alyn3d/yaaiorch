@@ -157,8 +157,9 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `checks` | round, results[] ({name, command, ok, code, ms}) |
 | `visual` | round, url, shots[] ({target, path, viewport, theme, file}), problems[], observations[], ms: the browser check before QA |
 | `task_start` | round, id, agent, phase, resumed? (the round whose session it continues) |
-| `task_end` | round, id, agent, phase, status, touched[], cost?, failures?, error? |
-| `round_end` | round, passed, failures[], cost |
+| `task_end` | round, id, agent, phase, status, touched[], cost?, failures?, error?, report? (first 4,000 characters, recognized secrets redacted), reportTruncated? |
+| `round_diff` | round, diff ({text?, truncated?, unavailable?}; captured after the build, even if the round ends early) |
+| `round_end` | round, passed, failures[], cost, diff ({text?, truncated?, unavailable?}; first 100,000 characters of this round's Git changes) |
 | `stuck` | round, action (`escalate`/`retry`/`stop`), reason, power?, agents? ({agent: power} when only the failing tasks' agents move up) |
 | `critic` | round, approved, issues[], revised, cost |
 | `loop_stop` | reason (`requested`, or `budget` with spent): the loop exits before its next goal |

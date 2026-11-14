@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pluginOpts } from "./Plugins";
 import type { Power } from "./types";
-import { RunPanel, TokenCount } from "./RunView";
+import { DiffViewer, RunPanel, TokenCount } from "./RunView";
 import { BriefBox } from "./Brief";
 import { OpenIn } from "./OpenIn";
 import { briefProgress, leftText } from "./progress";
@@ -274,6 +274,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
                         ))}
                       </ul>
                     )}
+                    <DiffViewer diff={r.diff} />
                   </div>
                 ))
               ) : (

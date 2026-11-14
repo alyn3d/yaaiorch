@@ -22,6 +22,7 @@
 //   FAKE_HANG_AGENT=<name>   that implementer never returns
 //   FAKE_SLOW=<seconds>      implementers sleep first
 //   FAKE_NOWRITE=1           implementers claim COMPLETE but write nothing
+//   FAKE_REPORT=<text>      implementer report text before its status line
 //   FAKE_NO_SESSION=1        a call with --resume fails like the real CLI when the session is gone
 //   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
 //   FAKE_TIDY=bad            the notes tidy call returns no usable notes
@@ -307,5 +308,5 @@ if (prompt.includes("Review this change")) {
     writeFileSync(env.FAKE_STRAY_FILE, "not in any task's list\n");
   }
   log(`${agent}: wrote ${env.FAKE_NOWRITE ? "nothing" : files.join(",")}`);
-  reply("done\nStatus: COMPLETE");
+  reply(`${env.FAKE_REPORT ?? "done"}\nStatus: COMPLETE`);
 }

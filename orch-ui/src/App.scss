@@ -1196,6 +1196,31 @@ button {
     margin: 0;
   }
 }
+.round-diff,
+.task-report {
+  margin-top: 6px;
+  min-width: 0;
+  > summary {
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  pre {
+    max-height: 360px;
+    overflow: auto;
+    margin: 8px 0 0;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--code);
+    color: var(--text-2);
+    font: 12px/1.5 var(--mono);
+    white-space: pre;
+  }
+}
+.task-report pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .phase {
   margin: 8px 0 2px;
   font-size: 11px;

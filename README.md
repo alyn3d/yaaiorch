@@ -114,6 +114,8 @@ ORCH_REPO=/path/to/your/repo npm start      # http://localhost:4317
 
 On Windows `cmd`: `set "ORCH_REPO=C:\path\to\repo" && npm start`. Open more repos with **+ Repo** in the
 UI (or `ORCH_REPOS`, separated by `;` on Windows and `:` elsewhere); they are remembered.
+Expand **Agent report** on a task card to see its truncated response, or **Round diff** to inspect that round's
+Git changes. Round diffs are also available in the last-run summary; sensitive or unisolatable diffs are hidden.
 
 ### Several repos at once
 

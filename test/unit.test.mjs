@@ -334,6 +334,8 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
         id: 0,
         status: "COMPLETE",
         touched: ["a.js"],
+        report: "Done",
+        reportTruncated: true,
         cost: 0.05,
         tokens: { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 },
       },
@@ -348,7 +350,15 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
         tokens: { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 },
       },
       { type: "checks", round: 1, results: [{ name: "test", ok: true }] },
-      { type: "round_end", round: 1, passed: true, failures: [], cost: 0.2, tokens: { input: 45, output: 15, cacheRead: 9, cacheCreation: 6 } },
+      {
+        type: "round_end",
+        round: 1,
+        passed: true,
+        failures: [],
+        cost: 0.2,
+        tokens: { input: 45, output: 15, cacheRead: 9, cacheCreation: 6 },
+        diff: { text: "+change\n", truncated: true },
+      },
       { type: "goal_end", passed: true, cost: 0.2, tokens: { input: 45, output: 15, cacheRead: 9, cacheCreation: 6 } },
     ]);
     assert.equal(run.status, "passed");
@@ -366,6 +376,9 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
       ],
     );
     assert.deepEqual(r.tasks[0].tokens, { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 });
+    assert.equal(r.tasks[0].report, "Done");
+    assert.equal(r.tasks[0].reportTruncated, true);
+    assert.deepEqual(r.diff, { text: "+change\n", truncated: true });
     assert.deepEqual(r.reviews[0].tokens, { input: 15, output: 5, cacheRead: 3, cacheCreation: 2 });
     assert.deepEqual(
       r.reviews.map((v) => [v.agent, v.lens, v.approved]),
@@ -389,6 +402,11 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     assert.equal(waiting.approval.summary, "s");
     assert.equal(waiting.rounds[0].architect, "done", "no longer planning");
     assert.equal(reduce(waiting, { type: "approval", round: 1, action: "approve", t: 9 }).approval, undefined);
+  });
+
+  test("a round diff stays visible if a goal stops before round_end", () => {
+    const run = fold([...start, { type: "round_diff", round: 1, diff: { text: "+work\n" } }, { type: "goal_end", passed: false }]);
+    assert.deepEqual(run.rounds[0].diff, { text: "+work\n" });
   });
 
   test("stopped: a run killed mid-task fails and its open tasks show STOPPED; a finished run is left alone", () => {

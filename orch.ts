@@ -1294,6 +1294,21 @@ const SECRETS: [string, RegExp][] = [
 const ENV_FILE = /(^|\/)\.env(\.(?!example$|sample$|template$|dist$)[^/]+)?$/i;
 let SECRET_SCAN = true;
 
+/** Never put recognized secret values in structured output or persisted UI summaries. */
+function redactOutput(text: string): string {
+  let safe = text.replace(
+    /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----|$)/g,
+    "[private key redacted]",
+  );
+  for (const [, re] of SECRETS) safe = safe.replace(new RegExp(re.source, `${re.flags}g`), "[secret redacted]");
+  return safe;
+}
+
+function taskReport(text: string) {
+  const safe = redactOutput(text);
+  return { report: safe.slice(0, 4000), ...(safe.length > 4000 ? { reportTruncated: true } : {}) };
+}
+
 /**
  * Secrets in what is about to be committed: the lines added since HEAD in tracked files, all of each new file, and
  * any .env file. Returns where and what (the value itself is never returned or logged).
@@ -1493,6 +1508,35 @@ function diffSummary(cp: string) {
   const stat = git("diff", "--stat", cp, "--", ".", NOT_STATE);
   const untracked = git("ls-files", "--others", "--exclude-standard", "--", ".", NOT_STATE);
   return (stat || "(no changes)") + (untracked ? `\nNew files not committed:\n${untracked}` : "");
+}
+
+type RoundDiff = { text?: string; truncated?: boolean; unavailable?: string };
+
+/** Snapshot changes since this round began, after the commit attempt (which stages new files). */
+function roundDiff(base: string, dirtyAtStart: boolean, secrets: boolean): RoundDiff {
+  if (!base) return { unavailable: "Diffs require a Git repository." };
+  if (dirtyAtStart) return { unavailable: "A previous round left uncommitted changes, so this round's changes cannot be isolated." };
+  if (secrets) return { unavailable: "The diff is hidden because the secret scan found sensitive changes." };
+  try {
+    const args = ["diff", "--no-color", "--no-ext-diff", "--no-renames", base, "--", ".", NOT_STATE];
+    const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", NOT_STATE], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (untracked) return { unavailable: "The diff is unavailable because some new files could not be staged." };
+    const files = execFileSync("git", ["diff", "--name-only", "-z", "--no-renames", base, "--", ".", NOT_STATE], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).split("\0");
+    if (files.some((f) => ENV_FILE.test(f.replace(/\\/g, "/")))) return { unavailable: "The diff is hidden because it includes an .env file." };
+    const text = redactOutput(execFileSync("git", args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }));
+    return { text: text.slice(0, 100_000), ...(text.length > 100_000 ? { truncated: true } : {}) };
+  } catch {
+    console.warn("warning: could not capture the round diff (Git failed or the diff exceeds 8 MiB)");
+    return { unavailable: "Could not capture the diff (Git failed or the diff exceeds 8 MiB)." };
+  }
 }
 
 /** Paths with uncommitted changes (modified, added, deleted, untracked; both sides of a rename), outside .orchestrator. */
@@ -3114,6 +3158,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   for (let round = 1; round <= o.maxRounds; round++) {
     const spentBefore = ctx.budget.spent;
     const tokensBefore = ctx.budget.tokens;
+    const roundBase = cp ? git("rev-parse", "HEAD") : "";
+    const dirtyAtStart = cp ? !!dirtyFiles() : false;
     // Fast path: the first round skips the architect; one generalist agent does the whole goal.
     const direct = o.fast && round === 1 && byName.has("dev");
     console.log(`\n=== round ${round}/${o.maxRounds} (${power}${direct ? ", direct attempt" : ""}) ===`);
@@ -3255,6 +3301,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
           status,
           touched: r.touched,
           cost: round4(r.cost),
+          ...taskReport(r.out),
           ...(r.tokens ? { tokens: r.tokens } : {}),
         });
         return { ...r, status };
@@ -3311,6 +3358,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       emit("secrets", { round, found: secrets });
     }
     const committed = cp && !secrets.length ? tryCommit(`orch: ${title ?? short(goal)} (round ${round})`) : null;
+    const diffForRound = roundDiff(roundBase, dirtyAtStart, secrets.length > 0);
+    emit("round_diff", { round, diff: diffForRound });
     const progressed = cp ? !!committed || !!dirtyFiles() : results.some((r) => r.touched.length > 0);
     // Budget or usage limit: siblings have finished and the work is committed; end the goal.
     const fatal = results.find((r) => r.fatal)?.fatal;
@@ -3380,6 +3429,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       for (const t of verify) {
         const id = idOf.get(t)!;
         emit("task_start", { round, id, agent: t.agent, phase: t.phase });
+        let reportText: string | undefined;
         try {
           const r = await run(
             byName.get(t.agent)!,
@@ -3388,6 +3438,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
             ctx,
             true,
           );
+          reportText = r.text;
           const v = asVerdict(extractJson<Verdict>(r.text));
           if (v.notes) goalNotes.push(...v.notes);
           statuses.set(t, v.passed ? "PASS" : "FAIL");
@@ -3400,13 +3451,23 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
             failures: v.failures,
             touched: [],
             cost: round4(r.cost),
+            ...taskReport(r.text),
             ...(r.tokens ? { tokens: r.tokens } : {}),
           });
           verdicts.push(v);
         } catch (e) {
-          emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: "ERROR", error: msg(e), touched: [] });
+          emit("task_end", {
+            round,
+            id,
+            agent: t.agent,
+            phase: t.phase,
+            status: "ERROR",
+            error: redactOutput(msg(e)),
+            touched: [],
+            ...(reportText === undefined ? {} : taskReport(reportText)),
+          });
           if (isFatal(e)) throw e;
-          verdicts.push({ passed: false, failures: [`${t.agent} could not verify: ${msg(e)}`] });
+          verdicts.push({ passed: false, failures: [`${t.agent} could not verify: ${redactOutput(msg(e))}`] });
         }
       }
     }
@@ -3462,13 +3523,14 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       passed,
       failures,
       cost: roundCost,
+      diff: diffForRound,
       ...(roundTokens ? { tokens: roundTokens } : {}),
     });
     lr.cost = round4(ctx.budget.spent);
     lr.tokens = ctx.budget.tokens;
     writeLastRun(lr);
 
-    emit("round_end", { round, passed, failures, cost: roundCost, ...(roundTokens ? { tokens: roundTokens } : {}) });
+    emit("round_end", { round, passed, failures, cost: roundCost, diff: diffForRound, ...(roundTokens ? { tokens: roundTokens } : {}) });
     if (passed) return (console.log("\nQA passed."), true);
     console.log(`QA failed (${failures.length}):\n- ${failures.join("\n- ")}`);
     previous = direct ? "" : previousRound(round, plan, statuses, cp);

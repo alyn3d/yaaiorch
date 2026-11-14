@@ -96,14 +96,18 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
             touched: ev.touched ?? [],
             failures: ev.failures ?? [],
             error: ev.error,
+            report: ev.report,
+            reportTruncated: ev.reportTruncated,
             cost: ev.cost,
             tokens: ev.tokens,
             endedAt: ev.t,
           })),
         )
       );
+    case "round_diff":
+      return run && upd(run, ev.round, (r) => ({ ...r, diff: ev.diff }));
     case "round_end":
-      return run && upd(run, ev.round, (r) => ({ ...r, passed: ev.passed, failures: ev.failures, cost: ev.cost, tokens: ev.tokens }));
+      return run && upd(run, ev.round, (r) => ({ ...r, passed: ev.passed, failures: ev.failures, cost: ev.cost, tokens: ev.tokens, diff: ev.diff }));
     case "stuck":
       return (
         run &&

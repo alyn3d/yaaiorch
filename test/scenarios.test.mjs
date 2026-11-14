@@ -110,6 +110,10 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.deepEqual(r.last("goal_end").tokens, fullRun);
     assert.deepEqual(lastRun(dir).tokens, fullRun);
     assert.deepEqual(lastRun(dir).state[0].tokens, fullRun);
+    assert.equal(r.ev("task_end")[0].report, "done\nStatus: COMPLETE");
+    assert.match(r.ev("task_end").find((e) => e.phase === "verify").report, /"passed":true/);
+    assert.match(r.last("round_end").diff.text, /diff --git a\/src\/api\.ts b\/src\/api\.ts/);
+    assert.deepEqual(lastRun(dir).state[0].diff, r.last("round_end").diff);
     // QA saw the new (untracked at build time) files through the round commit.
     assert.ok(r.calls.includes("qa: sawNewFiles=true"), r.calls.join("\n"));
     assert.ok(
@@ -130,6 +134,35 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(dirty(dir), "");
     assert.equal(lastRun(dir).status, "passed");
     assert.equal(lastRun(dir).checkpoint, undefined);
+  });
+
+  test("round diffs are independent and task reports are truncated and redact secrets", () => {
+    const secret = "AKIA" + "ABCDEFGHIJKLMNOP";
+    const r = orch(repo(), ["run", "x", "--max-rounds", "2"], { FAKE_QA: "fail-once", FAKE_REPORT: `${secret}\n${"x".repeat(5000)}` });
+    assert.equal(r.code, 0, r.out);
+    const report = r.ev("task_end").find((e) => e.phase === "build");
+    assert.equal(report.report.length, 4000);
+    assert.equal(report.reportTruncated, true);
+    assert.match(report.report, /^\[secret redacted\]/);
+    assert.doesNotMatch(r.out, new RegExp(secret));
+    const [first, second] = r.ev("round_end").map((e) => e.diff);
+    assert.match(first.text, /new file mode/);
+    assert.match(second.text, /diff --git a\/src\/api\.ts b\/src\/api\.ts/);
+    assert.doesNotMatch(second.text, /new file mode/, "the second diff starts at the end of the first round");
+  });
+
+  test("large round diffs are truncated before events and last-run storage", () => {
+    const dir = repo();
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "api.ts"), `${"old line\n".repeat(12_000)}`);
+    git(dir, "add", "src/api.ts");
+    git(dir, "commit", "-q", "-m", "large file");
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    const diff = r.last("round_end").diff;
+    assert.equal(diff.text.length, 100_000);
+    assert.equal(diff.truncated, true);
+    assert.deepEqual(lastRun(dir).state[0].diff, diff);
   });
 
   test("commits rounds when .gitignore lists .orchestrator; a committed config stays tracked", () => {
@@ -161,6 +194,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.ok(cp, "checkpoint survives the failed commit");
     assert.equal(lastRun(dir).checkpoint, cp, "the UI's rollback offer stays");
     assert.notEqual(dirty(dir), "", "the work is still there, uncommitted");
+    assert.match(r.last("round_end").diff.text, /diff --git a\/src\/api\.ts b\/src\/api\.ts/);
 
     // Rollback parks the work on a side branch without running the hook, then resets.
     const rb = orch(dir, ["rollback"]);
@@ -177,6 +211,7 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.code, 0, r.out);
     assert.equal(r.ev("checkpoint").length, 0);
     assert.match(r.out, /not a git repo/);
+    assert.match(r.last("round_end").diff.unavailable, /Git repository/);
   });
 
   test("refuses a dirty working tree before calling any agent", () => {
@@ -1115,6 +1150,8 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     );
     assert.doesNotMatch(r.out, /AKIAABCDEFGHIJKLMNOP/, "the value is never printed");
     assert.match(r.ev("round_end")[0].failures.join("\n"), /an AWS access key in src\/api\.ts: secrets must never be committed/);
+    assert.match(r.ev("round_end")[0].diff.unavailable, /secret scan/);
+    assert.match(r.ev("round_end")[1].diff.unavailable, /previous round/);
     assert.deepEqual(
       r.ev("round_end").map((e) => e.passed),
       [false, true],
@@ -1126,6 +1163,9 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const e = orch(env, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_STRAY_FILE: ".env" });
     assert.equal(e.code, 1);
     assert.deepEqual(e.last("secrets").found, [{ file: ".env", what: "an .env file" }]);
+    const envWithoutScan = orch(repo(), ["run", "x", "--max-rounds", "1", "--no-secret-scan"], { FAKE_QA: "pass", FAKE_STRAY_FILE: ".env" });
+    assert.equal(envWithoutScan.code, 0, envWithoutScan.out);
+    assert.match(envWithoutScan.last("round_end").diff.unavailable, /\.env/);
     const ex = orch(repo(), ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_STRAY_FILE: ".env.example" });
     assert.equal(ex.code, 0, ex.out);
 

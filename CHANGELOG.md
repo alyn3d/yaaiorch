@@ -6,6 +6,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- **Task reports and round diffs**: expand agent reports on task cards and inspect each round's Git changes, including in the last-run summary.
+  Reports and diffs are bounded, recognized secrets are redacted, and sensitive or unisolatable diffs are hidden.
 - **Token counts alongside cost** in active runs and persisted run summaries, including input and output totals;
   cache reads and creation are included in input and shown in the count's tooltip.
 - **Agent roster page**: view built-in, user-level and project agents plus discovered skills for each repo;
