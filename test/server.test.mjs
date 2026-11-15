@@ -168,4 +168,33 @@ describe("browser-mode server guard", { timeout: 60_000 }, () => {
     assert.notEqual((await request(`${path}&id=${encodeURIComponent("../queue")}`, { headers })).status, 200);
     assert.notEqual((await request(`/api/history?repo=${encodeURIComponent(join(home, "not-open"))}`, { headers })).status, 200);
   });
+
+  test("screenshots are token-protected and confined to the open repo's visual directory", async () => {
+    const repo = join(home, "visual-repo");
+    const visualDir = join(repo, ".orchestrator", "visual", "round-1");
+    mkdirSync(visualDir, { recursive: true });
+    writeFileSync(join(visualDir, "shot.png"), "png-data");
+    const t = await token();
+    const headers = { "x-orch-token": t };
+    const opened = await request("/api/add-repo", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: { path: repo },
+    });
+    assert.equal(opened.status, 200, opened.text);
+
+    const path = `/api/visual?repo=${encodeURIComponent(repo)}&file=${encodeURIComponent(".orchestrator/visual/round-1/shot.png")}`;
+    assert.equal((await request(path)).status, 403);
+    const image = await request(path, { headers, stream: true });
+    assert.equal(image.status, 200, image.text);
+    assert.equal(image.type, "image/png");
+    assert.equal(image.text, "png-data");
+    const traversal = `/api/visual?repo=${encodeURIComponent(repo)}&file=${encodeURIComponent(".orchestrator/visual/../../outside.png")}`;
+    assert.equal((await request(traversal, { headers })).status, 400);
+    assert.notEqual(
+      (await request(`/api/visual?repo=${encodeURIComponent(join(home, "not-open"))}&file=${encodeURIComponent(".orchestrator/visual/shot.png")}`, { headers }))
+        .status,
+      200,
+    );
+  });
 });

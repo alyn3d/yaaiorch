@@ -92,6 +92,7 @@ Other commands:
 |---|---|
 | `orch run "<goal>"` | one goal, loops until QA passes or max rounds |
 | `orch add "<goal>"` / `orch loop` | queue goals and process them (`--until-empty` to stop when drained) |
+| `orch move ID up\|down` | reorder a pending goal among goals with the same priority |
 | `orch stop-after` | a running `loop` stops before its next goal (the current one finishes) |
 | `orch status` | show the queue |
 | `orch history --json` / `orch history ID --json` | list recorded goal attempts / read one attempt's events |
@@ -229,6 +230,8 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   `orch/brief-<id>`, so each builds on the ones before; a failed goal's work is parked on
   `orchestrator/failed-*` instead of staying under the next goals, and with **Open pull request** the brief gets
   one pull request that grows with each goal.
+- **Visual check screenshots.** Browser captures appear as previews in each round and in replayed run history.
+  In run history, **Run again** starts a fresh attempt with the repo's current settings.
 - **New projects** (**+ New project** next to the repo tabs, or `orch new DIR "<spec>"` / `--spec-file SPEC.md`;
   `--start` runs the loop right away). In the UI you pick the parent folder and a name, paste the spec, optionally
   a setup command and a budget, and tick **Start building right away** if you want; the project opens in its own tab.

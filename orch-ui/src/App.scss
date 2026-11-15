@@ -982,6 +982,52 @@ button {
         flex: 1 1 200px;
         overflow-wrap: anywhere;
       }
+      .history-entry {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        > button:first-child {
+          flex: 1;
+        }
+        > button.small {
+          width: auto;
+          flex: 0 0 auto;
+        }
+      }
+    }
+    .visual-shots {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 10px;
+      margin: 8px 0 14px;
+    }
+    .visual-shot {
+      min-width: 0;
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      figcaption {
+        padding: 6px 8px;
+        color: var(--muted);
+        font-size: 11px;
+        overflow-wrap: anywhere;
+      }
+    }
+    .visual-shot-empty {
+      display: grid;
+      min-height: 120px;
+      place-items: center;
+      padding: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
     }
   }
   .history-replay {
@@ -1155,6 +1201,11 @@ button {
     display: flex;
     flex-direction: column;
     gap: 3px;
+  }
+  .queue-move {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
   .queue-goal {
     font-size: 13px;

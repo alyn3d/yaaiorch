@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RoundDiff, RunView as Run, TaskView, TokenUsage } from "./types";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { isTauri } from "./transport";
+import { isTauri, transport } from "./transport";
 import { ACTIVITY_LABELS, failureSummary, roundPhases, taskTimeline } from "./runProgress";
 
 /** A link out of the app: the desktop app's webview does not open new windows, so ask the system browser. */
@@ -51,6 +51,50 @@ export function DiffViewer({ diff }: { diff?: RoundDiff }) {
         <p className="muted">No changes in this round.</p>
       )}
     </details>
+  );
+}
+
+function VisualShot({ repo, shot }: { repo: string; shot: { path: string; viewport: number; theme: string; file: string } }) {
+  const [src, setSrc] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    let url = "";
+    transport.visualImage(repo, shot.file).then(
+      (image) => {
+        url = image;
+        if (active) setSrc(image);
+        else URL.revokeObjectURL(image);
+      },
+      (e) => active && setError(String(e)),
+    );
+    return () => {
+      active = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [repo, shot.file]);
+  return (
+    <figure className="visual-shot">
+      {src ? (
+        <img src={src} alt={`${shot.path}, ${shot.viewport}px, ${shot.theme} theme`} loading="lazy" />
+      ) : (
+        <div className="visual-shot-empty">{error || "Loading screenshot…"}</div>
+      )}
+      <figcaption title={shot.file}>
+        {shot.path} · {shot.viewport}px · {shot.theme}
+      </figcaption>
+    </figure>
+  );
+}
+
+function VisualShots({ repo, shots }: { repo: string; shots: { path: string; viewport: number; theme: string; file: string }[] }) {
+  if (!shots.length) return null;
+  return (
+    <div className="visual-shots">
+      {shots.map((shot) => (
+        <VisualShot key={shot.file} repo={repo} shot={shot} />
+      ))}
+    </div>
   );
 }
 
@@ -314,10 +358,12 @@ function QuestionCard({
 }
 
 export function RunPanel({
+  repo,
   run,
   onAnswer,
   onQuestionAnswer,
 }: {
+  repo: string;
   run: Run;
   onAnswer?: (body: Record<string, unknown>) => Promise<boolean>;
   onQuestionAnswer?: (body: Record<string, unknown>) => Promise<boolean>;
@@ -491,21 +537,24 @@ export function RunPanel({
             </div>
           )}
           {r.visual && (
-            <div className="row">
-              <p className="phase">Browser</p>
-              <span
-                className={`badge ${r.visual.problems.length ? "failed" : "done"}`}
-                title={`${r.visual.url} (${fmt(r.visual.ms)})\n${r.visual.shots.map((s) => s.file).join("\n")}`}
-              >
-                {r.visual.shots.length} screenshot{r.visual.shots.length === 1 ? "" : "s"}
-                {r.visual.problems.length ? `, ${r.visual.problems.length} problem${r.visual.problems.length === 1 ? "" : "s"}` : ""}
-              </span>
-              {r.visual.observations.length > 0 && (
-                <span className="muted" title={r.visual.observations.join("\n")}>
-                  {r.visual.observations.length} measured issue{r.visual.observations.length === 1 ? "" : "s"} for QA
+            <>
+              <div className="row">
+                <p className="phase">Browser</p>
+                <span
+                  className={`badge ${r.visual.problems.length ? "failed" : "done"}`}
+                  title={`${r.visual.url} (${fmt(r.visual.ms)})\n${r.visual.shots.map((s) => s.file).join("\n")}`}
+                >
+                  {r.visual.shots.length} screenshot{r.visual.shots.length === 1 ? "" : "s"}
+                  {r.visual.problems.length ? `, ${r.visual.problems.length} problem${r.visual.problems.length === 1 ? "" : "s"}` : ""}
                 </span>
-              )}
-            </div>
+                {r.visual.observations.length > 0 && (
+                  <span className="muted" title={r.visual.observations.join("\n")}>
+                    {r.visual.observations.length} measured issue{r.visual.observations.length === 1 ? "" : "s"} for QA
+                  </span>
+                )}
+              </div>
+              <VisualShots repo={repo} shots={r.visual.shots} />
+            </>
           )}
           {r.visual?.problems.map((p) => (
             <p key={p} className="note">

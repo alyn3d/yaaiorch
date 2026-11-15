@@ -4130,6 +4130,26 @@ function retryGoal(id: number) {
   console.log(`back in the queue: ${back.map((n) => `#${n}`).join(", ")}`);
 }
 
+function moveGoal(id: number, direction: "up" | "down") {
+  const moved = updateQueue((q) => {
+    const index = q.findIndex((i) => i.id === id);
+    if (index < 0) throw new Error(`no goal #${id} in the queue`);
+    const item = q[index];
+    if (item.status !== "pending") throw new Error(`goal #${id} is ${item.status}; only pending goals can be moved`);
+    const priority = item.priority ?? DEFAULT_PRIORITY;
+    const candidates = q
+      .map((candidate, i) => ({ candidate, i }))
+      .filter(({ candidate }) => candidate.status === "pending" && (candidate.priority ?? DEFAULT_PRIORITY) === priority);
+    const at = candidates.findIndex(({ candidate }) => candidate.id === id);
+    const neighbor = candidates[at + (direction === "up" ? -1 : 1)];
+    if (!neighbor) throw new Error(`goal #${id} cannot move ${direction} among pending goals with the same priority`);
+    const neighborId = neighbor.candidate.id;
+    [q[index], q[neighbor.i]] = [q[neighbor.i], q[index]];
+    return neighborId;
+  });
+  console.log(`moved #${id} ${direction} past #${moved}`);
+}
+
 async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
   ISSUE_COMMENTS = o.issueComments;
   if (o.dryRun) throw new Error("--dry-run cannot be used with loop: the goal would stay pending and be planned again forever");
@@ -4546,6 +4566,12 @@ async function main() {
       const id = Number(rest[0]);
       if (!Number.isInteger(id)) throw new Error("usage: orch retry ID");
       return retryGoal(id);
+    }
+    case "move": {
+      const id = Number(rest[0]);
+      const direction = rest[1];
+      if (!Number.isInteger(id) || (direction !== "up" && direction !== "down")) throw new Error("usage: orch move ID up|down");
+      return moveGoal(id, direction);
     }
     case "new": {
       const [dir, ...words] = rest;

@@ -1076,6 +1076,28 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     );
   });
 
+  test("move reorders pending goals only within the same priority", () => {
+    const dir = repo({ git: false });
+    const queue = join(dir, ".orchestrator", "queue.json");
+    mkdirSync(join(dir, ".orchestrator"), { recursive: true });
+    const initial = [
+      { id: 1, goal: "first", status: "pending" },
+      { id: 2, goal: "second", status: "pending" },
+      { id: 3, goal: "urgent", status: "pending", priority: 1 },
+      { id: 4, goal: "blocked", status: "blocked" },
+    ];
+    writeFileSync(queue, JSON.stringify(initial));
+    const ids = () => JSON.parse(readFileSync(queue, "utf8")).map((item) => item.id);
+
+    assert.equal(orch(dir, ["move", "2", "up"]).code, 0);
+    assert.deepEqual(ids(), [2, 1, 3, 4]);
+    assert.equal(orch(dir, ["move", "2", "down"]).code, 0);
+    assert.deepEqual(ids(), [1, 2, 3, 4]);
+    assert.match(orch(dir, ["move", "3", "up"]).out, /cannot move up.*same priority/);
+    assert.match(orch(dir, ["move", "4", "up"]).out, /only pending goals can be moved/);
+    assert.deepEqual(ids(), [1, 2, 3, 4]);
+  });
+
   test("--branch with a brief: its goals share one branch and build on each other; a failed one is parked; one PR", () => {
     const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
     const dir = repo();

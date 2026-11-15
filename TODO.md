@@ -150,8 +150,9 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Phase 1**: config `serve`, `visual` pages on verify tasks, dev server lifecycle, CDP capture with the
   installed Chrome/Edge (screenshots, page and console errors, failed requests, overflow, CLS), problems fail the
   round, `orch browser login|install`, doctor, the run view's **Browser** row.
-- [ ] **Screenshots in the UI**: thumbnails per round (desktop: asset protocol scoped to `.orchestrator/visual`;
-  browser mode: a guarded `/api` route), and a **Browser login** button that runs `orch browser login`.
+- [x] **Screenshots in the UI**: thumbnails per round, fetched only from the repo's `.orchestrator/visual/`
+  directory through the guarded browser API or a scoped desktop command.
+- [ ] **Browser login** button that runs `orch browser login`.
 - [ ] **`serve` in the run settings**, so it need not be written into config.json by hand.
 - [ ] **Design comparison**: a Figma link or images in the goal; export the frames and give QA both.
 - [ ] **Refute pass**: a fresh read-only agent tries to disprove each QA or review failure before it fails the

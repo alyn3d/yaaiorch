@@ -1033,6 +1033,48 @@ fn retry_goal(app: AppHandle, repo: String, id: u64) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+fn move_goal(app: AppHandle, repo: String, id: u64, direction: String) -> Result<(), String> {
+    if direction != "up" && direction != "down" {
+        return Err("direction must be up or down".into());
+    }
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let out = node_cmd(&app, &dir, &["move".into(), id.to_string(), direction])?
+        .output()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch move failed")
+            .to_string());
+    }
+    emit_session(&app, &key_of(&dir));
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn visual_image(app: AppHandle, repo: String, file: String) -> Result<Vec<u8>, String> {
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let relative = Path::new(&file);
+    let parts: Vec<_> = relative.components().collect();
+    if parts.len() < 3
+        || parts[0].as_os_str() != ".orchestrator"
+        || parts[1].as_os_str() != "visual"
+        || parts.iter().any(|part| !matches!(part, std::path::Component::Normal(_)))
+        || relative.extension().and_then(|ext| ext.to_str()) != Some("png")
+    {
+        return Err("invalid screenshot path".into());
+    }
+    let visual_root = fs::canonicalize(dir.join(".orchestrator").join("visual")).map_err(|e| e.to_string())?;
+    let image = fs::canonicalize(dir.join(relative)).map_err(|e| e.to_string())?;
+    if !image.starts_with(&visual_root) || !image.is_file() {
+        return Err("invalid screenshot path".into());
+    }
+    fs::read(image).map_err(|e| format!("could not read screenshot: {e}"))
+}
+
+#[tauri::command(async)]
 fn agents(app: AppHandle, repo: String) -> Result<Value, String> {
     let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
     let out = node_cmd(&app, &dir, &["agents".into(), "--json".into()])?
@@ -1438,9 +1480,11 @@ fn main() {
             run_loop,
             add_goal,
             retry_goal,
+            move_goal,
             intake_goals,
             agents,
             history,
+            visual_image,
             save_agent,
             stop,
             clear_log,

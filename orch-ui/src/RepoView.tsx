@@ -252,7 +252,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
       <div className="repo-grid">
         <div className="col-main">
           {run ? (
-            <RunPanel run={run} onAnswer={(b) => call("approve", b)} onQuestionAnswer={(b) => call("answer", b)} />
+            <RunPanel repo={repo} run={run} onAnswer={(b) => call("approve", b)} onQuestionAnswer={(b) => call("answer", b)} />
           ) : (
             <section className="card">
               <div className="card-head">
@@ -295,7 +295,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
             </section>
           )}
 
-          <RunHistory repo={repo} busy={busy} />
+          <RunHistory repo={repo} busy={busy} canRun={!badSettings} onRunAgain={(savedGoal) => call("run", { goal: savedGoal, ...opts })} />
 
           <section className="card output">
             <div className="card-head">
@@ -392,33 +392,57 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
             )}
             {state.queue.length ? (
               <ul className="queue">
-                {state.queue.map((i) => (
-                  <li key={i.id} className={`queue-item ${i.status}`}>
-                    <span className={`badge ${i.status === "blocked" ? "warn" : i.status}`}>{i.status}</span>
-                    <div className="queue-body">
-                      <p className="queue-goal">
-                        <span className="queue-id">#{i.id}</span> {i.goal}
-                      </p>
-                      {(i.after?.length || i.issue || (i.priority && i.priority !== 3)) && (
-                        <p className="queue-meta">
-                          {i.after?.length ? <span>after {i.after.map((d) => `#${d}`).join(", ")}</span> : null}
-                          {i.issue ? <span>issue #{i.issue}</span> : null}
-                          {i.priority && i.priority !== 3 ? <span title="Priority from the issue's labels: p1 runs first">p{i.priority}</span> : null}
+                {state.queue.map((i) => {
+                  const samePriority = state.queue.filter((candidate) => candidate.status === "pending" && (candidate.priority ?? 3) === (i.priority ?? 3));
+                  const position = samePriority.findIndex((candidate) => candidate.id === i.id);
+                  return (
+                    <li key={i.id} className={`queue-item ${i.status}`}>
+                      <span className={`badge ${i.status === "blocked" ? "warn" : i.status}`}>{i.status}</span>
+                      <div className="queue-body">
+                        <p className="queue-goal">
+                          <span className="queue-id">#{i.id}</span> {i.goal}
                         </p>
+                        {(i.after?.length || i.issue || (i.priority && i.priority !== 3)) && (
+                          <p className="queue-meta">
+                            {i.after?.length ? <span>after {i.after.map((d) => `#${d}`).join(", ")}</span> : null}
+                            {i.issue ? <span>issue #{i.issue}</span> : null}
+                            {i.priority && i.priority !== 3 ? <span title="Priority from the issue's labels: p1 runs first">p{i.priority}</span> : null}
+                          </p>
+                        )}
+                        {i.note && <p className="note">{i.note}</p>}
+                      </div>
+                      {i.status === "pending" && (
+                        <div className="queue-move">
+                          <button
+                            className="small"
+                            disabled={position <= 0}
+                            title="Move earlier among goals with the same priority"
+                            onClick={() => call("move", { id: i.id, direction: "up" })}
+                          >
+                            Up
+                          </button>
+                          <button
+                            className="small"
+                            disabled={position < 0 || position >= samePriority.length - 1}
+                            title="Move later among goals with the same priority"
+                            onClick={() => call("move", { id: i.id, direction: "down" })}
+                          >
+                            Down
+                          </button>
+                        </div>
                       )}
-                      {i.note && <p className="note">{i.note}</p>}
-                    </div>
-                    {(i.status === "failed" || i.status === "blocked") && (
-                      <button
-                        className="small"
-                        title="Put it back in the queue, with the goals it blocked (after you fixed what stopped it)"
-                        onClick={() => call("retry", { id: i.id })}
-                      >
-                        Retry
-                      </button>
-                    )}
-                  </li>
-                ))}
+                      {(i.status === "failed" || i.status === "blocked") && (
+                        <button
+                          className="small"
+                          title="Put it back in the queue, with the goals it blocked (after you fixed what stopped it)"
+                          onClick={() => call("retry", { id: i.id })}
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <p className="empty">The queue is empty. Add a goal above, split a big brief, or import issues.</p>

@@ -8,9 +8,9 @@
 import http from "node:http";
 import { spawn, execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { readFileSync, existsSync, mkdirSync, writeFileSync, createReadStream, statSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, createReadStream, statSync, readdirSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { resolve, join, extname, dirname, delimiter } from "node:path";
+import { resolve, join, extname, dirname, delimiter, relative, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
@@ -569,6 +569,30 @@ http
         );
         return json(200, JSON.parse(result));
       }
+      if (url.pathname === "/api/visual" && req.method === "GET") {
+        const s = mustGet(url.searchParams.get("repo"));
+        const file = url.searchParams.get("file") ?? "";
+        const parts = file.replaceAll("\\", "/").split("/");
+        if (parts.length < 3 || parts[0] !== ".orchestrator" || parts[1] !== "visual" || parts.includes("..") || extname(file).toLowerCase() !== ".png") {
+          return json(400, { error: "invalid screenshot path" });
+        }
+        const root = resolve(s.repo, ".orchestrator", "visual");
+        const candidate = resolve(s.repo, file);
+        if (!existsSync(root) || !existsSync(candidate)) return json(404, { error: "screenshot not found" });
+        const pathWithinRoot = relative(root, candidate);
+        if (!pathWithinRoot || pathWithinRoot.startsWith(`..${sep}`) || pathWithinRoot === ".." || isAbsolute(pathWithinRoot)) {
+          return json(400, { error: "invalid screenshot path" });
+        }
+        const realRoot = realpathSync(root);
+        const realFile = realpathSync(candidate);
+        const realRelative = relative(realRoot, realFile);
+        if (!realRelative || realRelative.startsWith(`..${sep}`) || realRelative === ".." || isAbsolute(realRelative) || !statSync(realFile).isFile()) {
+          return json(400, { error: "invalid screenshot path" });
+        }
+        res.writeHead(200, { "content-type": "image/png", "cache-control": "no-store" });
+        createReadStream(realFile).pipe(res);
+        return;
+      }
       if (url.pathname === "/api/agents" && req.method === "GET") {
         const s = mustGet(url.searchParams.get("repo"));
         return json(200, JSON.parse(execFileSync(process.execPath, [TSX_CLI, ORCH, "agents", "--json"], { cwd: s.repo, encoding: "utf8" })));
@@ -698,6 +722,20 @@ http
           await new Promise<void>((ok, fail) =>
             execFile(process.execPath, [TSX_CLI, ORCH, "retry", String(id)], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
               err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+            ),
+          );
+          sendSession(s);
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/move") {
+          const id = Number(b.id);
+          if (!Number.isInteger(id) || (b.direction !== "up" && b.direction !== "down")) return json(400, { error: "goal id and direction are required" });
+          await new Promise<void>((ok, fail) =>
+            execFile(
+              process.execPath,
+              [TSX_CLI, ORCH, "move", String(id), b.direction],
+              { cwd: s.repo, encoding: "utf8", windowsHide: true },
+              (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
             ),
           );
           sendSession(s);

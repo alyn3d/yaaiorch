@@ -7,6 +7,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ### Added
 - Opt-in agent decision cards with suggested or free-text answers, independent parallel questions and read-only history.
+- Browser-check screenshot previews in live rounds and replayed run history.
+- Queue ordering controls for pending goals with the same priority, using the queue's lock-protected writer.
+- **Run again** from history to start a new attempt with the repo's current settings.
 
 ### Changed
 - Built-in agents request task acceptance criteria, focused tests and clearer verification and blocker reports.

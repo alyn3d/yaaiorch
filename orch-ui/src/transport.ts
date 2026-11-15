@@ -45,6 +45,8 @@ export interface Transport {
   agents(repo: string): Promise<AgentRoster>;
   history(repo: string): Promise<HistoryEntry[]>;
   historyRun(repo: string, id: string): Promise<HistoryRecording>;
+  /** Fetch a screenshot path reported by orch, scoped to this repo's visual output directory. Returns an object URL. */
+  visualImage(repo: string, file: string): Promise<string>;
   /** Save a project-level agent definition (also creates an override of a built-in or user agent). */
   saveAgent(repo: string, name: string, content: string): Promise<void>;
 }
@@ -176,6 +178,12 @@ const web: Transport = {
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
     return r.json();
   },
+  async visualImage(repo, file) {
+    const query = new URLSearchParams({ repo, file });
+    const r = await api(`/api/visual?${query}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+    return URL.createObjectURL(await r.blob());
+  },
   saveAgent: (repo, name, content) => post("agents", { repo, name, content }),
 };
 
@@ -192,6 +200,7 @@ const COMMANDS: Record<string, string> = {
   approve: "approve_plan",
   answer: "answer_question",
   retry: "retry_goal",
+  move: "move_goal",
   intake: "intake_goals",
   split: "split_brief",
   "split-accept": "accept_split",
@@ -254,6 +263,10 @@ const tauri: Transport = {
   agents: (repo) => tauriInvoke<AgentRoster>("agents", { repo }),
   history: (repo) => tauriInvoke<HistoryEntry[]>("history", { repo }),
   historyRun: (repo, id) => tauriInvoke<HistoryRecording>("history", { repo, id }),
+  async visualImage(repo, file) {
+    const bytes = await tauriInvoke<number[]>("visual_image", { repo, file });
+    return URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: "image/png" }));
+  },
   saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
 };
 

@@ -4,7 +4,17 @@ import { RunPanel } from "./RunView";
 import { transport } from "./transport";
 import type { HistoryEntry, RunView } from "./types";
 
-export function RunHistory({ repo, busy }: { repo: string; busy: boolean }) {
+export function RunHistory({
+  repo,
+  busy,
+  canRun,
+  onRunAgain,
+}: {
+  repo: string;
+  busy: boolean;
+  canRun: boolean;
+  onRunAgain: (goal: string) => Promise<boolean>;
+}) {
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [error, setError] = useState("");
@@ -76,13 +86,23 @@ export function RunHistory({ repo, busy }: { repo: string; busy: boolean }) {
         {entries && entries.length > 0 && (
           <ul className="history-list">
             {entries.map((entry) => (
-              <li key={entry.id}>
+              <li key={entry.id} className="history-entry">
                 <button onClick={() => replay(entry.id)} disabled={entry.status === "unreadable"} aria-pressed={selected?.id === entry.id}>
                   <span>{entry.goal ?? "Unreadable recording"}</span>
                   <span className="muted">{entry.startedAt === undefined ? entry.id : new Date(entry.startedAt).toLocaleString()}</span>
                   <span className={`badge ${entry.status === "passed" ? "done" : entry.status === "failed" ? "failed" : "warn"}`}>{entry.status}</span>
                   {entry.cost !== undefined && <span className="cost">${entry.cost.toFixed(2)}</span>}
                 </button>
+                {entry.goal && (
+                  <button
+                    className="small"
+                    disabled={busy || !canRun}
+                    title="Start a new run with the current repo settings"
+                    onClick={() => entry.goal && void onRunAgain(entry.goal)}
+                  >
+                    Run again
+                  </button>
+                )}
                 {entry.error && <p className="error">{entry.error}</p>}
                 {entry.truncated && <p className="muted">The last event was incomplete.</p>}
               </li>
@@ -104,7 +124,7 @@ export function RunHistory({ repo, busy }: { repo: string; busy: boolean }) {
               </button>
             </div>
             {selected.truncated && <p className="muted">The last event was incomplete and could not be replayed.</p>}
-            <RunPanel run={selected.run} />
+            <RunPanel repo={repo} run={selected.run} />
           </div>
         )}
       </div>
