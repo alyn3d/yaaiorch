@@ -1725,6 +1725,28 @@ input.limit {
   padding: 20px 22px;
   gap: 14px;
 }
+.about {
+  margin: auto;
+  width: min(460px, calc(100% - 32px));
+  &::backdrop {
+    background: var(--overlay);
+  }
+  p {
+    margin: 0;
+  }
+  .about-brand {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    img {
+      border-radius: 12px;
+    }
+  }
+  .about-tagline {
+    color: var(--link);
+    font-weight: 600;
+  }
+}
 .new-project {
   textarea {
     font: inherit;

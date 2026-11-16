@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { notifyOn as notifyOnSaved, setNotifyOn } from "./notify";
 import { useOrch } from "./useOrch";
 import { RepoView } from "./RepoView";
@@ -8,6 +8,7 @@ import { NewProjectDialog } from "./NewProject";
 import { baseName, repoStatus, usd } from "./repoStatus";
 import { Limits, clock, overCap } from "./Limits";
 import { AgentsPage } from "./Agents";
+import { About } from "./About";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
@@ -17,6 +18,8 @@ export function App() {
   const { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
   const [notifyOn, setNotifyOnState] = useState(notifyOnSaved);
   const [newProject, setNewProject] = useState(false);
+  const [about, setAbout] = useState(false);
+  const aboutButton = useRef<HTMLButtonElement>(null);
   const [agentRepo, setAgentRepo] = useState("");
   // Re-render every 30 s so the usage-limit banner disappears when its reset time passes.
   const [now, setNow] = useState(Date.now());
@@ -210,10 +213,21 @@ export function App() {
               <input type="checkbox" role="switch" checked={notifyOn} onChange={(e) => void setNotifyOn(e.target.checked).then(setNotifyOnState)} /> Notify
             </label>
           </div>
+          <button ref={aboutButton} className="ghost" onClick={() => setAbout(true)}>
+            About YAAIORCH
+          </button>
         </div>
       </aside>
 
       <main className="main">
+        {about && (
+          <About
+            onClose={() => {
+              setAbout(false);
+              aboutButton.current?.focus();
+            }}
+          />
+        )}
         {error && (
           <p className="error callout" role="alert">
             {error}

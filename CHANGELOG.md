@@ -5,7 +5,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-16
+
 ### Added
+- An About dialog with project credits, version and license.
 - Automatic browser-check setup for common web apps: review the detected script, discover the local server URL, and log in from run settings.
 - Opt-in agent decision cards with suggested or free-text answers, independent parallel questions and read-only history.
 - Browser-check screenshot previews in live rounds and replayed run history.
@@ -15,6 +18,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ### Changed
 - Built-in agents request task acceptance criteria, focused tests and clearer verification and blocker reports.
 - Updated the project site and screenshot to show run history and task timelines.
+- Updated the project site to highlight automatic browser-check setup and optional agent questions.
 
 ## [0.5.2] - 2026-11-14
 
@@ -364,7 +368,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/alyn3d/yaaiorch/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/alyn3d/yaaiorch/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/alyn3d/yaaiorch/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/alyn3d/yaaiorch/compare/v0.4.0...v0.5.0
