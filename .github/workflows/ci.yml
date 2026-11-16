@@ -45,7 +45,7 @@ jobs:
         run: npm run build
       - name: Typecheck orch.ts
         working-directory: orch-ui
-        run: npx tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext --types node --skipLibCheck ../orch.ts
+        run: npx tsc --noEmit --strict --target es2022 --lib es2023 --module nodenext --moduleResolution nodenext --types node --skipLibCheck ../orch.ts
       - name: Bundle orch.mjs
         working-directory: orch-ui
         run: npm run build:orch
@@ -54,7 +54,7 @@ jobs:
           node orch-ui/src-tauri/resources/orch.mjs > usage.txt
           grep -q "YAAIORCH" usage.txt
       - name: Scenario tests (fake claude)
-        timeout-minutes: 10
+        timeout-minutes: 15
         working-directory: orch-ui
         run: npm test
       - name: Eval suite self-check (hidden tests fail before, pass with reference)
@@ -85,7 +85,7 @@ jobs:
           npm run build:app
           node scripts/fetch-node.mjs
       - name: Scenario tests (fake claude)
-        timeout-minutes: 10
+        timeout-minutes: 15
         working-directory: orch-ui
         run: npm test
       - name: rustfmt

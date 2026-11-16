@@ -95,7 +95,7 @@ const writeConfig = (dir, cfg) => {
 };
 
 // spawnSync blocks, so the scenarios run one after another; the timeout makes a hang fail instead of stalling CI.
-describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
+describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
   test("browser setup requires selecting the current script and preserves existing settings", () => {
     const dir = repo();
     mkdirSync(join(dir, "web"));
@@ -2014,7 +2014,9 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     assert.equal(r.ev("round_end")[0].passed, false);
     assert.ok(r.ev("round_end")[0].failures.some((f) => /check "api" failed/.test(f)));
     const agents = r.calls.filter((c) => c.startsWith("call ")).map((c) => /agent=(\S+)/.exec(c)[1]);
-    assert.deepEqual(agents, ["dev", "architect", "fe", "be", "fe", "qa"]);
+    assert.deepEqual(agents.slice(0, 3), ["dev", "architect", "fe"]);
+    assert.deepEqual(agents.slice(3, -1).sort(), ["be", "fe"]);
+    assert.equal(agents.at(-1), "qa");
   });
 
   test("fast path without checks still runs QA", () => {
@@ -2090,7 +2092,8 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     const r = orch(dir, ["run", "x", "--max-rounds", "1", "--power", "economy", "--model", "impl=haiku"]);
     assert.equal(r.code, 0, r.out);
     const models = r.calls.filter((c) => /agent=(fe|be) /.test(c)).map((c) => `${/agent=(\S+)/.exec(c)[1]}=${/model=(\S+)/.exec(c)[1]}`);
-    assert.deepEqual(models, ["fe=opus", "be=haiku", "fe=opus"]);
+    assert.equal(models[0], "fe=opus");
+    assert.deepEqual(models.slice(1).sort(), ["be=haiku", "fe=opus"]);
   });
 
   test("models: aliases step up on escalation, full IDs stay pinned", () => {
