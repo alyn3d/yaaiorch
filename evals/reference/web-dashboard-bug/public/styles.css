@@ -146,3 +146,11 @@ body {
   padding: 10px 12px;
   border-top: 1px solid var(--border);
 }
+
+@media (max-width: 480px) {
+  .data-table th,
+  .data-table td {
+    padding: 8px 4px;
+    font-size: 14px;
+  }
+}
