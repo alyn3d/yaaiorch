@@ -199,7 +199,8 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
       .filter((line) => line.startsWith("worktree "))
       .map((line) => line.slice("worktree ".length));
     assert.equal(worktreePaths.length, 2);
-    const preserved = worktreePaths.find((path) => resolve(path) !== resolve(dir));
+    const normalizePath = (path) => (process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path));
+    const preserved = worktreePaths.find((path) => normalizePath(path) !== normalizePath(dir));
     assert.ok(preserved);
     assert.equal(readFileSync(join(preserved, "src", "shared.txt"), "utf8"), "shared from fe\n");
     git(dir, "worktree", "remove", "--force", preserved);

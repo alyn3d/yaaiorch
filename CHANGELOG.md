@@ -6,7 +6,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Fixed
-- CI typechecking and scenario tests now account for the supported Node.js APIs, parallel agent ordering, and slower test runners.
+- CI typechecking and scenario tests now account for supported Node.js APIs, parallel agent ordering, Windows path casing, and slower test runners.
 
 ## [0.5.4] - 2026-11-16
 
