@@ -289,7 +289,11 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   { "checks": { "test": "python -m unittest discover -s tests -t ." }, "allow": ["Bash(make lint:*)"] }
   ```
 
-- **Browser checks** (optional; a web app with a dev server). Tell YAAIORCH how to start your app:
+- **Browser checks** (optional; a web app with a dev server). In **Run settings → Browser checks**, YAAIORCH
+  detects common web apps in the repo root or an immediate child folder. Choose an app and approve its displayed
+  command and lifecycle scripts; the actual localhost URL is discovered when the server starts. If the scripts
+  change, review and enable them again. **Log in to app** starts the server and opens the repo's browser profile.
+  Detection is read-only and does not run scripts until you enable checks. For other setups, configure it manually:
 
   ```json
   { "serve": { "url": "http://localhost:5173", "command": "npm run dev", "timeout": 120 } }

@@ -235,7 +235,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
             {badSettings && <span className="badge failed">check models</span>}
           </summary>
           <div className="disclosure-body">
-            <SettingsPanel repo={repo} power={power} settings={settings} onChange={setSettings} />
+            <SettingsPanel repo={repo} power={power} settings={settings} onChange={setSettings} busy={busy} />
           </div>
         </details>
         {error && (

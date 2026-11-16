@@ -29,6 +29,7 @@ import {
   MAX_TARGETS,
   browserLogin,
   captureVisual,
+  detectBrowserApps,
   findBrowser,
   hasWebSocket,
   installBrowser,
@@ -2323,7 +2324,11 @@ function doctor(): Finding[] {
         !hasWebSocket()
           ? { name: "browser", level: "fail", detail: "browser checks need Node.js 22 or newer" }
           : b
-            ? { name: "browser", level: "ok", detail: `${b.path} (${b.via}); checks open ${serve.url}` }
+            ? {
+                name: "browser",
+                level: "ok",
+                detail: `${b.path} (${b.via}); ${serve.auto ? "dev server URL detected at startup" : `checks open ${serve.url}`}`,
+              }
             : {
                 name: "browser",
                 level: "fail",
@@ -3377,14 +3382,16 @@ function visualSetup(cfg: Config, o: Opts): { serve: ServeConfig; exe: string } 
   }
   rmSync(VISUAL_DIR, { recursive: true, force: true });
   VISUAL_HINT =
-    `\n## Browser checks\nAfter the checks, the orchestrator can open the app (${serve.url}) in a real browser before QA. When the goal ` +
+    `\n## Browser checks\nAfter the checks, the orchestrator can open the app (${serve.auto ? "local dev server" : serve.url}) in a real browser before QA. When the goal ` +
     `changes what users see, give the verify task a "visual" list; QA then gets screenshots of those pages and what the browser ` +
     `measured (page errors, console errors, failed requests, horizontal overflow), and a page that does not render fails the round:\n` +
     `"visual": [{"path": "/route/in/the/app", "selector": "<CSS selector of the changed part; optional>", "actions": [{"click": "<selector>"}, ` +
     `{"wait": "<selector> or milliseconds"}], "viewports": [1280, 375], "themes": ["light", "dark"]}]\n` +
     `At most ${MAX_TARGETS} pages in all. Actions only reach the state to check (a tab, a menu, a dialog): never submit forms or change ` +
     `data. Leave "visual" out when users cannot see the change.\n`;
-  console.log(`browser checks: ${serve.url}${serve.command ? ` (started with \`${serve.command}\` when needed)` : ""}, browser ${b.path}`);
+  console.log(
+    `browser checks: ${serve.auto ? "detect local URL" : serve.url}${serve.command ? ` (started with \`${serve.command}\` when needed)` : ""}, browser ${b.path}`,
+  );
   return { serve, exe: b.path };
 }
 
@@ -3718,7 +3725,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
         const rel = `${VISUAL_DIR}/round-${round}`;
         visual = down
           ? { url: browserCheck.serve.url, shots: [], problems: [down], observations: [], ms: 0 }
-          : await captureVisual({ exe: browserCheck.exe, profile: profileDir(), base: browserCheck.serve.url, targets: pages, outDir: rel, relDir: rel });
+          : await captureVisual({ exe: browserCheck.exe, profile: profileDir(), base: DEV_SERVER.url, targets: pages, outDir: rel, relDir: rel });
         console.log(
           `browser check: ${visual.shots.length} screenshot(s), ${visual.problems.length} problem(s), ${visual.observations.length} observation(s)` +
             (visual.problems.length ? `\n- ${visual.problems.join("\n- ")}` : ""),
@@ -4606,16 +4613,60 @@ async function main() {
     case "browser": {
       const [sub, arg] = rest;
       if (sub === "install") return console.log(`installed: ${await installBrowser()}`);
+      if (sub === "detect") {
+        const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+        return console.log(
+          JSON.stringify({
+            candidates: detectBrowserApps(),
+            serve: cfg.serve ?? null,
+            enabled: !!cfg.serve && cfg.visual !== false,
+            browser: findBrowser() ?? null,
+          }),
+        );
+      }
+      if (sub === "enable" || sub === "disable") {
+        acquireRunLock(`browser ${sub}`);
+        const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+        if (sub === "enable") {
+          if (arg === "manual" && cfg.serve && !cfg.serve.auto) {
+            parseServe(cfg.serve);
+          } else {
+            const candidate = detectBrowserApps().find((c) => c.id === arg);
+            if (!candidate) throw new Error("the selected app changed or was not found; detect it again");
+            if (cfg.serve && !cfg.serve.auto) throw new Error("manual browser configuration already exists; edit it in config.json instead");
+            cfg.serve = { url: "auto", command: candidate.command, auto: candidate };
+          }
+          cfg.visual = true;
+        } else {
+          cfg.visual = false;
+        }
+        writeFileAtomic(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+        return console.log("browser checks updated");
+      }
       const b = findBrowser();
       if (sub === "login") {
         if (!b) throw new Error('no browser found; run "orch browser install" or set YAAIORCH_BROWSER');
         const cfg = readJsonFile<Config>(CONFIG_FILE, {});
-        const url = arg ?? (cfg.serve ? parseServe(cfg.serve).url : undefined);
+        const serve = !arg && cfg.serve ? parseServe(cfg.serve) : undefined;
+        let url = arg ?? serve?.url;
         if (!url) throw new Error('usage: orch browser login URL (or set "serve" in .orchestrator/config.json)');
-        if (!isLocalUrl(url)) throw new Error(`orch browser login opens this machine's app (localhost) only, not ${url}`);
-        console.log(`Log in to the app in the window that opened, then close the window. Profile: ${profileDir()}`);
-        await browserLogin(b.path, profileDir(), url);
-        return console.log("done: the browser checks in this repo use this login");
+        acquireRunLock("browser login");
+        const server = serve ? new DevServer(serve) : undefined;
+        if (server) process.once("exit", () => server.stop());
+        try {
+          if (server) {
+            const failure = await server.ensure();
+            if (failure) throw new Error(failure);
+            url = server.url;
+          }
+          if (!isLocalUrl(url)) throw new Error(`orch browser login opens this machine's app (localhost) only, not ${url}`);
+          console.log(`Log in to the app in the window that opened, then close the window. Profile: ${profileDir()}`);
+          const code = await browserLogin(b.path, profileDir(), url);
+          if (code !== 0) throw new Error(`browser exited with code ${code}`);
+          return console.log("done: the browser checks in this repo use this login");
+        } finally {
+          server?.stop();
+        }
       }
       if (sub && sub !== "status") throw new Error("usage: orch browser [status | login [URL] | install]");
       console.log(b ? `browser: ${b.path} (${b.via})` : 'browser: none found; run "orch browser install" or set YAAIORCH_BROWSER');

@@ -747,6 +747,56 @@ describe("browser checks (orch-browser.ts)", () => {
     assert.deepEqual(b.parseServe({ url: "http://localhost:1", command: "npm run dev", extra: 1 }), { url: "http://localhost:1", command: "npm run dev" });
   });
 
+  test("detects web scripts without running them and rejects changed approvals", () => {
+    const dir = mkdtempSync(join(tmpdir(), "orch-detect-"));
+    const cwd = process.cwd();
+    try {
+      mkdirSync(join(dir, "web"));
+      mkdirSync(join(dir, "api"));
+      writeFileSync(join(dir, "pnpm-lock.yaml"), "");
+      writeFileSync(join(dir, "web", "package.json"), JSON.stringify({ scripts: { predev: "node prepare.js", dev: "vite --port 0" } }));
+      writeFileSync(join(dir, "api", "package.json"), JSON.stringify({ scripts: { dev: "node server.js" } }));
+      const apps = b.detectBrowserApps(dir);
+      assert.equal(apps.length, 1);
+      assert.equal(apps[0].directory, "web");
+      assert.equal(apps[0].command, "pnpm run dev");
+      assert.deepEqual(apps[0].lifecycle, ["predev: node prepare.js"]);
+      process.chdir(dir);
+      const cfg = { url: "auto", command: apps[0].command, auto: apps[0] };
+      assert.deepEqual(b.parseServe(cfg), cfg);
+      writeFileSync(join(dir, "web", "package.json"), JSON.stringify({ scripts: { predev: "node changed.js", dev: "vite --port 0" } }));
+      assert.throws(() => b.parseServe(cfg), /script changed/);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("discovers a dev server's actual local URL and rediscovers it on restart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "orch-server-"));
+    const cwd = process.cwd();
+    let server;
+    try {
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { dev: "node app.cjs vite" } }));
+      writeFileSync(
+        join(dir, "app.cjs"),
+        `const http = require("node:http"); const s = http.createServer((_, r) => r.end("ok")); s.listen(0, "127.0.0.1", () => console.log("Local: http://127.0.0.1:" + s.address().port));`,
+      );
+      process.chdir(dir);
+      const app = b.detectBrowserApps(dir)[0];
+      server = new b.DevServer({ url: "auto", command: app.command, auto: app, timeout: 15 });
+      assert.equal(await server.ensure(), null);
+      assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+$/);
+      assert.equal(await (await fetch(server.url)).text(), "ok");
+      assert.equal(await server.restart(), null);
+      assert.equal(await (await fetch(server.url)).text(), "ok");
+    } finally {
+      server?.stop();
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("targets: paths in the app, safe actions, limits", () => {
     const bad = [
       [{ path: "https://example.com/" }, /path must start with "\/"/],

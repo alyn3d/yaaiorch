@@ -555,6 +555,15 @@ http
       }
       if (url.pathname === "/api/state") return json(200, initPayload());
       if (url.pathname === "/api/doctor") return json(200, await doctor(mustGet(url.searchParams.get("repo"))));
+      if (url.pathname === "/api/browser" && req.method === "GET") {
+        const s = mustGet(url.searchParams.get("repo"));
+        const result = await new Promise<string>((ok, fail) =>
+          execFile(process.execPath, [TSX_CLI, ORCH, "browser", "detect"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, stdout, stderr) =>
+            err ? fail(new Error((stderr || err.message).trim())) : ok(stdout),
+          ),
+        );
+        return json(200, JSON.parse(result));
+      }
       if (url.pathname === "/api/plugins") return json(200, await plugins(mustGet(url.searchParams.get("repo")), url.searchParams.has("fresh")));
       if (url.pathname === "/api/history" && req.method === "GET") {
         const s = mustGet(url.searchParams.get("repo"));
@@ -677,6 +686,25 @@ http
           return json(200, { ok: true });
         }
         const s = mustGet(b.repo);
+        if (url.pathname === "/api/browser") {
+          if (s.child || s.pending) return json(409, { error: "wait until this repo is idle" });
+          if (b.action === "login") {
+            requestStart(s, ["browser", "login"], "browser login");
+            return json(200, { ok: true });
+          }
+          if (b.action !== "enable" && b.action !== "disable") return json(400, { error: "invalid browser action" });
+          if (b.action === "enable" && (typeof b.id !== "string" || !/^(?:[a-f0-9]{64}|manual)$/.test(b.id)))
+            return json(400, { error: "invalid app selection" });
+          await new Promise<void>((ok, fail) =>
+            execFile(
+              process.execPath,
+              [TSX_CLI, ORCH, "browser", b.action, ...(b.action === "enable" ? [b.id] : [])],
+              { cwd: s.repo, encoding: "utf8", windowsHide: true },
+              (err, _stdout, stderr) => (err ? fail(new Error((stderr || err.message).trim())) : ok()),
+            ),
+          );
+          return json(200, { ok: true });
+        }
         if (url.pathname === "/api/remove-repo") {
           if (s.child || s.pending) return json(409, { error: "stop this repo's run before closing it" });
           sessions.delete(keyOf(s.repo));

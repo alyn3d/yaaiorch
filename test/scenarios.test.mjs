@@ -96,6 +96,33 @@ const writeConfig = (dir, cfg) => {
 
 // spawnSync blocks, so the scenarios run one after another; the timeout makes a hang fail instead of stalling CI.
 describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
+  test("browser setup requires selecting the current script and preserves existing settings", () => {
+    const dir = repo();
+    mkdirSync(join(dir, "web"));
+    writeFileSync(join(dir, "web", "package.json"), JSON.stringify({ scripts: { dev: "vite" } }));
+    writeConfig(dir, { checks: { test: "node test.js" } });
+    const detection = orch(dir, ["browser", "detect"]);
+    assert.equal(detection.code, 0, detection.out);
+    const { candidates } = JSON.parse(detection.out);
+    assert.equal(candidates.length, 1);
+    const enabled = orch(dir, ["browser", "enable", candidates[0].id]);
+    assert.equal(enabled.code, 0, enabled.out);
+    const cfg = JSON.parse(readFileSync(join(dir, ".orchestrator", "config.json"), "utf8"));
+    assert.deepEqual(cfg.checks, { test: "node test.js" });
+    assert.equal(cfg.serve.auto.id, candidates[0].id);
+    assert.equal(cfg.visual, true);
+    writeFileSync(join(dir, "web", "package.json"), JSON.stringify({ scripts: { dev: "vite --port 3000" } }));
+    const stale = orch(dir, ["browser", "enable", candidates[0].id]);
+    assert.notEqual(stale.code, 0);
+    assert.match(stale.out, /changed or was not found/);
+    assert.equal(orch(dir, ["browser", "disable"]).code, 0);
+    assert.equal(JSON.parse(readFileSync(join(dir, ".orchestrator", "config.json"), "utf8")).visual, false);
+    writeConfig(dir, { serve: { url: "http://localhost:3000", command: "custom" } });
+    const refused = orch(dir, ["browser", "enable", JSON.parse(orch(dir, ["browser", "detect"]).out).candidates[0].id]);
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.out, /manual browser configuration already exists/);
+  });
+
   test("checks-start reaches the UI while a check is still running", async () => {
     const dir = repo();
     writeConfig(dir, { checks: { slow: 'node -e "setTimeout(()=>{}, 2500)"' } });
@@ -2123,6 +2150,22 @@ describe("browser checks (fake claude, real browser)", { timeout: 300_000 }, () 
     return { dir, env: { FAKE_PLAN_FILE: planFile } };
   }
   const answers = (url) => spawnSync(process.execPath, ["-e", `fetch(${JSON.stringify(url)}).then(() => process.exit(0), () => process.exit(1))`]).status === 0;
+
+  test("an approved app is discovered and checked using its reported URL", { skip: noBrowser }, () => {
+    const { dir, env } = setup([{ path: "/", selector: "#title", viewports: [1280], themes: ["light"] }]);
+    writeConfig(dir, {});
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { dev: `node "${APP}" ${port} vite` } }));
+    git(dir, "add", "package.json");
+    git(dir, "commit", "-q", "-m", "add app");
+    const { candidates } = JSON.parse(orch(dir, ["browser", "detect"]).out);
+    const enabled = orch(dir, ["browser", "enable", candidates[0].id]);
+    assert.equal(enabled.code, 0, enabled.out);
+    const r = orch(dir, ["run", "check the app", "--max-rounds", "1"], env);
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.last("visual")?.url, `http://127.0.0.1:${port}`);
+    assert.equal(r.last("visual")?.shots.length, 1);
+    assert.equal(answers(`http://127.0.0.1:${port}`), false);
+  });
 
   test("screenshots and measurements reach QA; the dev server is stopped afterwards", { skip: noBrowser }, () => {
     const { dir, env } = setup([

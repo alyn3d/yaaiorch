@@ -6,7 +6,7 @@
 // Testing that `orch browser install` downloaded into ~/.yaaiorch/browser. Each repo gets its own profile
 // (~/.yaaiorch/browser-profiles/<hash>), so a login made with `orch browser login` is reused by the checks.
 import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_process";
-import { createWriteStream, mkdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, win32 } from "node:path";
 import { createHash } from "node:crypto";
@@ -26,7 +26,55 @@ export type Shot = { target: number; path: string; viewport: number; theme: Them
  */
 export type VisualResult = { url: string; shots: Shot[]; problems: string[]; observations: string[]; ms: number };
 /** Config "serve": how to start the app. Without `command`, something else must already serve `url`. */
-export type ServeConfig = { command?: string; url: string; timeout?: number };
+export type BrowserCandidate = { id: string; directory: string; script: string; scriptCommand: string; command: string; lifecycle: string[] };
+export type ServeConfig = { command?: string; url: string; timeout?: number; auto?: BrowserCandidate };
+
+/** Find common web-app scripts without executing repository code. Only the root and its immediate children are inspected. */
+export function detectBrowserApps(repo = process.cwd()): BrowserCandidate[] {
+  const dirs = [
+    ".",
+    ...readdirSync(repo, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith(".") && d.name !== "node_modules" && /^[\w.-]+$/.test(d.name))
+      .map((d) => d.name),
+  ];
+  const found: BrowserCandidate[] = [];
+  for (const directory of dirs) {
+    const dir = join(repo, directory);
+    const file = join(dir, "package.json");
+    if (!existsSync(file)) continue;
+    let pkg: { scripts?: Record<string, unknown>; packageManager?: string };
+    try {
+      pkg = JSON.parse(readFileSync(file, "utf8"));
+    } catch (e) {
+      throw new Error(`cannot read ${file}: ${msg(e)}`, { cause: e });
+    }
+    if (!pkg || typeof pkg !== "object") throw new Error(`invalid package.json: ${file}`);
+    const declared = pkg.packageManager?.split("@")[0];
+    const manager =
+      declared === "pnpm" || declared === "yarn" || declared === "npm"
+        ? declared
+        : existsSync(join(dir, "pnpm-lock.yaml")) || existsSync(join(repo, "pnpm-lock.yaml"))
+          ? "pnpm"
+          : existsSync(join(dir, "yarn.lock")) || existsSync(join(repo, "yarn.lock"))
+            ? "yarn"
+            : "npm";
+    for (const script of ["dev", "start"]) {
+      const scriptCommand = pkg.scripts?.[script];
+      if (
+        typeof scriptCommand !== "string" ||
+        !/\b(vite|next\s+dev|react-scripts\s+start|astro\s+dev|nuxt\s+dev|ng\s+serve|webpack\s+serve)\b/i.test(scriptCommand)
+      )
+        continue;
+      const command = `${manager} run ${script}`;
+      const lifecycle = [`pre${script}`, `post${script}`].flatMap((name) => (typeof pkg.scripts?.[name] === "string" ? [`${name}: ${pkg.scripts[name]}`] : []));
+      const id = createHash("sha256")
+        .update(JSON.stringify([directory, script, pkg.scripts, command]))
+        .digest("hex");
+      found.push({ id, directory, script, scriptCommand, command, lifecycle });
+    }
+  }
+  return found;
+}
 
 export const DEFAULT_VIEWPORTS = [1280, 375];
 export const MAX_TARGETS = 5;
@@ -61,11 +109,15 @@ export function isLocalUrl(u: string): boolean {
 export function parseServe(v: unknown): ServeConfig {
   const s = v as ServeConfig;
   if (!s || typeof s !== "object" || typeof s.url !== "string") throw new Error('config "serve" must be {"url": "http://localhost:PORT", "command": "..."}');
-  if (!isLocalUrl(s.url)) throw new Error(`config "serve": url must be on this machine (localhost, 127.0.0.1, [::1] or *.localhost), got "${s.url}"`);
+  if (s.auto) {
+    const candidate = detectBrowserApps().find((c) => c.id === s.auto?.id);
+    if (!candidate || JSON.stringify(candidate) !== JSON.stringify(s.auto) || s.command !== candidate.command || s.url !== "auto")
+      throw new Error("browser app or its dev script changed; review and enable browser checks again");
+  } else if (!isLocalUrl(s.url)) throw new Error(`config "serve": url must be on this machine (localhost, 127.0.0.1, [::1] or *.localhost), got "${s.url}"`);
   if (s.command !== undefined && (typeof s.command !== "string" || !s.command.trim())) throw new Error('config "serve": command must be a non-empty string');
   if (s.timeout !== undefined && !(typeof s.timeout === "number" && s.timeout > 0 && s.timeout <= 1800))
     throw new Error('config "serve": timeout must be a number of seconds (1 to 1800)');
-  return { url: s.url, ...(s.command ? { command: s.command } : {}), ...(s.timeout ? { timeout: s.timeout } : {}) };
+  return { url: s.url, ...(s.command ? { command: s.command } : {}), ...(s.timeout ? { timeout: s.timeout } : {}), ...(s.auto ? { auto: s.auto } : {}) };
 }
 
 /** A verify task's "visual" list, checked and with defaults filled in. Throws with a reason the architect can act on. */
@@ -253,27 +305,49 @@ async function answers(url: string): Promise<boolean> {
 export class DevServer {
   private proc?: ChildProcess;
   private out = "";
+  private discoveredUrl?: string;
+  private startError?: string;
   constructor(readonly cfg: ServeConfig) {}
+
+  get url(): string {
+    return this.discoveredUrl ?? this.cfg.url;
+  }
 
   /** Null once `url` answers; else why not (with the server's last output), which fails the round. */
   async ensure(): Promise<string | null> {
-    if (await answers(this.cfg.url)) return null;
+    if (!this.cfg.auto && (await answers(this.cfg.url))) return null;
     if (!this.cfg.command) return `nothing answers at ${this.cfg.url}, and config "serve" has no command to start the app`;
-    if (!this.proc || this.proc.exitCode !== null) this.start();
+    if (!this.proc || this.proc.exitCode !== null) {
+      if (this.cfg.auto) parseServe(this.cfg);
+      this.start();
+    }
     const limit = Date.now() + (this.cfg.timeout ?? 120) * 1000;
     while (Date.now() < limit) {
-      if (await answers(this.cfg.url)) return null;
-      if (this.proc!.exitCode !== null) return `the dev server (\`${this.cfg.command}\`) exited with code ${this.proc!.exitCode}:\n${this.tail()}`;
+      if (this.cfg.auto && !this.discoveredUrl) {
+        const output = this.out.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
+        const urls = output.match(/https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):\d+(?:\/[^\s]*)?/gi) ?? [];
+        for (const url of [...new Set(urls)].slice(-10)) {
+          if (isLocalUrl(url) && (await answers(url))) {
+            this.discoveredUrl = url;
+            return null;
+          }
+        }
+      }
+      if (this.url !== "auto" && (await answers(this.url))) return null;
+      if (this.startError) return `could not start the dev server (\`${this.cfg.command}\`): ${this.startError}`;
+      if (this.proc!.exitCode !== null || this.proc!.signalCode !== null)
+        return `the dev server (\`${this.cfg.command}\`) exited (${this.proc!.exitCode ?? this.proc!.signalCode}):\n${this.tail()}`;
       await sleep(500);
     }
-    return `the dev server (\`${this.cfg.command}\`) did not answer at ${this.cfg.url} within ${this.cfg.timeout ?? 120}s:\n${this.tail()}`;
+    return `the dev server (\`${this.cfg.command}\`) did not ${this.url === "auto" ? "report a local URL" : `answer at ${this.url}`} within ${this.cfg.timeout ?? 120}s:\n${this.tail()}`;
   }
 
   /** After dependencies changed (config "setup" ran): a dev server does not pick up new packages by itself. */
   async restart(): Promise<string | null> {
     if (!this.proc) return this.ensure();
     this.stop();
-    for (let i = 0; i < 20 && (await answers(this.cfg.url)); i++) await sleep(250);
+    for (let i = 0; i < 20 && this.url !== "auto" && (await answers(this.url)); i++) await sleep(250);
+    this.discoveredUrl = undefined;
     return this.ensure();
   }
 
@@ -285,6 +359,8 @@ export class DevServer {
   private start() {
     console.log(`starting the dev server: ${this.cfg.command}`);
     this.out = "";
+    this.discoveredUrl = undefined;
+    this.startError = undefined;
     // The user's own command from the repo's config, like the checks: through the shell.
     const p = spawn(this.cfg.command!, {
       shell: true,
@@ -292,11 +368,12 @@ export class DevServer {
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, BROWSER: "none", FORCE_COLOR: "0" },
+      cwd: this.cfg.auto ? join(process.cwd(), this.cfg.auto.directory) : process.cwd(),
     });
     const keep = (d: Buffer) => (this.out = (this.out + d.toString()).slice(-8000));
     p.stdout?.on("data", keep);
     p.stderr?.on("data", keep);
-    p.on("error", (e) => keep(Buffer.from(`\n${msg(e)}`)));
+    p.on("error", (e) => (this.startError = msg(e)));
     this.proc = p;
   }
 

@@ -6,6 +6,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
+- Automatic browser-check setup for common web apps: review the detected script, discover the local server URL, and log in from run settings.
 - Opt-in agent decision cards with suggested or free-text answers, independent parallel questions and read-only history.
 - Browser-check screenshot previews in live rounds and replayed run history.
 - Queue ordering controls for pending goals with the same priority, using the queue's lock-protected writer.

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Power } from "./types";
 import { DEFAULT_PLUGINS, PluginsPanel, type PluginSettings } from "./Plugins";
+import { BrowserSetup } from "./BrowserSetup";
 
 /** Roles that call a model; mirrors ROLES in orch.ts. */
 export const ROLES = ["architect", "impl", "heavy", "qa", "dev"] as const;
@@ -144,7 +145,19 @@ export function useRepoSettings(repo: string) {
   return [saved.settings, update, saved.error] as const;
 }
 
-export function SettingsPanel({ repo, power, settings, onChange }: { repo: string; power: Power; settings: RunSettings; onChange: (s: RunSettings) => void }) {
+export function SettingsPanel({
+  repo,
+  power,
+  settings,
+  onChange,
+  busy,
+}: {
+  repo: string;
+  power: Power;
+  settings: RunSettings;
+  onChange: (s: RunSettings) => void;
+  busy: boolean;
+}) {
   const tier = TIER_MODELS[power];
   const custom = ROLES.filter((r) => settings.models[r].trim()).length + (settings.agentModels.trim() ? 1 : 0);
   const { error } = modelSpec(settings);
@@ -246,6 +259,7 @@ export function SettingsPanel({ repo, power, settings, onChange }: { repo: strin
         </p>
         {error && <p className="error">{error}</p>}
       </details>
+      <BrowserSetup repo={repo} busy={busy} />
       <PluginsPanel repo={repo} value={settings.plugins} onChange={(plugins) => onChange({ ...settings, plugins })} />
     </>
   );

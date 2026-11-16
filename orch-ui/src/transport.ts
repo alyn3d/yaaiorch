@@ -7,6 +7,13 @@ import type { AgentRoster, Finding, Global, HistoryEntry, HistoryRecording, Orch
 /** One repo's state, log and structured events since its last goal_start. */
 export type SessionInit = { state: State; log: string[]; events: OrchEvent[] };
 export type Init = { sessions: SessionInit[]; maxParallel: number; global: Global };
+export type BrowserCandidate = { id: string; directory: string; script: string; scriptCommand: string; command: string; lifecycle: string[] };
+export type BrowserSetup = {
+  candidates: BrowserCandidate[];
+  serve: { url: string; command?: string; auto?: BrowserCandidate } | null;
+  enabled: boolean;
+  browser: { path: string; via: string } | null;
+};
 export type Handlers = {
   onInit(d: Init): void;
   onSession(s: State): void;
@@ -39,6 +46,8 @@ export interface Transport {
   clearLimit(): Promise<void>;
   /** First-run checks (`orch doctor`) for one repo. */
   doctor(repo: string): Promise<Finding[]>;
+  browserSetup(repo: string): Promise<BrowserSetup>;
+  configureBrowser(repo: string, action: "enable" | "disable" | "login", id?: string): Promise<void>;
   /** The repo's Claude Code plugins with their token cost (slow; the browser server caches it). */
   plugins(repo: string, fresh?: boolean): Promise<Plugin[]>;
   /** Agents and skills discovered for a repo. */
@@ -158,6 +167,12 @@ const web: Transport = {
     const r = await api(`/api/doctor?repo=${encodeURIComponent(repo)}`);
     return r.ok ? r.json() : [{ name: "server", level: "fail", detail: r.statusText }];
   },
+  async browserSetup(repo) {
+    const r = await api(`/api/browser?repo=${encodeURIComponent(repo)}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+    return r.json();
+  },
+  configureBrowser: (repo, action, id) => post("browser", { repo, action, id }),
   async plugins(repo, fresh) {
     const r = await api(`/api/plugins?repo=${encodeURIComponent(repo)}${fresh ? "&fresh=1" : ""}`);
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
@@ -259,6 +274,8 @@ const tauri: Transport = {
   setUsageCap: (cap) => tauriInvoke("set_usage_cap", { fiveHour: cap.fiveHour, week: cap.week }),
   clearLimit: () => tauriInvoke("clear_limit"),
   doctor: (repo) => tauriInvoke<Finding[]>("doctor", { repo }),
+  browserSetup: (repo) => tauriInvoke<BrowserSetup>("browser_detect", { repo }),
+  configureBrowser: (repo, action, id) => tauriInvoke("browser_configure", { repo, action, id }),
   plugins: (repo) => tauriInvoke<Plugin[]>("plugins", { repo }),
   agents: (repo) => tauriInvoke<AgentRoster>("agents", { repo }),
   history: (repo) => tauriInvoke<HistoryEntry[]>("history", { repo }),

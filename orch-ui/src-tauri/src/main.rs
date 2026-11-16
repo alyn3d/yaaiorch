@@ -1347,6 +1347,42 @@ fn doctor(app: AppHandle, repo: String) -> Value {
     serde_json::from_slice(&out.stdout).unwrap_or_else(|_| fail(String::from_utf8_lossy(&out.stderr).trim().to_string()))
 }
 
+#[tauri::command(async)]
+fn browser_detect(app: AppHandle, repo: String) -> Result<Value, String> {
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let out = node_cmd(&app, &dir, &["browser".into(), "detect".into()])?
+        .output()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("invalid browser detection result: {e}"))
+}
+
+#[tauri::command(async)]
+fn browser_configure(app: AppHandle, repo: String, action: String, id: Option<String>) -> Result<(), String> {
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    if action == "login" {
+        return request_start(&app, &repo, vec!["browser".into(), "login".into()], "browser login".into());
+    }
+    if action != "enable" && action != "disable" {
+        return Err("invalid browser action".into());
+    }
+    let mut args = vec!["browser".into(), action.clone()];
+    if action == "enable" {
+        let value = id.ok_or("app selection required")?;
+        if value != "manual" && (value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())) {
+            return Err("invalid app selection".into());
+        }
+        args.push(value);
+    }
+    let out = node_cmd(&app, &dir, &args)?.output().map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
 /// Ask a running queue loop to stop before its next goal (the file `orch stop-after` writes).
 #[tauri::command]
 fn stop_after(app: AppHandle, state: State<AppState>, repo: String) -> Result<(), String> {
@@ -1497,6 +1533,8 @@ fn main() {
             accept_split,
             stop_after,
             doctor,
+            browser_detect,
+            browser_configure,
             plugins
         ])
         .build(tauri::generate_context!())

@@ -152,8 +152,9 @@ Each item should show its effect in the evals before it becomes the default.
   round, `orch browser login|install`, doctor, the run view's **Browser** row.
 - [x] **Screenshots in the UI**: thumbnails per round, fetched only from the repo's `.orchestrator/visual/`
   directory through the guarded browser API or a scoped desktop command.
-- [ ] **Browser login** button that runs `orch browser login`.
-- [ ] **`serve` in the run settings**, so it need not be written into config.json by hand.
+- [x] **Browser login** button that runs `orch browser login`.
+- [x] **Automatic browser setup** in run settings: detect common web apps, approve a script, and discover its local URL.
+  Manual `serve` configuration remains available for other setups.
 - [ ] **Design comparison**: a Figma link or images in the goal; export the frames and give QA both.
 - [ ] **Refute pass**: a fresh read-only agent tries to disprove each QA or review failure before it fails the
   round (fewer wasted rounds); measure false fails on the evals.

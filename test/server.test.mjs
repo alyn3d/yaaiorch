@@ -136,6 +136,29 @@ describe("browser-mode server guard", { timeout: 60_000 }, () => {
     assert.equal(helper?.content, content);
   });
 
+  test("browser setup is token-protected, scoped to an open repo and requires a detected selection", async () => {
+    const repo = join(home, "browser-repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { dev: "vite" } }));
+    const t = await token();
+    const headers = { "x-orch-token": t, "content-type": "application/json" };
+    assert.equal((await request("/api/add-repo", { method: "POST", headers, body: { path: repo } })).status, 200);
+    const path = `/api/browser?repo=${encodeURIComponent(repo)}`;
+    assert.equal((await request(path)).status, 403);
+    const detected = await request(path, { headers });
+    assert.equal(detected.status, 200, detected.text);
+    const [candidate] = detected.json().candidates;
+    assert.ok(candidate);
+    assert.notEqual((await request(`/api/browser?repo=${encodeURIComponent(join(home, "not-open"))}`, { headers })).status, 200);
+    assert.equal((await request("/api/browser", { method: "POST", headers, body: { repo, action: "enable", id: "invalid" } })).status, 400);
+    const enabled = await request("/api/browser", { method: "POST", headers, body: { repo, action: "enable", id: candidate.id } });
+    assert.equal(enabled.status, 200, enabled.text);
+    assert.equal((await request(path, { headers })).json().enabled, true);
+    const disabled = await request("/api/browser", { method: "POST", headers, body: { repo, action: "disable" } });
+    assert.equal(disabled.status, 200, disabled.text);
+    assert.equal((await request(path, { headers })).json().enabled, false);
+  });
+
   test("history is scoped to an open repo and requires the API token", async () => {
     const repo = join(home, "history-repo");
     const runs = join(repo, ".orchestrator", "runs");
