@@ -518,8 +518,9 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     const calls = r.calls.filter((c) => c.startsWith("call "));
     const capOf = (c) => [/agent=(\S+)/.exec(c)[1], Number(/\bcap=(\S+)/.exec(c)[1])];
     // architect 0.30 -> foundation fe gets the 0.25 left -> be and fe build in parallel: 0.20 left, 0.10 each -> qa 0.10.
+    const caps = calls.map(capOf);
     assert.deepEqual(
-      calls.map(capOf),
+      [...caps.slice(0, 2), ...caps.slice(2, 4).sort(([a], [b]) => a.localeCompare(b)), ...caps.slice(4)],
       [
         ["architect", 0.3],
         ["fe", 0.25],

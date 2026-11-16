@@ -1668,6 +1668,13 @@ function validate(plan: Plan, roster: Entry[]) {
       if (owner.has(k)) throw new Error(`file ${f} owned by both ${owner.get(k)} and ${t.agent}`);
       owner.set(k, t.agent);
     }
+    if (t.files)
+      t.files = t.files.map((f) =>
+        f
+          .trim()
+          .replace(/\\/g, "/")
+          .replace(/^(\.\/)+/, ""),
+      );
   });
   if (!plan.tasks.some((t) => t.phase === "verify")) throw new Error("plan has no verify task");
   const pages = plan.tasks.reduce((n, t) => n + (t.visual?.length ?? 0), 0);
@@ -2168,6 +2175,8 @@ function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: strin
       windowsHide: true,
       timeout: 120_000,
     });
+    if (r.error && "code" in r.error && r.error.code === "ENOENT")
+      throw new Error(`pushed ${gb.branch}, but gh (GitHub CLI) was not found; open the pull request yourself`);
     if (r.status !== 0) throw new Error(`gh pr create failed: ${(r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 300)}`);
     url = /https?:\/\/\S+/.exec(r.stdout)?.[0];
     console.log(`pull request: ${url ?? r.stdout.trim()}`);
@@ -4186,6 +4195,8 @@ function githubIssues(label: string): { number: number; title: string; body: str
     windowsHide: true,
     timeout: 60_000,
   });
+  if (r.error && "code" in r.error && r.error.code === "ENOENT")
+    throw new Error("gh (GitHub CLI) was not found; install it and run gh auth login to read issues");
   if (r.status !== 0) throw new Error(`gh issue list failed: ${(r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 300)}`);
   const list = JSON.parse(r.stdout || "[]") as { number?: unknown; title?: unknown; body?: unknown; labels?: unknown }[];
   return list

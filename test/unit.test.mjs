@@ -59,6 +59,11 @@ describe("validate", () => {
   test("a good plan passes", () => {
     assert.doesNotThrow(() => o.validate(plan([{ agent: "fe", phase: "build", task: "t", files: ["src/a.ts"] }]), roster));
   });
+  test("normalizes planned paths before agents use them", () => {
+    const p = plan([{ agent: "fe", phase: "build", task: "t", files: [" .\\src\\Mixed.ts "] }]);
+    o.validate(p, roster);
+    assert.deepEqual(p.tasks[0].files, ["src/Mixed.ts"]);
+  });
   test("rejections name the problem", () => {
     const cases = [
       [plan([{ agent: "zz", phase: "build", task: "t", files: ["a"] }]), /unknown agent "zz"/],
