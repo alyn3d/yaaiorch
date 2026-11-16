@@ -199,8 +199,7 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
       .filter((line) => line.startsWith("worktree "))
       .map((line) => line.slice("worktree ".length));
     assert.equal(worktreePaths.length, 2);
-    const normalizePath = (path) => (process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path));
-    const preserved = worktreePaths.find((path) => normalizePath(path) !== normalizePath(dir));
+    const preserved = worktreePaths[1]; // Git lists the main worktree first.
     assert.ok(preserved);
     assert.equal(readFileSync(join(preserved, "src", "shared.txt"), "utf8"), "shared from fe\n");
     git(dir, "worktree", "remove", "--force", preserved);
@@ -1427,6 +1426,35 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
       const where = branchMode ? again.last("goal_branch").branch : "main";
       assert.deepEqual(git(dir, "log", "--format=%s", where).split("\n").slice(0, 3), ["orch: build it (round 1)", "orch: build it (round 1)", "init"]);
     }
+  });
+
+  test("parallel fake agents count usage-limit calls independently", async () => {
+    const dir = repo();
+    const logFile = join(dir, "calls.log");
+    const count = 12;
+    const env = {
+      ...process.env,
+      FAKE_LIMIT_FILE: join(dir, "limit-call"),
+      FAKE_LIMIT_ON: Array.from({ length: count }, (_, i) => i + 1).join(","),
+      FAKE_LOG: logFile,
+    };
+    const results = await Promise.all(
+      Array.from(
+        { length: count },
+        () =>
+          new Promise((ok, reject) => {
+            const child = spawn(process.execPath, [join(ROOT, "test", "fake-claude", "fake-claude.mjs")], { cwd: dir, env, stdio: "ignore" });
+            child.on("error", reject);
+            child.on("close", ok);
+          }),
+      ),
+    );
+    assert.deepEqual(results, Array(count).fill(1));
+    const calls = [...readFileSync(logFile, "utf8").matchAll(/usage limit \(call (\d+)\)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
+    assert.deepEqual(
+      calls,
+      Array.from({ length: count }, (_, i) => i + 1),
+    );
   });
 
   test("orch intake: GitHub issues with a label and unchecked backlog items are queued once each", () => {

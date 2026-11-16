@@ -39,13 +39,13 @@
 //   FAKE_PLAN_FILE=<file>    the architect returns this plan (JSON) instead of the fixed one, for demos and
 //                            for plans with browser checks ("visual" on the verify task)
 //   FAKE_LIMIT_ON=3,4        those call numbers return the real usage-limit reply (counted per repo
-//                            in .orchestrator/fake-calls, or in FAKE_LIMIT_FILE)
+//                            in .orchestrator/fake-calls.N, or at FAKE_LIMIT_FILE.N)
 //   FAKE_LIMIT_AFTER=<n>     every call after the n-th returns the usage-limit reply
 //   FAKE_USAGE=<5h>,<week>   with --output-format stream-json, print a rate_limit_event first with these
 //                            utilizations (fractions, e.g. 0.83,0.24); windows reset FAKE_USAGE_RESET_S (3600) s from now
 // Also answers `--version` and `auth status --json` for `orch doctor`, `plugin list --json` and
 // `plugin details <id>` for `orch plugins`, and honours --max-budget-usd.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
 
 const args = process.argv.slice(2);
@@ -132,8 +132,16 @@ if (env.FAKE_USAGE && opt("--output-format") === "stream-json") {
 // Usage limit, exactly as the real CLI reports it.
 if (env.FAKE_LIMIT_ON || env.FAKE_LIMIT_AFTER) {
   const f = env.FAKE_LIMIT_FILE ?? ".orchestrator/fake-calls";
-  const n = (existsSync(f) ? Number(readFileSync(f, "utf8")) : 0) + 1;
-  writeFileSync(f, String(n));
+  let n = 1;
+  for (;;) {
+    try {
+      closeSync(openSync(`${f}.${n}`, "wx"));
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      n++;
+    }
+  }
   const listed = (env.FAKE_LIMIT_ON ?? "").split(",").map(Number).includes(n);
   if (listed || (env.FAKE_LIMIT_AFTER && n > Number(env.FAKE_LIMIT_AFTER))) {
     log(`${agent}: usage limit (call ${n})`);
