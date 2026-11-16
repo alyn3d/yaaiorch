@@ -591,6 +591,7 @@ struct Extra {
     /// "security-reviewer,backend-reviewer": the user's agents instead of the built-in reviewer
     reviewers: Option<String>,
     branch: Option<bool>,
+    worktrees: Option<bool>,
     pr: Option<bool>,
     approve_plan: Option<bool>,
     ask: Option<bool>,
@@ -674,6 +675,9 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if extra.branch.unwrap_or(false) {
         v.push("--branch".into());
+    }
+    if let Some(worktrees) = extra.worktrees {
+        v.push(if worktrees { "--worktrees" } else { "--no-worktrees" }.into());
     }
     if extra.pr.unwrap_or(false) {
         v.push("--pr".into());
@@ -892,6 +896,7 @@ fn run_goal(
     review: Option<bool>,
     reviewers: Option<String>,
     branch: Option<bool>,
+    worktrees: Option<bool>,
     pr: Option<bool>,
     approve_plan: Option<bool>,
     ask: Option<bool>,
@@ -913,6 +918,7 @@ fn run_goal(
         review,
         reviewers,
         branch,
+        worktrees,
         pr,
         approve_plan,
         ask,
@@ -944,6 +950,7 @@ fn run_loop(
     review: Option<bool>,
     reviewers: Option<String>,
     branch: Option<bool>,
+    worktrees: Option<bool>,
     pr: Option<bool>,
     approve_plan: Option<bool>,
     ask: Option<bool>,
@@ -961,6 +968,7 @@ fn run_loop(
         review,
         reviewers,
         branch,
+        worktrees,
         pr,
         approve_plan,
         ask,

@@ -110,9 +110,7 @@ Each item should show its effect in the evals before it becomes the default.
   per-item max rounds set by hand.
 - [x] **Plan approval gate**: optional pause after planning so a human can approve or edit the plan
   (`--approve-plan`, `orch approve`, the run panel).
-- [ ] **Worktree per build task** so parallel agents cannot break each other's test runs (Conductor,
-  Baton and others isolate this way). Merge back after the phase; exclusive file ownership keeps it
-  conflict-free.
+- [x] **Worktree per build task** (`--worktrees`, `"worktrees": true`, or **Isolate build tasks**): parallel build agents start from the same round snapshot. Orch applies each task's changes back after it finishes; a merge conflict keeps that task's worktree and reports its path. Opt-in; requires Git.
 - [ ] **Sandboxed runs** (optional): run the agents in a container or VM for repos you do not fully
   trust them with.
 - [x] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri; the browser's in
@@ -171,6 +169,7 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Agent roster page**: view built-in, user-level and project agents plus discovered skills; edit
   project agents or save repo-local overrides without changing global Claude Code definitions.
 - [x] **Per-repo settings** (power, max rounds, budget) remembered by the desktop app.
+- [x] **Cross-repo work board** in Overview: working tasks, user input, verification/PR review and completed queue goals.
 - [ ] **One backend**: share line parsing and event buffering instead of keeping `server.ts` and
   `main.rs` in sync (or let the desktop app start `server.ts`).
 - [ ] **Shared event types** between `orch.ts` and the UI (one discriminated union). **good first issue**

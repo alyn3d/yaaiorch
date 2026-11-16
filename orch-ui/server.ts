@@ -358,6 +358,7 @@ const flags = (b: {
   review?: boolean;
   reviewers?: string;
   branch?: boolean;
+  worktrees?: boolean;
   pr?: boolean;
   approvePlan?: boolean;
   ask?: boolean;
@@ -380,6 +381,7 @@ const flags = (b: {
   ...(b.review ? ["--review"] : []),
   ...(b.review && typeof b.reviewers === "string" && REVIEWERS.test(b.reviewers) ? ["--reviewers", b.reviewers] : []),
   ...(b.branch ? ["--branch"] : []),
+  ...(b.worktrees === true ? ["--worktrees"] : b.worktrees === false ? ["--no-worktrees"] : []),
   ...(b.pr ? ["--pr"] : []),
   ...(b.approvePlan ? ["--approve-plan"] : []),
   ...(b.ask === true ? ["--ask"] : b.ask === false ? ["--no-ask"] : []),

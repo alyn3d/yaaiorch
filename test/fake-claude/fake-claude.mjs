@@ -309,6 +309,8 @@ if (prompt.includes("Review this change")) {
   }
   if (env.FAKE_SLOW) await sleep(Number(env.FAKE_SLOW) * 1000);
   if (prompt.includes("## Project brief")) log(`${agent}: got brief`);
+  if (env.FAKE_LOG_CWD) log(`${agent}: cwd=${process.cwd()} baselineTypes=${existsSync("src/types.ts")}`);
+  if (env.FAKE_LOG_DEPENDENCIES) log(`dependencies ${agent}: cwd=${process.cwd()} node_modules=${existsSync("node_modules")}`);
   // The fast path's generalist gets no file list; it writes one file of its own.
   // Only the task's own file list counts, not bullet points in the brief or the notes above it.
   const own = prompt.split("Your files (touch only these):")[1]?.split("\n## ")[0] ?? "";
@@ -336,6 +338,10 @@ if (prompt.includes("Review this change")) {
   if (env.FAKE_STRAY_FILE && agent === "be") {
     mkdirSync(dirname(env.FAKE_STRAY_FILE), { recursive: true });
     writeFileSync(env.FAKE_STRAY_FILE, "not in any task's list\n");
+  }
+  if (env.FAKE_SHARED_FILE && (agent === "be" || files.some((f) => f.endsWith("ui.ts")))) {
+    mkdirSync(dirname(env.FAKE_SHARED_FILE), { recursive: true });
+    writeFileSync(env.FAKE_SHARED_FILE, `shared from ${agent}\n`);
   }
   log(`${agent}: wrote ${env.FAKE_NOWRITE ? "nothing" : files.join(",")}`);
   reply(`${env.FAKE_REPORT ?? "done"}\nStatus: COMPLETE`);

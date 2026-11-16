@@ -140,6 +140,71 @@ describe("orch scenarios (fake claude)", { timeout: 300_000 }, () => {
     }
   });
 
+  test("parallel build worktrees inherit foundation changes, merge their diffs and can be disabled", () => {
+    const dir = repo();
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
+    git(dir, "add", ".gitignore");
+    git(dir, "commit", "-q", "-m", "ignore dependencies");
+    mkdirSync(join(dir, "node_modules"));
+    writeFileSync(join(dir, "node_modules", "dependency.txt"), "shared\n");
+    writeConfig(dir, { worktrees: true });
+    const isolated = orch(dir, ["run", "isolated build", "--max-rounds", "1"], {
+      FAKE_QA: "pass",
+      FAKE_LOG_CWD: "1",
+      FAKE_LOG_DEPENDENCIES: "1",
+    });
+    assert.equal(isolated.code, 0, isolated.out);
+    assert.ok(existsSync(join(dir, "src", "types.ts")));
+    assert.ok(existsSync(join(dir, "src", "api.ts")));
+    assert.ok(existsSync(join(dir, "src", "ui.ts")));
+    const workerCwds = isolated.calls.filter((line) => /^(?:be|fe): cwd=/.test(line)).map((line) => line.match(/cwd=(.*?) baselineTypes=(true|false)$/));
+    assert.equal(workerCwds.length, 3);
+    assert.equal(new Set(workerCwds.map((m) => m[1])).size, 3, "each build task uses its own worktree");
+    assert.equal(workerCwds.filter((m) => m[2] === "true").length, 2, "build worktrees see the foundation file");
+    assert.ok(
+      workerCwds.some((m) => m[1] === dir && m[2] === "false"),
+      "foundation runs in the main worktree",
+    );
+    const dependencyCwds = isolated.calls
+      .filter((line) => /^dependencies (?:be|fe): cwd=.* node_modules=true$/.test(line))
+      .map((line) => line.match(/cwd=(.*?) node_modules=true$/)[1]);
+    assert.equal(dependencyCwds.length, 3, "the foundation and both build tasks can use ignored dependencies");
+    assert.equal(dependencyCwds.filter((cwd) => cwd !== dir).length, 2);
+    assert.equal(
+      git(dir, "worktree", "list", "--porcelain")
+        .split("\n")
+        .filter((line) => line.startsWith("worktree ")).length,
+      1,
+    );
+
+    const shared = orch(dir, ["run", "shared build", "--max-rounds", "1", "--no-worktrees"], { FAKE_QA: "pass", FAKE_LOG_CWD: "1" });
+    assert.equal(shared.code, 0, shared.out);
+    const cwdLines = shared.calls.filter((line) => /^(?:be|fe): cwd=/.test(line)).slice(-3);
+    assert.equal(cwdLines.length, 3);
+    assert.ok(cwdLines.every((line) => line.includes(`cwd=${dir} `)));
+  });
+
+  test("a task worktree whose diff conflicts is preserved for recovery", () => {
+    const dir = repo();
+    writeConfig(dir, { worktrees: true });
+    const run = orch(dir, ["run", "conflicting workers", "--max-rounds", "1"], {
+      FAKE_QA: "pass",
+      FAKE_SHARED_FILE: "src/shared.txt",
+    });
+    assert.equal(run.code, 1, run.out);
+    assert.match(run.out, /changes are preserved at .*yaaiorch-worktrees/);
+    assert.equal(readFileSync(join(dir, "src", "shared.txt"), "utf8"), "shared from be\n");
+    const worktreePaths = git(dir, "worktree", "list", "--porcelain")
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => line.slice("worktree ".length));
+    assert.equal(worktreePaths.length, 2);
+    const preserved = worktreePaths.find((path) => resolve(path) !== resolve(dir));
+    assert.ok(preserved);
+    assert.equal(readFileSync(join(preserved, "src", "shared.txt"), "utf8"), "shared from fe\n");
+    git(dir, "worktree", "remove", "--force", preserved);
+  });
+
   test("task activity streams before completion, is bounded, private and attributed to the right task", async () => {
     const dir = repo();
     const secret = "sk-ant-" + "x".repeat(30);

@@ -391,12 +391,13 @@ describe("open in editor (orch-ui/src/editorLinks.ts)", () => {
 });
 
 describe("run view (orch-ui/src/reduce.ts)", () => {
-  let reduce, roundPhases, failureSummary, taskTimeline;
+  let reduce, roundPhases, failureSummary, taskTimeline, overviewBoard;
   before(async () => {
     const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
     const { tsImport } = await import(pathToFileURL(api).href);
     ({ reduce } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "reduce.ts")).href, import.meta.url));
     ({ roundPhases, failureSummary, taskTimeline } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "runProgress.ts")).href, import.meta.url));
+    ({ overviewBoard } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "overviewBoard.ts")).href, import.meta.url));
   });
   const fold = (events) => events.reduce((run, e, i) => reduce(run, { t: 1000 + i, ...e }), null);
   test("questions remain independently answered in the replay", () => {
@@ -431,6 +432,53 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
       ],
     },
   ];
+
+  test("overview board groups active work, user questions, review and completed queue goals", () => {
+    const makeSession = (repo, events, running = true, queue = []) => ({
+      state: { repo, running: running ? { label: "run" } : null, queue, lastRun: null },
+      log: [],
+      run: fold(events),
+    });
+    const working = makeSession("repo-working", [...start, { type: "task_start", round: 1, id: 0 }]);
+    const needsYou = makeSession("repo-question", [
+      ...start,
+      { type: "question_wait", id: "q", round: 1, taskId: 0, agent: "be", question: "Which API?", options: [] },
+    ]);
+    const reviewing = makeSession("repo-review", [...start, { type: "task_start", round: 1, id: 1 }]);
+    const prWithPassingCI = makeSession(
+      "repo-pr",
+      [
+        { type: "goal_start", goal: "ship it", maxRounds: 1, dryRun: false, maxCost: 2 },
+        { type: "goal_end", passed: true },
+        { type: "pr", url: "https://example.test/pr/1" },
+        { type: "ci", state: "pass", failed: [] },
+      ],
+      false,
+    );
+    const done = makeSession("repo-done", [], false, [{ id: 4, goal: "Add export", status: "done", cost: 0.1, seconds: 61 }]);
+    const order = ["repo-working", "repo-question", "repo-review", "repo-pr", "repo-done"];
+    const board = overviewBoard(
+      {
+        "repo-working": working,
+        "repo-question": needsYou,
+        "repo-review": reviewing,
+        "repo-pr": prWithPassingCI,
+        "repo-done": done,
+      },
+      order,
+      Date.now(),
+    );
+    assert.equal(board.Working[0].repo, "repo-working");
+    assert.equal(board["Needs you"][0].detail, "Which API?");
+    assert.equal(board["In review"][0].repo, "repo-review");
+    assert.ok(
+      board["In review"].some((card) => card.repo === "repo-pr"),
+      "CI-passing PRs remain in review",
+    );
+    assert.equal(board.Done[0].repo, "repo-done");
+    assert.equal(board.Done[0].title, "Add export");
+    assert.match(board.Done[0].detail, /Issue|Queue goal/);
+  });
 
   test("phase timeline shows a question wait only when all active tasks in the phase are waiting", () => {
     const planning = fold([...start.slice(0, 2), { type: "question_wait", id: "p", round: 1, agent: "architect", question: "Which?", options: [] }]);

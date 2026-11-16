@@ -5,6 +5,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-16
+
+### Added
+- Opt-in worktrees for parallel build tasks. Every task starts from the same round snapshot; diffs apply back after completion, and a conflicting worktree is preserved with its recovery path reported.
+- A cross-repo Overview work board for active tasks, human input, verification/PR review, and completed queue goals.
+- A landing-page screenshot slider, including a simulated three-project work board.
+
 ## [0.5.3] - 2026-11-16
 
 ### Added
@@ -368,7 +375,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/alyn3d/yaaiorch/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/alyn3d/yaaiorch/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/alyn3d/yaaiorch/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/alyn3d/yaaiorch/compare/v0.5.0...v0.5.1

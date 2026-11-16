@@ -15,9 +15,8 @@ Conductor, Claude Squad and Vibe Kanban), YAAIORCH's distinct strengths are:
 - it never loses work, and has a budget, timeouts, stuck escalation and usage-limit waiting;
 - read-only planner and QA, and a Windows desktop app.
 
-Its gaps, addressed below: no isolation between parallel agents (others use worktrees or sandboxes),
-no GitHub issue-to-pull-request flow, no critic that reviews the plan before building, Claude Code as
-the only agent runtime, and no published numbers yet.
+Its remaining gaps: no sandbox for untrusted repos, Claude Code as the only agent runtime, and no
+published eval baseline yet. Parallel build tasks can now use opt-in Git worktrees.
 
 ## Principles
 
@@ -81,11 +80,13 @@ From "run this goal" to "work through this backlog".
 Shipped across 0.4.0 and 0.5.0: a branch and a pull request per goal (one per brief), goals from labelled GitHub
 issues or `BACKLOG.md` with dependencies and priorities, retries and blocked goals, comments on the issue, the
 pull request's CI watched and fixed, a plan approval gate, notifications, protected paths and a secret scan.
+Parallel build tasks can optionally run in separate worktrees, with task diffs applied back and conflicted worktrees
+preserved for recovery. Overview also has a cross-repo work board for active tasks, human input, PR review and
+completed queue goals.
 
 Still open, moved on:
 
-- Worktrees per build task (or per goal) for real isolation between parallel agents, and optional sandboxed runs
-  (container or VM) for repos you do not fully trust the agents with.
+- Optional sandboxed runs (container or VM) for repos you do not fully trust the agents with.
 - A GitHub Action that runs orch on a labelled issue in CI, and optional auto-merge after CI and a human review.
 - Running the issue and CI flows against real GitHub, and measuring all of 0.3 to 0.5 on the evals.
 

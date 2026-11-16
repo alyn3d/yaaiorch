@@ -78,6 +78,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     review: settings.review,
     reviewers: settings.reviewers || undefined,
     branch: settings.branch || settings.pr,
+    worktrees: settings.worktrees,
     pr: settings.pr,
     approvePlan: settings.approvePlan,
     ask: settings.ask,
@@ -102,6 +103,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     settings.approvePlan && "approve plans",
     settings.ask && "agent questions",
     (settings.branch || settings.pr) && (settings.pr ? "pull request" : "branch per goal"),
+    settings.worktrees && "task worktrees",
   ].filter(Boolean) as string[];
   const name = repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
 

@@ -1602,6 +1602,209 @@ button {
     }
   }
 }
+.agent-board {
+  .board-lanes {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(220px, 1fr));
+    gap: 12px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .board-lane {
+    min-width: 0;
+    padding: 12px;
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.025), transparent 55%), var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+  .board-lane-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+    h4 {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12.5px;
+      font-weight: 650;
+    }
+    .count {
+      min-width: 22px;
+      padding: 2px 6px;
+      text-align: center;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      font-variant-numeric: tabular-nums;
+    }
+  }
+  .board-lane-dot,
+  .board-state-dot {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--running);
+    box-shadow: 0 0 8px rgba(96, 165, 250, 0.35);
+  }
+  .needs-you .board-lane-dot,
+  .needs-you .board-state-dot {
+    background: var(--warn);
+    box-shadow: 0 0 8px rgba(245, 184, 75, 0.35);
+  }
+  .in-review .board-lane-dot,
+  .in-review .board-state-dot {
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent-soft);
+  }
+  .done .board-lane-dot,
+  .done .board-state-dot {
+    background: var(--ok);
+    box-shadow: 0 0 8px rgba(63, 207, 142, 0.35);
+  }
+  .board-card {
+    position: relative;
+    width: 100%;
+    height: auto;
+    min-height: 142px;
+    margin-top: 8px;
+    padding: 10px 11px;
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+    text-align: left;
+    white-space: normal;
+    border: 1px solid var(--border-2);
+    border-left: 2px solid var(--border-2);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
+    transition:
+      transform 0.15s ease,
+      border-color 0.15s ease,
+      background 0.15s ease,
+      box-shadow 0.15s ease;
+    &:hover:not(:disabled) {
+      transform: translateY(-2px);
+      border-color: #454550;
+      background: var(--surface-3);
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    &.needs-you {
+      border-left-color: var(--warn);
+    }
+    &.in-review {
+      border-left-color: var(--accent);
+    }
+    &.done {
+      border-left-color: var(--ok);
+    }
+    .board-card-head {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .board-repo-mark {
+      width: 22px;
+      height: 22px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border-2);
+      border-radius: 6px;
+      background: var(--surface-3);
+      color: var(--link);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .board-repo {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--text-2);
+      font-size: 11px;
+      font-weight: 550;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .board-card-open {
+      flex: none;
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 10px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+    &:hover .board-card-open,
+    &:focus-visible .board-card-open {
+      opacity: 1;
+    }
+    strong {
+      width: 100%;
+      display: -webkit-box;
+      overflow: hidden;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      font-size: 12px;
+      font-weight: 620;
+      line-height: 1.45;
+    }
+    .board-detail {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      display: -webkit-box;
+      overflow: hidden;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      white-space: normal;
+    }
+    .board-card-footer {
+      width: 100%;
+      min-width: 0;
+      margin-top: auto;
+      padding-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-top: 1px solid var(--border);
+    }
+    .board-state {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--text-2);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .board-state-dot {
+      width: 6px;
+      height: 6px;
+      box-shadow: none;
+    }
+    .board-goal {
+      min-width: 0;
+      overflow: hidden;
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 10px;
+      text-align: right;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+}
 
 // ---------- sidebar: usage meters and the Limits panel ----------
 .limits {

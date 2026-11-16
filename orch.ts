@@ -16,8 +16,10 @@ import {
   statSync,
   utimesSync,
   realpathSync,
+  cpSync,
+  symlinkSync,
 } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { join, basename, dirname, resolve, relative, isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -124,6 +126,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
          --ask            allow agents to pause for your decisions; also "ask": true in config; --no-ask turns it off
          --branch   run each goal on its own branch, orch/<id>-<slug>, and switch back afterwards: your branch is
                   never changed (the goal's work stays on its branch); also "branch": true in config
+         --worktrees   isolate parallel build tasks in Git worktrees; changes are applied back after each task
+                  also "worktrees": true in config; requires a Git repo  --no-worktrees  override the config
          --pr   with --branch: when a goal passes, push its branch to origin and open a pull request with gh
                   (GitHub CLI) against your branch; also "pr": true in config
          --no-resume   fix rounds start every implementer cold (default: an agent that worked on the same
@@ -653,6 +657,7 @@ type Config = {
   diffCritic?: boolean;
   review?: boolean | string[];
   branch?: boolean;
+  worktrees?: boolean;
   pr?: boolean;
   approvePlan?: boolean;
   ask?: boolean;
@@ -1205,6 +1210,7 @@ async function run(
   resume?: string,
   activity?: ActivityCallback,
   questionTask?: number,
+  cwd?: string,
 ): Promise<Reply> {
   const questionFormat =
     `\n\nIf a consequential decision needs the user's input, stop and reply with only ` +
@@ -1217,7 +1223,7 @@ async function run(
   for (;;) {
     let reply: Reply;
     try {
-      reply = await runWithRetry(agent, model, prompt, ctx, readOnly, resume, activity);
+      reply = await runWithRetry(agent, model, prompt, ctx, readOnly, resume, activity, cwd);
     } catch (e) {
       if (answered && !isFatal(e)) throw new QuestionResumeError(`${agent.name}: could not continue after the answer: ${msg(e)}`, { cause: e });
       throw e;
@@ -1341,11 +1347,12 @@ async function runWithRetry(
   readOnly: boolean,
   resume?: string,
   activity?: ActivityCallback,
+  cwd?: string,
 ): Promise<Reply> {
   for (let attempt = 1; ; attempt++) {
     await respectUsageCap(ctx);
     try {
-      return await runOnce(agent, model, prompt, ctx, readOnly, resume, activity);
+      return await runOnce(agent, model, prompt, ctx, readOnly, resume, activity, cwd);
     } catch (e) {
       const text = msg(e);
       if (attempt >= 2 || isFatal(e) || /timed out after \d/.test(text) || !TRANSIENT_RE.test(text)) throw e;
@@ -1385,6 +1392,7 @@ async function runOnce(
   readOnly: boolean,
   resume?: string,
   activity?: ActivityCallback,
+  cwd?: string,
 ): Promise<Reply> {
   const { budget } = ctx;
   if (budget.cap !== undefined && budget.spent >= budget.cap) throw new BudgetExceeded(`budget of ${usd(budget.cap)} used up (${usd(budget.spent)} spent)`);
@@ -1420,7 +1428,7 @@ async function runOnce(
     ];
     let p: ChildProcess & { stdout: NonNullable<ChildProcess["stdout"]>; stdin: NonNullable<ChildProcess["stdin"]> };
     try {
-      p = spawnClaude(args, { stdio: ["pipe", "pipe", "inherit"] }) as typeof p;
+      p = spawnClaude(args, { ...(cwd ? { cwd } : {}), stdio: ["pipe", "pipe", "inherit"] }) as typeof p;
     } catch (e) {
       settle(0);
       return reject(e);
@@ -1686,9 +1694,9 @@ function asReview(v: Review): Review {
   return { approved: v.approved || !issues.length, issues };
 }
 
-const sig = (f: string) => {
+const sig = (f: string, cwd = process.cwd()) => {
   try {
-    return git("hash-object", "--", f);
+    return gitAt(cwd, "hash-object", "--", f);
   } catch {
     return "missing";
   }
@@ -1735,6 +1743,111 @@ function prepareGit(onClean?: () => void): string {
   console.log(`checkpoint: ${cp} (roll back with: orch rollback)`);
   emit("checkpoint", { branch: cp });
   return cp;
+}
+
+type TaskWorktree = { path: string; baselineTree: string; preserve?: boolean };
+type WorktreeSnapshot = { patch: string; untracked: string[] };
+
+function gitAt(cwd: string, ...args: string[]) {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+/** Snapshot foundation edits so every parallel build worktree starts from the same round state. */
+function worktreeSnapshot(): WorktreeSnapshot {
+  const patch = execFileSync("git", ["diff", "--binary", "HEAD", "--", ".", NOT_STATE], {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", NOT_STATE], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+    .split("\0")
+    .filter(Boolean);
+  return { patch, untracked };
+}
+
+function copyIntoWorktree(worktree: string, file: string) {
+  const destination = resolve(worktree, file);
+  const rel = relative(resolve(worktree), destination);
+  if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel))
+    throw new Error(`cannot copy ${file} into the task worktree`);
+  mkdirSync(dirname(destination), { recursive: true });
+  cpSync(resolve(file), destination, { recursive: true, force: true });
+}
+
+function shareIgnoredDependencies(worktree: string) {
+  for (const dir of ["node_modules", ".venv", "venv", ".tox"]) {
+    if (!existsSync(dir)) continue;
+    const ignored = spawnSync("git", ["check-ignore", "-q", "--", `${dir}/`], { cwd: worktree, windowsHide: true });
+    if (ignored.error) throw ignored.error;
+    if (ignored.status === 1) continue;
+    if (ignored.status !== 0) throw new Error(`git check-ignore failed for ${dir}`);
+    symlinkSync(resolve(dir), join(worktree, dir), process.platform === "win32" ? "junction" : "dir");
+  }
+}
+
+function prepareTaskWorktree(snapshot: WorktreeSnapshot, round: number, id: number): TaskWorktree {
+  const root = process.cwd();
+  const parent = join(tmpdir(), "yaaiorch-worktrees");
+  mkdirSync(parent, { recursive: true });
+  const path = join(parent, `${createHash("sha256").update(realpathSync(root)).digest("hex").slice(0, 10)}-${round}-${id}-${randomUUID()}`);
+  try {
+    git("worktree", "add", "--quiet", "--detach", path, "HEAD");
+    if (snapshot.patch)
+      execFileSync("git", ["apply", "--binary", "--whitespace=nowarn", "-"], {
+        cwd: path,
+        input: snapshot.patch,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    for (const file of snapshot.untracked) copyIntoWorktree(path, file);
+    for (const file of [join(".claude", "agents"), join(".claude", "skills"), join(".claude", "settings.json"), join(".claude", "settings.local.json")])
+      if (existsSync(file)) copyIntoWorktree(path, file);
+    for (const file of [BUILTIN_FILE, AGENT_SETTINGS, READONLY_SETTINGS]) if (existsSync(file)) copyIntoWorktree(path, file);
+    shareIgnoredDependencies(path);
+
+    gitAt(path, "add", "-A", "--", ".");
+    try {
+      gitAt(path, "reset", "-q", "--", ".orchestrator");
+    } catch {
+      // The state directory may not exist in this worktree.
+    }
+    return { path, baselineTree: gitAt(path, "write-tree") };
+  } catch (e) {
+    try {
+      git("worktree", "remove", "--force", path);
+    } catch {
+      if (existsSync(path)) rmSync(path, { recursive: true, force: true });
+    }
+    throw new Error(`could not prepare task worktree: ${msg(e)}`, { cause: e });
+  }
+}
+
+function taskWorktreePatch(worktree: TaskWorktree): string {
+  gitAt(worktree.path, "add", "-A", "--", ".");
+  try {
+    gitAt(worktree.path, "reset", "-q", "--", ".orchestrator");
+  } catch {
+    // The state directory may not exist in this worktree.
+  }
+  return execFileSync("git", ["diff", "--cached", "--binary", "--no-renames", worktree.baselineTree], {
+    cwd: worktree.path,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function applyTaskWorktreePatch(worktree: TaskWorktree, patch: string) {
+  if (patch)
+    execFileSync("git", ["apply", "--binary", "--whitespace=nowarn", "-"], {
+      cwd: process.cwd(),
+      input: patch,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 }
 
 /**
@@ -2374,6 +2487,8 @@ type Opts = {
   review: string[] | null;
   /** Each goal on its own orch/<id>-<slug> branch; the starting branch is never changed. */
   branch: boolean;
+  /** Run parallel build tasks in separate Git worktrees. */
+  worktrees: boolean;
   /** With branch: push a passed goal's branch and open a pull request (gh). */
   pr: boolean;
   /** Wait for a human to approve, edit or reject each plan before building. */
@@ -2406,6 +2521,7 @@ async function execute(
   resume?: { id: string; round: number },
   activity?: ActivityCallback,
   questionTask?: number,
+  cwd?: string,
 ): Promise<Result> {
   const task =
     (t.files?.length ? `${t.task}\n\nYour files (touch only these):\n${t.files.map((f) => `- ${f}`).join("\n")}` : t.task) +
@@ -2423,20 +2539,20 @@ async function execute(
   let session = resume?.id;
   let prompt = resume ? resumed : cold;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const before = new Map((t.files ?? []).map((f) => [f, sig(f)]));
+    const before = new Map((t.files ?? []).map((f) => [f, sig(f, cwd)]));
     let r: Reply;
     try {
-      r = await run(agent, model, prompt, ctx, false, session, activity, questionTask);
+      r = await run(agent, model, prompt, ctx, false, session, activity, questionTask, cwd);
     } catch (e) {
       // The session may be gone (cleaned up, another machine): start cold once. Never after a timeout or a fatal error.
       if (!session || e instanceof QuestionResumeError || isFatal(e) || /timed out after \d/.test(msg(e))) throw e;
       console.warn(`${t.agent}: resuming its session failed (${msg(e).slice(0, 160)}); starting cold`);
       prompt = cold;
-      r = await run(agent, model, prompt, ctx, false, undefined, activity, questionTask);
+      r = await run(agent, model, prompt, ctx, false, undefined, activity, questionTask, cwd);
     }
     cost += r.cost;
     tokens = addTokenUsage(tokens, r.tokens);
-    const touched = (t.files ?? []).filter((f) => sig(f) !== before.get(f));
+    const touched = (t.files ?? []).filter((f) => sig(f, cwd) !== before.get(f));
     if (!t.files?.length || touched.length || !/Status:\s*COMPLETE/i.test(r.text))
       return { agent: t.agent, out: r.text, touched, cost, tokens, session: r.session };
     console.warn(`phantom completion by ${t.agent}; re-dispatching`);
@@ -3285,6 +3401,7 @@ async function runRecordedGoal(goal: string, o: Opts, id?: number, brief?: strin
     critic: o.critic,
     approvePlan: o.approvePlan,
     branch: o.branch,
+    worktrees: o.worktrees,
     pr: o.pr,
   });
   const ctx: RunCtx = {
@@ -3301,6 +3418,7 @@ async function runRecordedGoal(goal: string, o: Opts, id?: number, brief?: strin
   let passed = false;
   let interrupted = false;
   try {
+    if (o.worktrees && !o.dryRun && !isGitRepo()) throw new Error("--worktrees requires a Git repository");
     // With --branch the checkpoint is taken on the goal's branch (a brief's shared branch may be ahead of the base).
     cp = o.dryRun
       ? ""
@@ -3593,37 +3711,55 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const exec = async (t: Task): Promise<Result> => {
       const id = idOf.get(t)!;
       const tasksOfAgent = plan.tasks.filter((x) => x.agent === t.agent && x.phase !== "verify").length;
-      const prev = o.resume ? pickSession(t, sessions, tasksOfAgent) : undefined;
+      const prev = o.resume && !o.worktrees ? pickSession(t, sessions, tasksOfAgent) : undefined;
       emit("task_start", { round, id, agent: t.agent, phase: t.phase, ...(prev ? { resumed: prev.round } : {}) });
       try {
+        if (o.worktrees && t.phase === "build" && worktreeErrors.has(t)) throw worktreeErrors.get(t)!;
+        if (o.worktrees && t.phase === "build" && !worktrees.has(t)) throw new Error("could not prepare task worktree");
         const role: Role = t.agent === "dev" ? "dev" : t.heavy ? "heavy" : "impl";
         const model = modelFor(agentPower.get(t.agent) ?? power, agentModels.get(t.agent) ?? models, role, t.agent);
-        const r = await execute(t, byName.get(t.agent)!, model, ctx, prev && { id: prev.id, round: prev.round }, taskActivity(round, id), id);
+        const r = await execute(
+          t,
+          byName.get(t.agent)!,
+          model,
+          ctx,
+          prev && { id: prev.id, round: prev.round },
+          taskActivity(round, id),
+          id,
+          worktrees.get(t)?.path,
+        );
         const status = /Status:\s*(COMPLETE|PARTIAL|FAILED)/i.exec(r.out)?.[1]?.toUpperCase() ?? (r.out.startsWith("PHANTOM") ? "PHANTOM" : "UNKNOWN");
         statuses.set(t, status);
         if (r.session) roundSessions.push({ agent: t.agent, id: r.session, files: t.files ?? [], round });
-        emit("task_end", {
-          round,
-          id,
-          agent: t.agent,
-          phase: t.phase,
-          status,
-          touched: r.touched,
-          cost: round4(r.cost),
-          ...taskReport(r.out),
-          ...(r.tokens ? { tokens: r.tokens } : {}),
-        });
+        if (!(o.worktrees && t.phase === "build"))
+          emit("task_end", {
+            round,
+            id,
+            agent: t.agent,
+            phase: t.phase,
+            status,
+            touched: r.touched,
+            cost: round4(r.cost),
+            ...taskReport(r.out),
+            ...(r.tokens ? { tokens: r.tokens } : {}),
+          });
+        else deferredBuildResults.set(t, { result: r, status });
         return { ...r, status };
       } catch (e) {
         statuses.set(t, "ERROR");
-        emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: "ERROR", error: msg(e), touched: [] });
-        return { agent: t.agent, out: `ERROR: ${msg(e)}`, touched: [], cost: 0, error: msg(e), fatal: isFatal(e) ? e : undefined, status: "ERROR" };
+        const result = { agent: t.agent, out: `ERROR: ${msg(e)}`, touched: [], cost: 0, error: msg(e), fatal: isFatal(e) ? e : undefined, status: "ERROR" };
+        if (!(o.worktrees && t.phase === "build")) emit("task_end", { round, id, agent: t.agent, phase: t.phase, status: "ERROR", error: msg(e), touched: [] });
+        else deferredBuildResults.set(t, { result, status: "ERROR" });
+        return result;
       }
     };
 
     const foundation = plan.tasks.filter((t) => t.phase === "foundation");
     const build = plan.tasks.filter((t) => t.phase === "build");
     const verify = plan.tasks.filter((t) => t.phase === "verify");
+    const worktrees = new Map<Task, TaskWorktree>();
+    const worktreeErrors = new Map<Task, Error>();
+    const deferredBuildResults = new Map<Task, { result: Result; status: string }>();
 
     const results: Result[] = [];
     // Files already changed before this round's agents ran (a commit that failed earlier) are not theirs.
@@ -3635,10 +3771,62 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const foundationFailed = results.some((r) => r.error);
     if (foundationFailed) build.forEach(skip);
     else {
+      if (o.worktrees && build.length) {
+        if (!cp) throw new Error("--worktrees requires a Git repository");
+        const snapshot = worktreeSnapshot();
+        for (const [i, t] of build.entries()) {
+          try {
+            worktrees.set(t, prepareTaskWorktree(snapshot, round, idOf.get(t) ?? i));
+          } catch (e) {
+            worktreeErrors.set(t, e instanceof Error ? e : new Error(msg(e)));
+          }
+        }
+      }
       // The batch shares the unreserved budget equally (see reserve()).
       ctx.budget.launching = build.length;
       try {
-        results.push(...(await Promise.all(build.map(exec))));
+        const buildResults = await Promise.all(build.map(exec));
+        if (o.worktrees) {
+          for (const [i, t] of build.entries()) {
+            const worktree = worktrees.get(t);
+            let result = buildResults[i];
+            if (worktree) {
+              try {
+                const patch = taskWorktreePatch(worktree);
+                applyTaskWorktreePatch(worktree, patch);
+              } catch (e) {
+                worktree.preserve = true;
+                const error = `could not integrate task worktree changes: ${msg(e)}; changes are preserved at ${worktree.path}`;
+                result = { ...result, out: `ERROR: ${error}`, error, status: "ERROR" };
+              }
+              if (!worktree.preserve) {
+                try {
+                  git("worktree", "remove", "--force", worktree.path);
+                } catch (e) {
+                  worktree.preserve = true;
+                  const error = `could not clean up task worktree: ${msg(e)}; worktree is preserved at ${worktree.path}`;
+                  result = { ...result, out: `ERROR: ${error}`, error, status: "ERROR" };
+                }
+              }
+            }
+            statuses.set(t, result.status ?? "ERROR");
+            buildResults[i] = result;
+            const outcome = deferredBuildResults.get(t);
+            emit("task_end", {
+              round,
+              id: idOf.get(t)!,
+              agent: t.agent,
+              phase: t.phase,
+              status: result.status ?? outcome?.status ?? "ERROR",
+              touched: result.touched,
+              ...(result.error ? { error: result.error } : {}),
+              cost: round4(result.cost),
+              ...taskReport(result.out),
+              ...(result.tokens ? { tokens: result.tokens } : {}),
+            });
+          }
+        }
+        results.push(...buildResults);
       } finally {
         ctx.budget.launching = 0;
       }
@@ -4366,6 +4554,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const pr = !!values.pr || cfg.pr === true;
   // A pull request needs a branch of its own.
   const branch = pr || !!values.branch || cfg.branch === true;
+  const worktrees = !values["no-worktrees"] && (!!values.worktrees || cfg.worktrees === true);
   const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
   const ask = !values["no-ask"] && (!!values.ask || cfg.ask === true);
   const coverage = !values["no-coverage"] && cfg.coverage !== false;
@@ -4407,6 +4596,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     diffCritic,
     review,
     branch,
+    worktrees,
     pr,
     approvePlan,
     ask,
@@ -4449,6 +4639,8 @@ async function main() {
       critic: { type: "boolean", default: false },
       "diff-critic": { type: "boolean", default: false },
       branch: { type: "boolean", default: false },
+      worktrees: { type: "boolean", default: false },
+      "no-worktrees": { type: "boolean", default: false },
       "approve-plan": { type: "boolean", default: false },
       ask: { type: "boolean", default: false },
       "no-ask": { type: "boolean", default: false },

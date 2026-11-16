@@ -363,13 +363,22 @@
         padding: 0 0 56px;
       }
 
+      .app-shot figure {
+        margin: 0;
+      }
+
+      .shot-frame {
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #09090b;
+        box-shadow: 0 30px 80px rgb(0 0 0 / 45%);
+      }
+
       .app-shot img {
         display: block;
         width: 100%;
         height: auto;
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        box-shadow: 0 30px 80px rgb(0 0 0 / 45%);
       }
 
       .app-shot figcaption {
@@ -377,6 +386,45 @@
         color: var(--muted);
         font-size: 14px;
         text-align: center;
+      }
+
+      .shot-slide:not([hidden]) + .shot-slide:not([hidden]) {
+        margin-top: 28px;
+      }
+
+      .shot-controls {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        margin-top: 18px;
+      }
+
+      .shot-controls[hidden],
+      .shot-slide[hidden] {
+        display: none;
+      }
+
+      .shot-controls button {
+        padding: 7px 14px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface);
+        color: var(--muted);
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .shot-controls button:hover,
+      .shot-controls button[aria-pressed="true"] {
+        border-color: var(--violet);
+        color: var(--text);
+        background: var(--surface-raised);
+      }
+
+      .shot-controls button:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 3px;
       }
 
       .trust-strip {
@@ -779,17 +827,38 @@
         </div>
       </section>
 
-      <figure class="wrap app-shot">
-        <img
-          src="assets/app-run.webp"
-          width="1920"
-          height="1200"
-          loading="lazy"
-          decoding="async"
-          alt="The YAAIORCH app showing an example run with phase and parallel task timelines, agent activity, and a queue of goals."
-        />
-        <figcaption>An example run: phase and task timelines, agent activity, cost and token counts, and the queue.</figcaption>
-      </figure>
+      <section class="wrap app-shot" aria-label="YAAIORCH screenshots">
+        <figure class="shot-slide" id="shot-run">
+          <div class="shot-frame">
+            <img
+              src="assets/app-run.webp"
+              width="1917"
+              height="1100"
+              loading="lazy"
+              decoding="async"
+              alt="The YAAIORCH app showing a simulated run with phase and parallel task timelines, agent activity, and a queue of goals."
+            />
+          </div>
+          <figcaption>A simulated run: phase and task timelines, agent activity, cost, and the queue.</figcaption>
+        </figure>
+        <figure class="shot-slide" id="shot-board">
+          <div class="shot-frame">
+            <img
+              src="assets/app-board.webp"
+              width="1917"
+              height="1100"
+              loading="lazy"
+              decoding="async"
+              alt="The YAAIORCH Overview showing three simulated projects and a work board with working, needs you, in review, and done cards."
+            />
+          </div>
+          <figcaption>A simulated three-project Overview: follow active work, approvals, PRs and completed queue goals.</figcaption>
+        </figure>
+        <div class="shot-controls" role="group" aria-label="Choose a screenshot" hidden>
+          <button type="button" aria-controls="shot-run" aria-pressed="true">Run details</button>
+          <button type="button" aria-controls="shot-board" aria-pressed="false">Work board</button>
+        </div>
+      </section>
 
       <div class="trust-strip">
         <div class="wrap trust-items">
@@ -930,6 +999,19 @@
       </div>
     </footer>
     <script>
+      (() => {
+        const controls = document.querySelector(".shot-controls");
+        const buttons = [...controls.querySelectorAll("button")];
+        const slides = buttons.map((button) => document.getElementById(button.getAttribute("aria-controls")));
+        const show = (index) => {
+          buttons.forEach((button, i) => button.setAttribute("aria-pressed", String(i === index)));
+          slides.forEach((slide, i) => (slide.hidden = i !== index));
+        };
+        buttons.forEach((button, i) => button.addEventListener("click", () => show(i)));
+        show(0);
+        controls.hidden = false;
+      })();
+
       // "Get YAAIORCH" downloads the latest release's installer for the visitor's OS. Without JavaScript, an
       // unknown OS, or when the GitHub API does not answer, the button keeps pointing at the releases page.
       (() => {

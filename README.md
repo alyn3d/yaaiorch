@@ -103,7 +103,7 @@ Other commands:
 | `orch learn` | study the repo once (read-only) and write the project brief that later goals reuse |
 | `orch plugins [--details]` | list your Claude Code plugins (with `--details`: context tokens each adds per call) |
 
-Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--no-brief` (do not keep a project brief), `--no-resume` (fix rounds start every implementer cold), `--approve-plan` (wait for you to build, edit or send back each plan), `--intake github:LABEL,backlog:FILE` (a loop pulls goals from GitHub issues or a backlog file), `--branch` (each goal on its own `orch/<id>-<slug>` branch; yours never changes), `--pr` (push a passed goal's branch and open a pull request with `gh`), `--strict-files` (a file changed outside the plan fails the round), `--max-cost-total USD` (budget for a whole `loop` run), `--no-notes` (do not keep lessons between goals), `--critic` (review each plan before building), `--diff-critic` (also review each round's change against the goal), `--review` / `--reviewers A,B` (review each change for bugs and security, optionally with your own agents), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
+Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--no-brief` (do not keep a project brief), `--no-resume` (fix rounds start every implementer cold), `--approve-plan` (wait for you to build, edit or send back each plan), `--intake github:LABEL,backlog:FILE` (a loop pulls goals from GitHub issues or a backlog file), `--branch` (each goal on its own `orch/<id>-<slug>` branch; yours never changes), `--worktrees` (isolate parallel build tasks in Git worktrees), `--pr` (push a passed goal's branch and open a pull request with `gh`), `--strict-files` (a file changed outside the plan fails the round), `--max-cost-total USD` (budget for a whole `loop` run), `--no-notes` (do not keep lessons between goals), `--critic` (review each plan before building), `--diff-critic` (also review each round's change against the goal), `--review` / `--reviewers A,B` (review each change for bugs and security, optionally with your own agents), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
 `--agent-timeout MIN` (30), `--dry-run` (plan only). Run `orch` without arguments for the full usage.
 
 ### Browser UI
@@ -134,6 +134,10 @@ with its own goal, queue, settings and log, and a status dot (running, waiting, 
 wait for a free slot. With two or more repos open, an **Overview** tab lists them all: what each is doing
 (planning, building, verifying), its goal, round, tasks, cost and queue, with Open and Stop. One run per repo at a time. All repos draw on the same Claude usage limit, so
 more parallel runs reach it sooner.
+
+The Overview also has a **Work board**: active build tasks, requests needing your input, verification/PRs in review,
+and completed goals from each repo's queue. PR cards stay in review and show their CI status; a passing CI run does
+not mean the PR is approved or merged. Select a card to open its repo.
 
 - **Usage limit, shared.** When one repo hits the Claude usage limit, a banner shows the reset time and
   new runs in every repo wait until then (running ones wait on their own). **Try now** starts them early.
@@ -230,6 +234,13 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   `orch/brief-<id>`, so each builds on the ones before; a failed goal's work is parked on
   `orchestrator/failed-*` instead of staying under the next goals, and with **Open pull request** the brief gets
   one pull request that grows with each goal.
+- **Isolate parallel build tasks** (optional, **Isolate build tasks** in run settings or `--worktrees`; config
+  `"worktrees": true`). Each build task runs in its own Git worktree, based on the same round snapshot, and its
+  changes are applied back after it finishes. If changes cannot be applied cleanly, the worktree is kept and its
+  path is reported so the work is recoverable. This requires a Git repo; session resume between rounds is disabled
+  for these tasks. Existing top-level ignored dependency folders (`node_modules`, `.venv`, `venv`, `.tox`) are
+  shared with the task worktrees so agents can run checks without installing dependencies. Use `--no-worktrees` to
+  override a config setting.
 - **Visual check screenshots.** Browser captures appear as previews in each round and in replayed run history.
   In run history, **Run again** starts a fresh attempt with the repo's current settings.
 - **New projects** (**+ New project** next to the repo tabs, or `orch new DIR "<spec>"` / `--spec-file SPEC.md`;

@@ -44,6 +44,8 @@ export type RunSettings = {
   reviewers: string;
   /** Each goal on its own orch/<id>-<slug> branch (--branch). */
   branch: boolean;
+  /** Parallel build tasks get isolated Git worktrees (--worktrees). */
+  worktrees: boolean;
   /** Push a passed goal's branch and open a pull request with gh (--pr). */
   pr: boolean;
   /** Wait for you to approve, edit or reject each plan before building (--approve-plan). */
@@ -66,6 +68,7 @@ export const DEFAULT_SETTINGS: RunSettings = {
   review: false,
   reviewers: "",
   branch: false,
+  worktrees: false,
   pr: false,
   approvePlan: false,
   ask: false,
@@ -212,6 +215,12 @@ export function SettingsPanel({
             onChange={(e) => onChange({ ...settings, branch: e.target.checked })}
           />{" "}
           Branch per goal
+        </label>
+        <label
+          className="check"
+          title="Each parallel build task runs in its own Git worktree. Orch applies its changes back after the task finishes. Requires a clean Git repo."
+        >
+          <input type="checkbox" checked={settings.worktrees} onChange={(e) => onChange({ ...settings, worktrees: e.target.checked })} /> Isolate build tasks
         </label>
         <label
           className="check"
