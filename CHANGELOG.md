@@ -5,27 +5,24 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
-### Changed
-- **The fast path is the default**: round 1 is one agent doing the whole goal, judged by the checks, and the full loop runs only if that fails. In the [November 2026 evals](docs/evals/2026-11-18.md) it passed all 18 runs (as did the full loop, with no false passes either way) at about half the cost and time. `--no-fast` or config `"fast": false` turns it off; `--approve-plan`, `--critic` and `--dry-run` keep the full loop unless `--fast` is given too. The UI's **Fast path** box is now ticked by default (repos with saved settings keep theirs).
-- Eval runner: plugins and hooks off by default (`--user-plugins`), `--usage-cap` to leave part of the subscription window free, a plain tier now means the full loop (`--no-fast`), and a relative `--claude-bin` works.
-
-### Changed
-- Agent M's answers are formatted (headings, lists, bold, code, links) instead of showing raw Markdown, rendered as elements so an answer cannot inject markup.
-- Agent M's first answer no longer waits for the machine status: opening the page gathers it in the background (`orch chat --warm`), and a question asked meanwhile waits for that instead of gathering it again.
+## [0.5.5] - 2026-11-18
 
 ### Added
-- **Agent M** (`--commands`, config `"commands": "ask"`, **Commands via Agent M** in run settings): implementers may run shell commands, each one only after you allow it. Agent M (a new sidebar page with a count of waiting commands, and cards in the run view) lists them across all repos with the agent, its reason and the exact command: **Allow**, **Always allow** (adds the exact command to config `allow`) or **Deny**. Unanswered commands are denied after `--command-timeout` minutes (default 10); waiting does not count against `--agent-timeout`. Read-only roles never ask. Built on Claude Code's `--permission-prompt-tool` with a small MCP server (`orch permit`); `orch decide ID allow|deny|always` answers from a terminal. New events `command_wait` and `command_decided`.
-- **Ask Agent M**: a chat on the Agent M page for questions about your setup and open repos ("Which MCP servers are connected?", "Why did the last run fail?"). Haiku answers from a status of the machine (`orch doctor`, plugins, `claude mcp list`, cached for 10 minutes) and of each repo (queue, last run, recent runs with their failures, brief), and may read the repos' files but never changes them or runs commands. Follow-ups continue the same session; the cost counts toward the daily budget. `orch chat` (JSON on stdin) backs it.
+- **Agent M: shell commands you approve** (`--commands`, config `"commands": "ask"`, **Commands via Agent M** in run settings): implementers may run shell commands (install a dependency, a generator, a migration), each one only after you allow it. The new **Agent M** page in the sidebar (with a count of waiting commands; cards in the run view too) lists them across all repos with the agent, its reason and the exact command: **Allow**, **Always allow** (adds the exact command to config `allow`) or **Deny**. Always allow is refused for a command with `*`, parentheses or a secret, since the rule would act as a wildcard or store the secret. Unanswered commands are denied after `--command-timeout` minutes (default 10); waiting does not count against `--agent-timeout`; a command whose agent crashed is reported as cancelled. Read-only roles never ask. Built on Claude Code's `--permission-prompt-tool` with a small MCP server (`orch permit`); `orch decide ID allow|deny|always` answers from a terminal. New events `command_wait` and `command_decided`. Commands run on your machine without a sandbox: read each one.
+- **Ask Agent M**: a chat on the same page for questions about your setup and open repos ("Which MCP servers are connected?", "Why did the last run fail?"). Haiku answers from a status of the machine (`orch doctor`, plugins, `claude mcp list`) and of each repo (queue, last run, recent failures, brief), may read the repos' files but never changes them or runs commands, and formats its answers (lists, code, links). Opening the page gathers the machine status in the background, so a first answer takes seconds; follow-ups continue the same session; the cost counts toward the daily budget. `orch chat` (JSON on stdin, `--warm`) backs it.
+- **Published eval results** ([November 2026](docs/evals/2026-11-18.md)): 55 runs on 10 cases, every one passed the hidden tests, no false passes.
+
+### Changed
+- **The fast path is the default**: round 1 is one agent doing the whole goal, judged by the checks, and the full loop runs only if that fails. In the evals it passed all 18 runs (as did the full loop, with no false passes either way) at about half the cost and time. `--no-fast` or config `"fast": false` turns it off; `--approve-plan`, `--critic` and `--dry-run` keep the full loop unless `--fast` is given too. The UI's **Fast path** box is now ticked by default (repos with saved settings keep theirs).
+- Run history keeps the newest 200 attempts per repo (`ORCH_HISTORY_KEEP` changes it), and listing reads only the start and end of a large run file, so the History tab stays fast as runs pile up.
+- Eval runner: plugins and hooks off by default (`--user-plugins`), `--usage-cap` to leave part of the subscription window free, a plain tier now means the full loop (`--no-fast`), and a relative `--claude-bin` works.
 
 ### Fixed
-- Run history stays fast as runs pile up: listing reads only the first line and the end of a large run file, Agent M reads only the runs it shows, and a new run removes all but the newest 200 (`ORCH_HISTORY_KEEP` changes it).
-- Agent M: **Always allow** is refused (and hidden) for a command with `*`, parentheses or a secret, since the allow rule would act as a wildcard or store the secret; **Allow** still works. A command whose agent crashed while it waited is reported as cancelled instead of staying "waiting".
+- Desktop app on macOS and Linux: find `claude`, `gh`, `git` and `node` when started from Finder, the Dock or a launcher ("claude --version failed"), by taking PATH from the login shell plus the usual install dirs (`~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, …).
 - A render error in one page no longer blanks the whole app: the page shows the error with **Try again** and **Reload**, and the sidebar stays usable.
 - The desktop app no longer freezes while adding or retrying a goal, and the browser server no longer pauses live updates while it lists or saves agents.
-- CI typechecking and scenario tests now account for supported Node.js APIs, parallel agent ordering, worktree paths, and slower test runners.
 - Normalize planned paths across platforms and report a missing GitHub CLI consistently on Linux and macOS.
-- Keep the dashboard eval reference within mobile viewports across platform fonts.
-- Desktop app on macOS and Linux: find `claude`, `gh`, `git` and `node` when started from Finder, the Dock or a launcher, by taking PATH from the login shell plus the usual install dirs (`~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, …).
+- CI typechecking and scenario tests now account for supported Node.js APIs, parallel agent ordering, worktree paths, and slower test runners; the dashboard eval reference stays within mobile viewports across platform fonts.
 
 ## [0.5.4] - 2026-11-16
 
@@ -397,7 +394,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/alyn3d/yaaiorch/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/alyn3d/yaaiorch/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/alyn3d/yaaiorch/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/alyn3d/yaaiorch/compare/v0.5.1...v0.5.2

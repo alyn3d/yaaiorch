@@ -15,8 +15,10 @@ Conductor, Claude Squad and Vibe Kanban), YAAIORCH's distinct strengths are:
 - it never loses work, and has a budget, timeouts, stuck escalation and usage-limit waiting;
 - read-only planner and QA, and a Windows desktop app.
 
-Its remaining gaps: no sandbox for untrusted repos, Claude Code as the only agent runtime, and no
-published eval baseline yet. Parallel build tasks can now use opt-in Git worktrees.
+Its remaining gaps: no sandbox for untrusted repos (more pressing now that agents can run commands you approve),
+Claude Code as the only agent runtime, and eval cases hard enough to need more than one round. The first eval
+results are published ([November 2026](docs/evals/2026-11-18.md)): every run passed, and one direct attempt matched
+the full loop at about half the cost, so it is the default. Parallel build tasks can use opt-in Git worktrees.
 
 ## Principles
 
@@ -82,13 +84,16 @@ issues or `BACKLOG.md` with dependencies and priorities, retries and blocked goa
 pull request's CI watched and fixed, a plan approval gate, notifications, protected paths and a secret scan.
 Parallel build tasks can optionally run in separate worktrees, with task diffs applied back and conflicted worktrees
 preserved for recovery. Overview also has a cross-repo work board for active tasks, human input, PR review and
-completed queue goals.
+completed queue goals. 0.5.5 added Agent M (agents run shell commands only after you allow each one, and a chat
+about your setup and repos), made the direct attempt the default after the first published evals, and fixed the
+desktop app finding `claude` on macOS and Linux.
 
 Still open, moved on:
 
 - Optional sandboxed runs (container or VM) for repos you do not fully trust the agents with.
 - A GitHub Action that runs orch on a labelled issue in CI, and optional auto-merge after CI and a human review.
-- Running the issue and CI flows against real GitHub, and measuring all of 0.3 to 0.5 on the evals.
+- Running the issue and CI flows against real GitHub, and measuring all of 0.3 to 0.5 on the evals. The fast path is
+  measured; memory, resume and the critics need harder cases first (today's all pass in round 1).
 
 ## 0.6: product and packaging
 
