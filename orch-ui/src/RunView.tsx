@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { RoundDiff, RunView as Run, TaskView, TokenUsage } from "./types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isTauri, transport } from "./transport";
+import { CommandCard } from "./AgentM";
 import { ACTIVITY_LABELS, failureSummary, roundPhases, taskTimeline } from "./runProgress";
 
 /** A link out of the app: the desktop app's webview does not open new windows, so ask the system browser. */
@@ -362,11 +363,14 @@ export function RunPanel({
   run,
   onAnswer,
   onQuestionAnswer,
+  onCommandDecide,
 }: {
   repo: string;
   run: Run;
   onAnswer?: (body: Record<string, unknown>) => Promise<boolean>;
   onQuestionAnswer?: (body: Record<string, unknown>) => Promise<boolean>;
+  /** Agent M: answer a command an agent wants to run ({ id, decision }). */
+  onCommandDecide?: (body: Record<string, unknown>) => Promise<boolean>;
 }) {
   const now = useNow(run.status === "running");
   const failure = failureSummary(run);
@@ -409,6 +413,14 @@ export function RunPanel({
       )}
       {run.questions?.map((q) => (
         <QuestionCard key={q.id} question={q} active={!q.answered && run.status === "running" && !!onQuestionAnswer} onAnswer={onQuestionAnswer} />
+      ))}
+      {run.commands?.map((c) => (
+        <CommandCard
+          key={c.id}
+          repo={repo}
+          command={!c.decision && run.status !== "running" ? { ...c, decision: "cancelled" } : c}
+          onDecide={onCommandDecide && ((_repo, id, decision) => onCommandDecide({ id, decision }))}
+        />
       ))}
       {run.branch && (
         <p className="muted">

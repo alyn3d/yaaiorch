@@ -5,6 +5,9 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { AgentRoster, Finding, Global, HistoryEntry, HistoryRecording, OrchEvent, Plugin, State } from "./types";
 
 /** One repo's state, log and structured events since its last goal_start. */
+/** Agent M's answer: the text, the session to continue, and what it cost. */
+export type AgentMReply = { answer: string; session?: string; cost: number };
+
 export type SessionInit = { state: State; log: string[]; events: OrchEvent[] };
 export type Init = { sessions: SessionInit[]; maxParallel: number; global: Global };
 export type BrowserCandidate = { id: string; directory: string; script: string; scriptCommand: string; command: string; lifecycle: string[] };
@@ -26,7 +29,7 @@ export interface Transport {
   /** Desktop: a native folder picker. Browser: the user types a path. */
   canPickRepo: boolean;
   subscribe(h: Handlers): () => void;
-  /** A repo command (run, add, loop, learn, share, approve, split, split-accept, stop, clear-log, rollback); body carries `repo`. */
+  /** A repo command (run, add, loop, learn, share, approve, answer, decide-command, split, split-accept, stop, clear-log, rollback); body carries `repo`. */
   call(path: string, body?: Record<string, unknown>): Promise<void>;
   /** Open a repo in a new tab: a picked folder (desktop) or the given path (browser). */
   addRepo(path?: string): Promise<void>;
@@ -58,6 +61,8 @@ export interface Transport {
   visualImage(repo: string, file: string): Promise<string>;
   /** Save a project-level agent definition (also creates an override of a built-in or user agent). */
   saveAgent(repo: string, name: string, content: string): Promise<void>;
+  /** Agent M: ask about the setup and the open repos (Haiku, read-only); `session` continues a conversation. */
+  agentMAsk(question: string, session?: string): Promise<AgentMReply>;
 }
 
 // ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
@@ -195,11 +200,13 @@ const web: Transport = {
   },
   async visualImage(repo, file) {
     const query = new URLSearchParams({ repo, file });
-    const r = await api(`/api/visual?${query}`);
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
-    return URL.createObjectURL(await r.blob());
+    return api(`/api/visual?${query}`).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? r.statusText);
+      return URL.createObjectURL(await r.blob());
+    });
   },
   saveAgent: (repo, name, content) => post("agents", { repo, name, content }),
+  agentMAsk: (question, session) => post("agent-m/ask", { question, session }),
 };
 
 // ---------- desktop: Tauri commands + events ----------
@@ -214,6 +221,7 @@ const COMMANDS: Record<string, string> = {
   share: "share_repo",
   approve: "approve_plan",
   answer: "answer_question",
+  "decide-command": "decide_command",
   retry: "retry_goal",
   move: "move_goal",
   intake: "intake_goals",
@@ -280,11 +288,13 @@ const tauri: Transport = {
   agents: (repo) => tauriInvoke<AgentRoster>("agents", { repo }),
   history: (repo) => tauriInvoke<HistoryEntry[]>("history", { repo }),
   historyRun: (repo, id) => tauriInvoke<HistoryRecording>("history", { repo, id }),
-  async visualImage(repo, file) {
-    const bytes = await tauriInvoke<number[]>("visual_image", { repo, file });
-    return URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: "image/png" }));
+  visualImage(repo, file) {
+    return tauriInvoke<number[]>("visual_image", { repo, file }).then((bytes) =>
+      URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: "image/png" })),
+    );
   },
   saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
+  agentMAsk: (question, session) => tauriInvoke<AgentMReply>("agent_m_ask", { question, session }),
 };
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

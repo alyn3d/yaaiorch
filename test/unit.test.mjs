@@ -3,7 +3,7 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -190,6 +190,68 @@ describe("failureKey, verdicts and reviews", () => {
   });
 });
 
+describe("run history: listing reads only the ends of large runs, and old runs are pruned", () => {
+  let h, dir;
+  const here = process.cwd();
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    h = await tsImport(pathToFileURL(join(root, "orch-history.ts")).href, import.meta.url);
+  });
+  const inRepo = (fn) => {
+    dir = mkdtempSync(join(tmpdir(), "yaaiorch-history-"));
+    process.chdir(dir);
+    try {
+      return fn();
+    } finally {
+      process.chdir(here);
+    }
+  };
+  const runFile = (ms, events) => {
+    const id = `${ms}-12345678-1234-4234-8234-123456789abc`;
+    mkdirSync(join(".orchestrator", "runs"), { recursive: true });
+    writeFileSync(join(".orchestrator", "runs", `${id}.jsonl`), events.map((e) => JSON.stringify(e) + "\n").join(""));
+    return id;
+  };
+  const start = { type: "goal_start", t: 1, goal: "Big goal", maxRounds: 3 };
+  const filler = (n) => Array.from({ length: n }, (_, i) => ({ type: "task_activity", t: 2 + i, pad: "x".repeat(1000) }));
+
+  test("a large run is summarized from its first line and its goal_end near the end", () =>
+    inRepo(() => {
+      const id = runFile(1700000000000, [start, ...filler(600), { type: "goal_end", t: 9, passed: true, cost: 1.25 }]);
+      assert.deepEqual(h.listRunHistory(), [{ id, goal: "Big goal", startedAt: 1, endedAt: 9, status: "passed", cost: 1.25, truncated: undefined }]);
+    }));
+
+  test("a goal_end far from the end is still found (full read), and damage near the end makes it unreadable", () =>
+    inRepo(() => {
+      const id = runFile(1700000000000, [start, { type: "goal_end", t: 5, passed: false, cost: 0.5 }, ...filler(600)]);
+      assert.equal(h.listRunHistory()[0].status, "failed");
+      writeFileSync(join(".orchestrator", "runs", `${id}.jsonl`), [start, ...filler(600)].map((e) => JSON.stringify(e)).join("\n") + "\n{broken\n");
+      const [entry] = h.listRunHistory();
+      assert.equal(entry.status, "unreadable");
+      assert.match(entry.error, /invalid run history/);
+    }));
+
+  test("a limit reads only the newest runs; a new run prunes beyond ORCH_HISTORY_KEEP", () =>
+    inRepo(() => {
+      const ids = [1, 2, 3, 4].map((n) => runFile(1700000000000 + n, [start, { type: "goal_end", t: 5, passed: true, cost: 0 }]));
+      assert.deepEqual(
+        h.listRunHistory(2).map((e) => e.id),
+        [ids[3], ids[2]],
+      );
+      process.env.ORCH_HISTORY_KEEP = "3";
+      try {
+        const created = h.createRunHistory();
+        const left = readdirSync(join(".orchestrator", "runs")).sort();
+        assert.equal(left.length, 3);
+        assert.ok(left.includes(created.split(/[\\/]/).pop()), "the new run is kept");
+        assert.ok(!left.includes(`${ids[0]}.jsonl`) && !left.includes(`${ids[1]}.jsonl`), "the oldest go");
+      } finally {
+        delete process.env.ORCH_HISTORY_KEEP;
+      }
+    }));
+});
+
 describe("claude-bin: start claude without a shell on Windows", () => {
   let cb, dir;
   before(async () => {
@@ -269,6 +331,10 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
     assert.deepEqual(n("shop", "g", { type: "question_wait", agent: "be", question: "private details" }), {
       title: "shop: agent needs your input",
       body: "be has a question.",
+    });
+    assert.deepEqual(n("shop", "g", { type: "command_wait", agent: "be", command: "npm i zod" }), {
+      title: "shop: Agent M needs your approval",
+      body: "be wants to run: npm i zod",
     });
     assert.match(n("shop", "g", { type: "waiting", reason: "usage_limit", until: Date.now() + 60_000 }).title, /usage limit/);
     assert.match(n("shop", "g", { type: "waiting", reason: "usage_cap", until: Date.now() }).title, /usage cap/);
@@ -421,6 +487,26 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
       ],
     );
     assert.equal(run.status, "failed");
+  });
+  test("Agent M commands fold with their answers; one never answered stays without a decision", () => {
+    const run = fold([
+      { type: "goal_start", goal: "g", maxRounds: 1 },
+      { type: "command_wait", id: "a", agent: "be", round: 1, taskId: 0, tool: "Bash", command: "npm i zod", description: "schema" },
+      { type: "command_wait", id: "b", agent: "fe", round: 1, tool: "Bash", command: "npm i x" },
+      { type: "command_wait", id: "c", agent: "fe", round: 1, tool: "Bash", command: "npm i y" },
+      { type: "command_decided", id: "a", decision: "always" },
+      { type: "command_decided", id: "b", decision: "timeout" },
+    ]);
+    assert.deepEqual(
+      run.commands.map((c) => [c.id, c.agent, c.command, c.decision]),
+      [
+        ["a", "be", "npm i zod", "always"],
+        ["b", "fe", "npm i x", "timeout"],
+        ["c", "fe", "npm i y", undefined],
+      ],
+    );
+    assert.equal(run.commands[0].description, "schema");
+    assert.equal(run.commands[0].taskId, 0);
   });
   const start = [
     { type: "goal_start", goal: "g", maxRounds: 3, dryRun: false, maxCost: 2 },
@@ -752,6 +838,13 @@ describe("protected paths and secret formats", () => {
     assert.ok(hit("db/migrations/**", "db/migrations/001.sql"));
     assert.equal(o.protectedBy(".\\.github\\workflows\\x.yml", [".github/workflows/"]), ".github/workflows/");
     assert.equal(o.protectedBy("src/a.ts", [".github/workflows/"]), undefined);
+  });
+  test("Agent M: only plain commands can be always-allowed (no wildcard, parentheses or secret in the rule)", () => {
+    for (const ok of ["npm install zod", "npm run build -- --mode=prod", "git log -5"]) assert.equal(o.alwaysBlocked(ok), "", ok);
+    assert.match(o.alwaysBlocked("ls *.ts"), /wildcard/);
+    assert.match(o.alwaysBlocked("npm test:*"), /wildcard/);
+    assert.match(o.alwaysBlocked("echo $(whoami)"), /parentheses/);
+    assert.match(o.alwaysBlocked(`curl -H "key: ${"AKIA" + "ABCDEFGHIJKLMNOP"}" localhost`), /secret/);
   });
   test("secret formats: real-looking keys yes, ordinary code no", () => {
     const found = (text) => o.SECRETS.filter(([, re]) => re.test(text)).map(([what]) => what);

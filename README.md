@@ -223,7 +223,7 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   separately for each repo in the desktop app or browser's local storage.
 - **Run history.** Expand **Run history** on a repo page to list and replay goal attempts, including retries, plan-only
   runs and CI fixes. An unfinished recording may be running or interrupted. History is kept in
-  `.orchestrator/runs/` in that repo, including when using the CLI without event streaming. Recognized secrets are
+  `.orchestrator/runs/` in that repo (the newest 200 attempts are kept), including when using the CLI without event streaming. Recognized secrets are
   redacted, but goals, plans, reports and diffs can still contain sensitive information: protect this folder and
   delete recordings manually when no longer needed. History is never committed by the orchestrator.
 - **Goals that build on each other.** The split says which earlier goals each one needs (shown as "after 1, 3";
@@ -271,6 +271,17 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   rather than an interactive Claude tool; an agent must choose to ask. Answers are not included in question events,
   but are briefly stored in `.orchestrator/questions/` and are sent to the agent, which may repeat them in its output.
   Historical questions are read-only.
+- **Agent M: commands you approve** (optional, **Commands via Agent M** in run settings, `--commands`, or
+  `"commands": "ask"` in config): implementers may run shell commands (install a dependency, run a generator or a
+  migration), but each one waits for you. The **Agent M** page in the sidebar shows every waiting command across your
+  repos, with the agent, its reason and the exact command: **Allow**, **Always allow** (this exact command is added
+  to `allow` in `.orchestrator/config.json`, so later runs do not ask) or **Deny**. A command nobody answers is denied
+  after `--command-timeout` minutes (default 10). The architect, QA and reviewers stay read-only and never ask. In a
+  terminal: `orch decide <id> allow|deny|always`. Commands run on your machine without a sandbox: read each one.
+- **Ask Agent M**: the same page has a chat for questions about your setup and open repos (which MCP servers are
+  connected, why a run failed, what is left in the queues). Haiku answers from a status of your machine and repos and may
+  read the repos' files, but never changes anything or runs commands. The first question gathers that status (up to
+  half a minute; then cached for 10 minutes). Its cost counts toward the daily budget.
 - **A branch and a pull request per goal** (optional, **Branch per goal** / **Open pull request** in the run
   settings, `--branch` / `--pr`): each goal runs on its own `orch/<id>-<slug>` branch and orch switches back
   afterwards, so your branch is never changed. With `--pr`, a passed goal's branch is pushed to `origin` and
@@ -330,7 +341,8 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 YAAIORCH runs AI agents that **edit files and run commands in your repo**. Implementers run with
 Claude Code's `acceptEdits` permission mode plus an allow-list for your check commands; the architect
-and QA run in `default` mode with edit tools denied. Run it on a repo you have committed or pushed,
+and QA run in `default` mode with edit tools denied. With **Commands via Agent M** (`--commands`), implementers can
+also run any shell command you allow, on your machine and without a sandbox: read each one before you allow it. Run it on a repo you have committed or pushed,
 review the commits before you push them, and set `--max-cost`. Do not point it at a repo that holds
 secrets you would not show to the model.
 

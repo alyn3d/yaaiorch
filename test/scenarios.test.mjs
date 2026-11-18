@@ -7,9 +7,21 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync, symlinkSync, appendFileSync, readdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  chmodSync,
+  symlinkSync,
+  appendFileSync,
+  readdirSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -920,6 +932,195 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
       if (run.child.exitCode === null) run.child.kill();
       await run.done;
     }
+  });
+
+  test("--commands: an implementer's shell command waits for Agent M and runs once allowed; read-only roles never ask", async () => {
+    const dir = repo();
+    const run = orchAsync(dir, ["run", "install", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "be=npm install left-pad" });
+    const events = () =>
+      run
+        .output()
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("@@ORCH@@ "))
+        .map((line) => JSON.parse(line.slice(9)));
+    const decide = (...args) => spawnSync(process.execPath, [TSX, ORCH, "decide", ...args], { cwd: dir, encoding: "utf8" });
+    try {
+      await until(() => events().some((e) => e.type === "command_wait"));
+      const wait = events().find((e) => e.type === "command_wait");
+      assert.equal(run.child.exitCode, null);
+      assert.equal(wait.agent, "be");
+      assert.equal(wait.tool, "Bash");
+      assert.equal(wait.command, "npm install left-pad");
+      assert.equal(wait.description, "needed for the task");
+      assert.equal(wait.round, 1);
+      assert.notEqual(decide("../bad", "allow").status, 0);
+      assert.notEqual(decide(wait.id, "maybe").status, 0);
+      assert.equal(decide(wait.id, "allow").status, 0);
+      assert.notEqual(decide(wait.id, "deny").status, 0, "a command is answered once");
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.deepEqual(
+        events()
+          .filter((e) => e.type === "command_decided")
+          .map((e) => [e.id, e.decision]),
+        [[wait.id, "allow"]],
+      );
+      const log = readFileSync(`${dir}.fake.log`, "utf8");
+      assert.match(log, /be: command=npm install left-pad behavior=allow/);
+      assert.match(log, /fe: permit=mcp__agentm__approve mcp=\.orchestrator\/agentm-\d+-\d+\.json/);
+      assert.doesNotMatch(log, /(architect|qa): permit=/);
+      assert.deepEqual(readdirSync(join(dir, ".orchestrator", "commands")), []);
+      assert.deepEqual(
+        readdirSync(join(dir, ".orchestrator")).filter((f) => f.startsWith("agentm-")),
+        [],
+      );
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+  });
+
+  test("--commands: deny reaches the agent, always is remembered in config allow and not asked again", async () => {
+    const dir = repo();
+    // fe asks in the foundation and again in the build phase; be asks once.
+    const run = orchAsync(dir, ["run", "install", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "fe=npm i b;be=npm i a" });
+    const events = () =>
+      run
+        .output()
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("@@ORCH@@ "))
+        .map((line) => JSON.parse(line.slice(9)));
+    const decide = (...args) => spawnSync(process.execPath, [TSX, ORCH, "decide", ...args], { cwd: dir, encoding: "utf8" });
+    try {
+      const answered = new Set();
+      const answer = async (agent, decision) => {
+        await until(() => events().some((e) => e.type === "command_wait" && e.agent === agent && !answered.has(e.id)));
+        const w = events().find((e) => e.type === "command_wait" && e.agent === agent && !answered.has(e.id));
+        answered.add(w.id);
+        assert.equal(decide(w.id, decision).status, 0);
+      };
+      await answer("fe", "always");
+      await answer("be", "deny");
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.equal(events().filter((e) => e.type === "command_wait").length, 2, "fe's second call is allowed without asking");
+      assert.deepEqual(
+        events()
+          .filter((e) => e.type === "command_decided")
+          .map((e) => e.decision)
+          .sort(),
+        ["always", "deny"],
+      );
+      const log = readFileSync(`${dir}.fake.log`, "utf8");
+      assert.match(log, /be: command=npm i a behavior=deny message=The user denied this command\./);
+      assert.equal(log.match(/fe: command=npm i b behavior=allow/g)?.length, 2);
+      const cfg = JSON.parse(readFileSync(join(dir, ".orchestrator", "config.json"), "utf8"));
+      assert.deepEqual(cfg.allow, ["Bash(npm i b)"]);
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+  });
+
+  test("--commands: an unanswered command is denied after --command-timeout; other tools and runs without it are refused as before", () => {
+    const dir = repo();
+    const r = orch(dir, ["run", "timeout", "--max-rounds", "1", "--commands", "--command-timeout", "0.01"], { FAKE_COMMAND: "be=npm i slow" });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.ev("command_wait").length, 1);
+    assert.equal(r.last("command_decided").decision, "timeout");
+    assert.ok(r.calls.some((c) => /be: command=npm i slow behavior=deny message=No answer within/.test(c)));
+
+    const other = repo();
+    const t = orch(other, ["run", "web", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "be=https://example.com", FAKE_COMMAND_TOOL: "WebFetch" });
+    assert.equal(t.code, 0, t.out);
+    assert.equal(t.ev("command_wait").length, 0);
+    assert.ok(t.calls.some((c) => /be: command=https:\/\/example\.com behavior=deny message=WebFetch is not available/.test(c)));
+
+    const off = repo();
+    const o = orch(off, ["run", "plain", "--max-rounds", "1"], { FAKE_COMMAND: "be=npm i x" });
+    assert.equal(o.code, 0, o.out);
+    assert.ok(!o.calls.some((c) => /permit=/.test(c)));
+    const bad = orch(off, ["run", "bad", "--commands", "--command-timeout", "0"]);
+    assert.notEqual(bad.code, 0);
+    assert.match(bad.out, /--command-timeout must be/);
+  });
+
+  test("--commands: a wildcard command cannot be always-allowed; a crashed agent's waiting command is cancelled", async () => {
+    const dir = repo();
+    const run = orchAsync(dir, ["run", "glob", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "be=ls *.ts" });
+    const events = () =>
+      run
+        .output()
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("@@ORCH@@ "))
+        .map((line) => JSON.parse(line.slice(9)));
+    const decide = (...args) => spawnSync(process.execPath, [TSX, ORCH, "decide", ...args], { cwd: dir, encoding: "utf8" });
+    try {
+      await until(() => events().some((e) => e.type === "command_wait"));
+      const wait = events().find((e) => e.type === "command_wait");
+      assert.equal(wait.noAlways, true);
+      const always = decide(wait.id, "always");
+      assert.notEqual(always.status, 0);
+      assert.match(always.stderr, /wildcard; allow it once instead/);
+      assert.equal(decide(wait.id, "allow").status, 0, "the refused always did not claim the command");
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.ok(!existsSync(join(dir, ".orchestrator", "config.json")), "no allow rule was written");
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+
+    const crash = repo();
+    const r = orch(crash, ["run", "crash", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "be=npm i x", FAKE_COMMAND_CRASH: "1" });
+    assert.ok(r.calls.some((c) => /be: crashed while npm i x waits/.test(c)));
+    const waits = r.ev("command_wait");
+    assert.equal(waits.length, 1);
+    assert.deepEqual(
+      r.ev("command_decided").map((e) => [e.id, e.decision]),
+      [[waits[0].id, "cancelled"]],
+    );
+    assert.deepEqual(readdirSync(join(crash, ".orchestrator", "commands")), []);
+  });
+
+  test("orch chat: Agent M answers from the repos' status with a read-only Haiku call and continues its session", () => {
+    const dir = repo();
+    const other = repo({ git: false });
+    assert.equal(orch(dir, ["add", "Build the login page"]).code, 0);
+    assert.equal(orch(dir, ["add", "Add CSV export"]).code, 0);
+    const chatDir = join(dir, "..", `${basename(dir)}-chat`);
+    const ask = (body, env = {}) => {
+      const r = spawnSync(process.execPath, [TSX, ORCH, "chat"], {
+        cwd: other,
+        input: JSON.stringify(body),
+        encoding: "utf8",
+        env: { ...process.env, CLAUDE_BIN: FAKE, FAKE_LOG: `${dir}.fake.log`, ORCH_CHAT_DIR: chatDir, ...env },
+      });
+      return { ...r, json: r.status === 0 ? JSON.parse(r.stdout.trim().split(/\r?\n/).pop()) : null };
+    };
+    const first = ask({ question: "What is queued?", repos: [dir, other, "relative/path"], running: [dir] });
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(first.json.answer, /Agent M heard: What is queued\?/);
+    assert.match(first.json.answer, /#1 Build the login page; #2 Add CSV export/);
+    assert.match(first.json.answer, /figma connected/);
+    assert.equal(first.json.cost, 0.05);
+    assert.match(first.json.session, /^fake-/);
+    const next = ask({ question: "And the second one?", session: first.json.session, repos: [dir] });
+    assert.equal(next.status, 0, next.stderr);
+    const calls = readFileSync(`${dir}.fake.log`, "utf8")
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith("chat "));
+    assert.equal(calls.length, 2);
+    assert.match(calls[0], /model=haiku mode=default allowed=Read,Grep,Glob strict=true adds=2 resume=null/);
+    assert.ok(calls[0].endsWith(`cwd=${realpathSync(chatDir)}`), calls[0]);
+    assert.match(calls[1], new RegExp(`adds=1 resume=${first.json.session}`));
+    assert.ok(existsSync(join(chatDir, "context-cache.json")), "machine status is cached");
+
+    assert.notEqual(ask({ question: " " }).status, 0);
+    assert.notEqual(ask({ question: "x", session: "../evil" }).status, 0);
+    const failed = ask({ question: "x" }, { FAKE_CHAT_FAIL: "1" });
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stderr, /API Error: 500 boom/);
   });
 
   test("--ask: missing session ID fails explicitly instead of waiting", () => {
