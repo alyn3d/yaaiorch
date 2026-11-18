@@ -32,12 +32,10 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   fixture (2,000+ lines), and a task where the first attempt reliably fails the checks. Repeat the
   head-to-head with `--repeat 3` and harder single-agent models (Opus) too. **good first issue**
   (one case per PR)
-- [ ] **Fast path** (now well supported by data): when the plan is a single build task, skip the
-  separate verify call and rely on the orchestrator's checks plus a cheap review, to reach single-call
-  cost and time on small goals while keeping git safety, limits and the checks.
-- [ ] **Cheaper path for small goals**: if the evals keep showing a single call is enough for small
-  tasks, let the architect answer "single task" plans that skip the separate verify call, or add a
-  `--fast` mode, and measure it.
+- [x] **Fast path** (`--fast`): round 1 is one `dev` agent judged by the checks (QA only without checks),
+  falling back to the full loop on failure.
+- [ ] **Measure `--fast`** against the full loop and a single call (`--power economy,economy+fast --repeat 3`),
+  and make it the default for small goals if it holds.
 
 ### Test the orchestrator itself
 - [x] Fake `claude` (`test/fake-claude/`) and 47 scenario tests (`npm test`), run in CI on Linux and
@@ -106,13 +104,11 @@ Each item should show its effect in the evals before it becomes the default.
   issues**) or `BACKLOG.md`; a PR closes its issue. `dependsOn` came with big briefs. Priority labels (`p1`-`p9`,
   `priority: high`) and comments on the issue (start, done, failed, blocked) came next.
 - [x] **Queue lifecycle**: retry policy (`--retries`, a tier up), a `blocked` status for goals that need a failed
-  one, dependencies between goals of a brief, `orch retry` / **Retry**, per-item power on retry. Still open:
-  per-item max rounds set by hand.
+  one, dependencies between goals of a brief, `orch retry` / **Retry**, per-item power on retry.
+- [ ] **Per-item max rounds** set by hand on a queue goal. **good first issue**
 - [x] **Plan approval gate**: optional pause after planning so a human can approve or edit the plan
   (`--approve-plan`, `orch approve`, the run panel).
 - [x] **Worktree per build task** (`--worktrees`, `"worktrees": true`, or **Isolate build tasks**): parallel build agents start from the same round snapshot. Orch applies each task's changes back after it finishes; a merge conflict keeps that task's worktree and reports its path. Opt-in; requires Git.
-- [ ] **Sandboxed runs** (optional): run the agents in a container or VM for repos you do not fully
-  trust them with.
 - [x] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri; the browser's in
   browser mode; **Notify** in the header).
 
@@ -139,9 +135,25 @@ Each item should show its effect in the evals before it becomes the default.
 
 ## Safety
 
+- [ ] **Sandboxed runs** (priority now that Agent M lets agents run approved commands): run the agents, and the
+  commands they run, in a container or VM for repos you do not fully trust them with.
 - [x] **Protected paths** (`protect`, default `.github/workflows/`): rejected in plans, reverted if changed anyway.
 - [x] **Secret scan** before every commit: known key formats, private keys, `.env` files.
 - [ ] A scan for licenses or large binaries added by agents; a size limit per round.
+
+## Agent M
+
+- [x] **Commands you approve** (`--commands`): implementers' shell commands wait for Allow / Always allow / Deny on
+  the Agent M page, through Claude Code's `--permission-prompt-tool` and `orch permit`.
+- [x] **Ask Agent M**: a Haiku chat about the setup and open repos, read-only, with follow-ups.
+- [ ] **Formatted answers**: render the chat's Markdown (lists, code, bold) instead of plain text.
+- [ ] **Faster first answer**: gather the machine status (doctor, plugins, MCP servers) when the app starts, so
+  the first question does not wait about 30 seconds.
+- [ ] **What a command does**: a one-line explanation and risk note from Haiku under each waiting command; the human
+  still decides.
+- [ ] **Always-allowed commands** per repo: list them in run settings and let the user remove one (config `allow`).
+- [ ] **Verify the real flow** in both UIs on a goal that needs a dependency (only the CLI path has been run against
+  the real `claude` so far).
 
 ## Browser checks for QA
 
@@ -178,5 +190,5 @@ Each item should show its effect in the evals before it becomes the default.
   `--runtime` to the eval runner to compare them.
 - [ ] **Packaging**: bundle Node as a sidecar (done: `fetch-node.mjs`, Tauri externalBin), sign the Windows installer, auto-update, release builds
   for Windows, macOS and Linux from CI.
-- [ ] **Verify on macOS and Linux** (CLI, browser mode, desktop build). **good first issue** if you
-  have the machine.
+- [ ] **Verify on macOS and Linux** (CLI, browser mode, desktop build), including the desktop app started from
+  Finder or a launcher finding `claude` (PATH from the login shell). **good first issue** if you have the machine.
