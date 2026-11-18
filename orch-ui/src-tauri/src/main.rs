@@ -185,6 +185,24 @@ fn emit_global<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Count money spent today toward the daily budget (agent calls, Agent M's chat).
+fn add_spent<R: Runtime>(app: &AppHandle<R>, cost: f64) {
+    if cost.is_nan() || cost <= 0.0 {
+        return;
+    }
+    {
+        let st = app.state::<AppState>();
+        let mut g = st.0.lock().unwrap();
+        if g.spent_day != today() {
+            g.spent_day = today();
+            g.spent_usd = 0.0;
+        }
+        g.spent_usd += cost;
+    }
+    persist(app);
+    emit_global(app);
+}
+
 /// Count agent-call costs, hold new starts on a usage limit, stop a loop at its next goal when the
 /// day's budget is used up.
 fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
@@ -196,17 +214,7 @@ fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
             "plan" | "task_end" | "review" | "learn_end" | "notes_tidy" | "share_end" | "split_proposal" | "coverage"
         )
     }) {
-        {
-            let st = app.state::<AppState>();
-            let mut g = st.0.lock().unwrap();
-            if g.spent_day != today() {
-                g.spent_day = today();
-                g.spent_usd = 0.0;
-            }
-            g.spent_usd += cost;
-        }
-        persist(app);
-        emit_global(app);
+        add_spent(app, cost);
     }
     // The loop changed queue.json: send the queue again, so statuses and the brief's progress stay current.
     if matches!(kind, "queue_item" | "queue_changed" | "blocked" | "coverage") {
@@ -595,6 +603,8 @@ struct Extra {
     pr: Option<bool>,
     approve_plan: Option<bool>,
     ask: Option<bool>,
+    /// Agent M: implementers may run shell commands a human approves (--commands).
+    commands: Option<bool>,
     /// A GitHub label: loops pull new issues with it in (--intake github:LABEL).
     intake_label: Option<String>,
     plugins: Option<PluginOpts>,
@@ -687,6 +697,9 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
     }
     if let Some(ask) = extra.ask {
         v.push(if ask { "--ask" } else { "--no-ask" }.into());
+    }
+    if let Some(commands) = extra.commands {
+        v.push(if commands { "--commands" } else { "--no-commands" }.into());
     }
     if let Some(l) = extra.intake_label.as_deref().filter(|l| valid_label(l)) {
         v.extend(["--intake".into(), format!("github:{l}")]);
@@ -900,6 +913,7 @@ fn run_goal(
     pr: Option<bool>,
     approve_plan: Option<bool>,
     ask: Option<bool>,
+    commands: Option<bool>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
@@ -922,6 +936,7 @@ fn run_goal(
         pr,
         approve_plan,
         ask,
+        commands,
         plugins,
     };
     let mut args = vec!["run".to_string()];
@@ -954,6 +969,7 @@ fn run_loop(
     pr: Option<bool>,
     approve_plan: Option<bool>,
     ask: Option<bool>,
+    commands: Option<bool>,
     intake_label: Option<String>,
     plugins: Option<PluginOpts>,
 ) -> Result<(), String> {
@@ -972,6 +988,7 @@ fn run_loop(
         pr,
         approve_plan,
         ask,
+        commands,
         intake_label,
         plugins,
     };
@@ -1260,6 +1277,89 @@ fn approve_plan(app: AppHandle, repo: String, plan: Option<Value>, reject: Optio
     Ok(())
 }
 
+/// Agent M: allow, deny or always-allow a shell command an agent wants to run (`orch decide`, which checks the ID).
+/// Agent M chat: `orch chat` with the question and every open repo (it reads their status); its cost counts
+/// toward the daily budget. Returns {answer, session, cost}.
+#[tauri::command(async)]
+fn agent_m_ask(app: AppHandle, question: String, session: Option<String>) -> Result<Value, String> {
+    use std::io::Write;
+    if question.trim().is_empty() || question.chars().count() > 4000 {
+        return Err("question required (up to 4000 characters)".into());
+    }
+    if let Some(s) = &session {
+        if s.is_empty() || s.len() > 100 || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return Err("invalid session".into());
+        }
+    }
+    let (repos, running): (Vec<String>, Vec<String>) = {
+        let st = app.state::<AppState>();
+        let g = st.0.lock().unwrap();
+        let repos = g.sessions.iter().map(|s| s.repo.display().to_string()).collect();
+        let running = g
+            .sessions
+            .iter()
+            .filter(|s| s.running.is_some())
+            .map(|s| s.repo.display().to_string())
+            .collect();
+        (repos, running)
+    };
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let input = json!({ "question": question, "session": session, "repos": repos, "running": running }).to_string();
+    let mut child = node_cmd(&app, &home, &["chat".into()])?
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("could not open orch stdin")?
+        .write_all(input.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("Agent M failed")
+            .to_string());
+    }
+    let reply: Value = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .rev()
+        .find_map(|l| serde_json::from_str(l.trim()).ok())
+        .ok_or("Agent M returned no answer")?;
+    add_spent(&app, reply["cost"].as_f64().unwrap_or(0.0));
+    Ok(reply)
+}
+
+#[tauri::command(async)]
+fn decide_command(app: AppHandle, repo: String, id: String, decision: String) -> Result<(), String> {
+    if !["allow", "deny", "always"].contains(&decision.as_str()) {
+        return Err("decision must be allow, deny or always".into());
+    }
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let out = node_cmd(&app, &dir, &["decide".into(), id, decision])?
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch decide failed")
+            .to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command(async)]
 fn answer_question(app: AppHandle, repo: String, id: String, answer: String) -> Result<(), String> {
     use std::io::Write;
@@ -1443,7 +1543,63 @@ fn clear_log(app: AppHandle, state: State<AppState>, repo: String) {
     emit_init(&app);
 }
 
+/// macOS/Linux: an app started from Finder, the Dock or a desktop launcher gets a minimal PATH
+/// (/usr/bin:/bin:/usr/sbin:/sbin), not the one the user's shell sets up, so `claude`, `gh`, `git` from
+/// Homebrew or `node` would not be found. Take PATH from the login shell (bounded by a timeout, its output
+/// fenced by markers so rc-file chatter is ignored), then add the usual install dirs that exist.
+#[cfg(not(windows))]
+fn fix_path() {
+    use std::time::{Duration, Instant};
+    const MARK: &str = "__YAAIORCH_PATH__";
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+    let from_shell = (|| {
+        let mut child = Command::new(&shell)
+            .args(["-ilc", &format!("printf '{MARK}%s{MARK}' \"$PATH\"")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(25)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+        out.split(MARK).nth(1).map(str::to_string)
+    })()
+    .unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = [
+        format!("{home}/.local/bin"),
+        format!("{home}/.claude/local"),
+        format!("{home}/.npm-global/bin"),
+        format!("{home}/.bun/bin"),
+        format!("{home}/.volta/bin"),
+        "/opt/homebrew/bin".into(),
+        "/usr/local/bin".into(),
+    ];
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut dirs: Vec<String> = Vec::new();
+    for d in from_shell.split(':').chain(current.split(':')).map(str::to_string).chain(extra) {
+        if !d.is_empty() && !dirs.contains(&d) && (from_shell.split(':').any(|s| s == d) || current.split(':').any(|c| c == d) || Path::new(&d).is_dir()) {
+            dirs.push(d);
+        }
+    }
+    std::env::set_var("PATH", dirs.join(":"));
+}
+
 fn main() {
+    #[cfg(not(windows))]
+    fix_path();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -1537,69 +1693,15 @@ fn main() {
             share_repo,
             approve_plan,
             answer_question,
+            decide_command,
+            agent_m_ask,
             split_brief,
             accept_split,
             stop_after,
             doctor,
             browser_detect,
             browser_configure,
-/// macOS/Linux: an app started from Finder, the Dock or a desktop launcher gets a minimal PATH
-/// (/usr/bin:/bin:/usr/sbin:/sbin), not the one the user's shell sets up, so `claude`, `gh`, `git` from
-/// Homebrew or `node` would not be found. Take PATH from the login shell (bounded by a timeout, its output
-/// fenced by markers so rc-file chatter is ignored), then add the usual install dirs that exist.
-#[cfg(not(windows))]
-fn fix_path() {
-    use std::time::{Duration, Instant};
-    const MARK: &str = "__YAAIORCH_PATH__";
-    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
-    let from_shell = (|| {
-        let mut child = Command::new(&shell)
-            .args(["-ilc", &format!("printf '{MARK}%s{MARK}' \"$PATH\"")])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let start = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if start.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(25)),
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-            }
-        }
-        let mut out = String::new();
-        std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-        out.split(MARK).nth(1).map(str::to_string)
-    })()
-    .unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let extra = [
-        format!("{home}/.local/bin"),
-        format!("{home}/.claude/local"),
-        format!("{home}/.npm-global/bin"),
-        format!("{home}/.bun/bin"),
-        format!("{home}/.volta/bin"),
-        "/opt/homebrew/bin".into(),
-        "/usr/local/bin".into(),
-    ];
-    let current = std::env::var("PATH").unwrap_or_default();
-    let mut dirs: Vec<String> = Vec::new();
-    for d in from_shell.split(':').chain(current.split(':')).map(str::to_string).chain(extra) {
-        if !d.is_empty() && !dirs.contains(&d) && (from_shell.split(':').any(|s| s == d) || current.split(':').any(|c| c == d) || Path::new(&d).is_dir()) {
-            dirs.push(d);
-        }
-    }
-    std::env::set_var("PATH", dirs.join(":"));
-}
-
             plugins
-    #[cfg(not(windows))]
-    fix_path();
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -1686,6 +1788,21 @@ mod tests {
         assert_eq!(flags_for(Some(true)), ["--ask"]);
         assert_eq!(flags_for(Some(false)), ["--no-ask"]);
         assert!(flags_for(None).is_empty());
+        let commands_for = |commands| {
+            flags(
+                "heavy",
+                1,
+                false,
+                &Extra {
+                    commands,
+                    ..Default::default()
+                },
+            )[4..]
+                .to_vec()
+        };
+        assert_eq!(commands_for(Some(true)), ["--commands"]);
+        assert_eq!(commands_for(Some(false)), ["--no-commands"]);
+        assert!(commands_for(None).is_empty());
     }
 
     #[test]

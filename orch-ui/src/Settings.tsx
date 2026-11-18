@@ -51,6 +51,8 @@ export type RunSettings = {
   /** Wait for you to approve, edit or reject each plan before building (--approve-plan). */
   approvePlan: boolean;
   ask: boolean;
+  /** Agent M: implementers may run shell commands once you allow each one (--commands). */
+  commands: boolean;
   plugins: PluginSettings;
 };
 
@@ -72,6 +74,7 @@ export const DEFAULT_SETTINGS: RunSettings = {
   pr: false,
   approvePlan: false,
   ask: false,
+  commands: false,
   plugins: DEFAULT_PLUGINS,
 };
 
@@ -203,6 +206,12 @@ export function SettingsPanel({
         </label>
         <label className="check" title="Allow agents to pause and ask you to make a decision. Runs can wait indefinitely for your answer.">
           <input type="checkbox" checked={settings.ask} onChange={(e) => onChange({ ...settings, ask: e.target.checked })} /> Agent questions
+        </label>
+        <label
+          className="check"
+          title="Implementers may run shell commands (install a dependency, a generator, a test). Agent M asks you to allow or deny each one; unanswered after 10 minutes it is denied."
+        >
+          <input type="checkbox" checked={settings.commands} onChange={(e) => onChange({ ...settings, commands: e.target.checked })} /> Commands via Agent M
         </label>
         <label
           className="check"

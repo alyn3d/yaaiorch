@@ -15,6 +15,11 @@ export function notificationFor(repo: string, goal: string | undefined, e: Ev): 
       return { title: `${repo}: plan waiting for you`, body: typeof e.summary === "string" && e.summary ? e.summary : "Build it, edit it or send it back." };
     case "question_wait":
       return { title: `${repo}: agent needs your input`, body: typeof e.agent === "string" ? `${e.agent} has a question.` : "An agent has a question." };
+    case "command_wait":
+      return {
+        title: `${repo}: Agent M needs your approval`,
+        body: `${typeof e.agent === "string" ? e.agent : "An agent"} wants to run: ${typeof e.command === "string" ? e.command.slice(0, 200) : "a command"}`,
+      };
     case "waiting": {
       const until = typeof e.until === "number" ? new Date(e.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "later";
       return e.reason === "usage_cap"

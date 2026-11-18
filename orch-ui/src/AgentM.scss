@@ -1,0 +1,134 @@
+.agent-m-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.agent-m-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  h3 {
+    margin: 8px 0 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+}
+.agent-m-empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  p {
+    margin: 0 0 6px;
+  }
+}
+.command-card {
+  .row {
+    flex-wrap: wrap;
+  }
+  &.answered {
+    border-color: var(--border);
+    background: var(--surface);
+  }
+  .command-line {
+    margin: 0;
+    padding: 8px 10px;
+    background: var(--code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+}
+.nav-item .nav-alert {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--warn);
+  color: #000;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.agent-m-page p.small {
+  font-size: 12px;
+  margin: 0;
+}
+.agent-m-list details {
+  summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .agent-m-list {
+    margin-top: 10px;
+  }
+}
+.agent-m-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.agent-m-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 55vh;
+  overflow-y: auto;
+}
+.agent-m-suggestions .row {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.agent-m-msg {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  .who {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  p {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .cost {
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+  }
+  &.you {
+    align-self: flex-end;
+    max-width: 85%;
+    background: var(--accent-soft);
+    border-color: transparent;
+  }
+  &.agent {
+    max-width: 100%;
+  }
+  &.error {
+    background: var(--bad-soft);
+    border-color: var(--bad);
+  }
+}
+.agent-m-ask {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  textarea {
+    flex: 1;
+    min-width: 0;
+    resize: vertical;
+  }
+}

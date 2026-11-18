@@ -27,6 +27,9 @@
 //   FAKE_NO_SESSION=1        a call with --resume fails like the real CLI when the session is gone
 //   FAKE_ASK=fe,be           those agents ask one question each when offered the question protocol
 //   FAKE_ASK_NO_SESSION=1    omit the session ID from the question reply
+//   FAKE_COMMAND=<agent>=<cmd>[;<agent>=<cmd>]   with --permission-prompt-tool, that agent asks the MCP server
+//                            from --mcp-config about running <cmd> (Bash) like the real CLI, and logs
+//                            "<agent>: command=<cmd> behavior=<allow|deny> message=<why>"; FAKE_COMMAND_TOOL picks the tool
 //   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
 //   FAKE_TIDY=bad            the notes tidy call returns no usable notes
 //   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
@@ -47,6 +50,7 @@
 // `plugin details <id>` for `orch plugins`, and honours --max-budget-usd.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
+import { spawn } from "node:child_process";
 
 const args = process.argv.slice(2);
 if (args[0] === "--version") {
@@ -66,6 +70,12 @@ if (args[0] === "plugin") {
   ];
   if (args[1] === "list") console.log(JSON.stringify(plugins));
   else if (args[1] === "details") console.log(`${args[2]}\n\nProjected token cost\n  Always-on:   ~1,234 tok   added to every session`);
+  process.exit(0);
+}
+
+// `mcp list`, as the real CLI prints it.
+if (args[0] === "mcp") {
+  console.log("Checking MCP server health...\n\nfigma: https://mcp.figma.com/mcp (HTTP) - ✓ Connected");
   process.exit(0);
 }
 
@@ -181,6 +191,64 @@ if (cap !== null && cost > Number(cap)) {
   log(`${agent}: over budget`);
   process.stdout.write(JSON.stringify({ type: "result", subtype: "error_max_budget_usd", is_error: true, total_cost_usd: cost }));
   process.exit(1);
+}
+
+// Agent M chat (orch chat): log how it was called and answer with what the status told it.
+if (prompt.startsWith("You are Agent M")) {
+  const adds = args.filter((_, i) => args[i - 1] === "--add-dir").length;
+  log(
+    `chat model=${opt("--model")} mode=${opt("--permission-mode")} allowed=${opt("--allowedTools")} strict=${args.includes("--strict-mcp-config")} adds=${adds} resume=${opt("--resume")} cwd=${process.cwd()}`,
+  );
+  if (env.FAKE_CHAT_FAIL) {
+    reply("API Error: 500 boom", { is_error: true });
+    process.exit(1);
+  }
+  const question = prompt.slice(prompt.lastIndexOf("Question: ") + "Question: ".length).trim();
+  const queued = [...prompt.matchAll(/^- #(\d+) \[(\w+)\] (.+)$/gm)].map((m) => `#${m[1]} ${m[3]}`);
+  reply(`Agent M heard: ${question}. Queued: ${queued.join("; ") || "nothing"}. MCP: ${/figma: .*Connected/.test(prompt) ? "figma connected" : "none"}.`);
+  process.exit(0);
+}
+
+// --commands: ask the permission tool (orch permit, an MCP server over stdio) as the real CLI does before a shell command.
+const permitTool = opt("--permission-prompt-tool");
+if (permitTool) log(`${agent}: permit=${permitTool} mcp=${opt("--mcp-config")}`);
+const wanted = (env.FAKE_COMMAND ?? "")
+  .split(";")
+  .map((x) => x.split("="))
+  .find(([a]) => a === agent);
+if (permitTool && wanted) {
+  const command = wanted.slice(1).join("=");
+  const server = JSON.parse(readFileSync(opt("--mcp-config"), "utf8")).mcpServers[permitTool.split("__")[1]];
+  const child = spawn(server.command, server.args, { env: { ...process.env, ...server.env }, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+  const replies = new Map();
+  let buf = "";
+  child.stdout.setEncoding("utf8").on("data", (d) => {
+    buf += d;
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const m = JSON.parse(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+      replies.get(m.id)?.(m);
+    }
+  });
+  let next = 0;
+  const rpc = (method, params) =>
+    new Promise((resolve) => {
+      const id = ++next;
+      replies.set(id, resolve);
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    });
+  await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-claude", version: "0" } });
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  const tools = await rpc("tools/list", {});
+  if (!tools.result.tools.some((t) => `mcp__${permitTool.split("__")[1]}__${t.name}` === permitTool)) throw new Error("permission tool not listed");
+  const res = await rpc("tools/call", {
+    name: permitTool.split("__")[2],
+    arguments: { tool_name: env.FAKE_COMMAND_TOOL ?? "Bash", input: { command, description: "needed for the task" }, tool_use_id: "toolu_fake" },
+  });
+  const answer = JSON.parse(res.result.content[0].text);
+  log(`${agent}: command=${command} behavior=${answer.behavior} message=${answer.message ?? ""}`);
+  child.stdin.end();
 }
 
 const questionFlag = `.orchestrator/fake-question-${agent}`;

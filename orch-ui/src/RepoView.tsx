@@ -82,6 +82,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     pr: settings.pr,
     approvePlan: settings.approvePlan,
     ask: settings.ask,
+    commands: settings.commands,
     plugins: pluginOpts(settings.plugins),
   };
   const badSettings = !!models.error;
@@ -102,6 +103,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     settings.review && "review lens",
     settings.approvePlan && "approve plans",
     settings.ask && "agent questions",
+    settings.commands && "commands via Agent M",
     (settings.branch || settings.pr) && (settings.pr ? "pull request" : "branch per goal"),
     settings.worktrees && "task worktrees",
   ].filter(Boolean) as string[];
@@ -254,7 +256,13 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
       <div className="repo-grid">
         <div className="col-main">
           {run ? (
-            <RunPanel repo={repo} run={run} onAnswer={(b) => call("approve", b)} onQuestionAnswer={(b) => call("answer", b)} />
+            <RunPanel
+              repo={repo}
+              run={run}
+              onAnswer={(b) => call("approve", b)}
+              onQuestionAnswer={(b) => call("answer", b)}
+              onCommandDecide={(b) => call("decide-command", b)}
+            />
           ) : (
             <section className="card">
               <div className="card-head">

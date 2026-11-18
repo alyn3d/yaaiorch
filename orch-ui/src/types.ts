@@ -143,6 +143,8 @@ export type RunView = {
   /** --approve-plan: the plan waiting for an answer (`approval_wait`), cleared by `approval`. */
   approval?: { round: number; summary: string; tasks: { agent: string; phase: string; task: string; files?: string[] }[]; error?: string };
   questions?: { id: string; agent: string; round?: number; taskId?: number; question: string; options: string[]; answered: boolean }[];
+  /** --commands: shell commands agents asked Agent M to run (`command_wait`), with the answer once `command_decided`. */
+  commands?: AgentCommand[];
   maxRounds: number;
   dryRun: boolean;
   status: "running" | "passed" | "failed";
@@ -161,4 +163,16 @@ export type RunView = {
   tokens?: TokenUsage;
   startedAt: number;
   rounds: RoundView[];
+};
+
+/** Agent M: a shell command an agent asked to run (--commands). `decision` once answered: allow, always, deny, timeout or cancelled. */
+export type AgentCommand = {
+  id: string;
+  agent: string;
+  round?: number;
+  taskId?: number;
+  tool: string;
+  command: string;
+  description?: string;
+  decision?: string;
 };

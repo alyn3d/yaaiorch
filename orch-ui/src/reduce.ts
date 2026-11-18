@@ -159,6 +159,18 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       );
     case "question_answered":
       return run && { ...run, questions: run.questions?.map((q) => (q.id === ev.id ? { ...q, answered: true } : q)) };
+    case "command_wait":
+      return (
+        run && {
+          ...run,
+          commands: [
+            ...(run.commands ?? []),
+            { id: ev.id, agent: ev.agent, round: ev.round, taskId: ev.taskId, tool: ev.tool, command: ev.command, description: ev.description },
+          ],
+        }
+      );
+    case "command_decided":
+      return run && { ...run, commands: run.commands?.map((c) => (c.id === ev.id ? { ...c, decision: ev.decision ?? "deny" } : c)) };
     case "goal_branch":
       return run && { ...run, branch: { name: ev.branch, base: ev.base } };
     case "pr":

@@ -270,6 +270,10 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
       title: "shop: agent needs your input",
       body: "be has a question.",
     });
+    assert.deepEqual(n("shop", "g", { type: "command_wait", agent: "be", command: "npm i zod" }), {
+      title: "shop: Agent M needs your approval",
+      body: "be wants to run: npm i zod",
+    });
     assert.match(n("shop", "g", { type: "waiting", reason: "usage_limit", until: Date.now() + 60_000 }).title, /usage limit/);
     assert.match(n("shop", "g", { type: "waiting", reason: "usage_cap", until: Date.now() }).title, /usage cap/);
     assert.deepEqual(n("shop", "g", { type: "blocked", id: 4, note: "needs #2, which failed" }), {
@@ -421,6 +425,26 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
       ],
     );
     assert.equal(run.status, "failed");
+  });
+  test("Agent M commands fold with their answers; one never answered stays without a decision", () => {
+    const run = fold([
+      { type: "goal_start", goal: "g", maxRounds: 1 },
+      { type: "command_wait", id: "a", agent: "be", round: 1, taskId: 0, tool: "Bash", command: "npm i zod", description: "schema" },
+      { type: "command_wait", id: "b", agent: "fe", round: 1, tool: "Bash", command: "npm i x" },
+      { type: "command_wait", id: "c", agent: "fe", round: 1, tool: "Bash", command: "npm i y" },
+      { type: "command_decided", id: "a", decision: "always" },
+      { type: "command_decided", id: "b", decision: "timeout" },
+    ]);
+    assert.deepEqual(
+      run.commands.map((c) => [c.id, c.agent, c.command, c.decision]),
+      [
+        ["a", "be", "npm i zod", "always"],
+        ["b", "fe", "npm i x", "timeout"],
+        ["c", "fe", "npm i y", undefined],
+      ],
+    );
+    assert.equal(run.commands[0].description, "schema");
+    assert.equal(run.commands[0].taskId, 0);
   });
   const start = [
     { type: "goal_start", goal: "g", maxRounds: 3, dryRun: false, maxCost: 2 },

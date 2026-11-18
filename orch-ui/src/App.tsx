@@ -8,12 +8,14 @@ import { NewProjectDialog } from "./NewProject";
 import { baseName, repoStatus, usd } from "./repoStatus";
 import { Limits, clock, overCap } from "./Limits";
 import { AgentsPage } from "./Agents";
+import { AgentMPanel, commandsOf, useAgentMChat } from "./AgentM";
 import { About } from "./About";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
 const OVERVIEW = "*overview";
 const AGENTS = "*agents";
+const AGENT_M = "*agent-m";
 export function App() {
   const { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
   const [notifyOn, setNotifyOnState] = useState(notifyOnSaved);
@@ -41,7 +43,16 @@ export function App() {
   // Keep a valid tab selected as repos open and close. The overview is there from two repos on.
   const showOverview = order.length >= 2;
   const showAgents = order.length > 0;
-  const current = active === AGENTS && showAgents ? AGENTS : order.includes(active) || (active === OVERVIEW && showOverview) ? active : (order[0] ?? "");
+  const waitingCommands = commandsOf(sessions, order).waiting.length;
+  const agentMChat = useAgentMChat();
+  const current =
+    active === AGENTS && showAgents
+      ? AGENTS
+      : active === AGENT_M
+        ? AGENT_M
+        : order.includes(active) || (active === OVERVIEW && showOverview)
+          ? active
+          : (order[0] ?? "");
   useEffect(() => {
     if (!order.includes(agentRepo)) setAgentRepo(order.includes(active) ? active : (order[0] ?? ""));
   }, [order, active, agentRepo]);
@@ -114,6 +125,23 @@ export function App() {
               <span className="nav-label">Agents</span>
             </button>
           )}
+          <button
+            className={`nav-item ${current === AGENT_M ? "active" : ""}`}
+            aria-current={current === AGENT_M ? "page" : undefined}
+            onClick={() => setActive(AGENT_M)}
+            title="Agent M: allow or deny the shell commands your agents want to run"
+          >
+            <span className="nav-icon" aria-hidden>
+              𝓂
+            </span>
+            &nbsp;
+            <span className="nav-label">Agent M</span>
+            {waitingCommands > 0 && (
+              <span className="nav-alert" aria-label={`${waitingCommands} waiting`}>
+                {waitingCommands}
+              </span>
+            )}
+          </button>
           <p className="nav-section">Repos</p>
           {order.map((repo) => {
             const s = sessions[repo];
@@ -290,7 +318,7 @@ export function App() {
           </section>
         )}
 
-        {order.length === 0 && !newProject && (
+        {order.length === 0 && !newProject && current !== AGENT_M && (
           <section className="empty-state">
             <img src="/logo-64.png" alt="" width={48} height={48} />
             <h2>No repo open</h2>
@@ -311,6 +339,15 @@ export function App() {
         )}
 
         {current === AGENTS && <AgentsPage repos={order} repo={agentRepo} onRepoChange={setAgentRepo} />}
+
+        {current === AGENT_M && (
+          <AgentMPanel
+            sessions={sessions}
+            order={order}
+            decide={(repo, id, decision) => transport.call("decide-command", { repo, id, decision })}
+            chat={agentMChat}
+          />
+        )}
 
         {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
       </main>

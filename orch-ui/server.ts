@@ -176,12 +176,7 @@ function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number
     usage = { ...usage, ...next };
     sendGlobal();
   }
-  if (COST_EVENTS.has(ev.type) && typeof ev.cost === "number" && ev.cost > 0) {
-    if (spent.day !== today()) spent = { day: today(), usd: 0 };
-    spent.usd += ev.cost;
-    saveSettings();
-    sendGlobal();
-  }
+  if (COST_EVENTS.has(ev.type) && typeof ev.cost === "number") addSpent(ev.cost);
   // The loop changed queue.json: send the queue again, so statuses and the brief's progress stay current.
   if (["queue_item", "queue_changed", "blocked", "coverage"].includes(ev.type)) sendSession(s);
   if (ev.type === "queue_item" && dailyBudget !== null && spent.usd >= dailyBudget && s.child?.pid) {
@@ -362,6 +357,8 @@ const flags = (b: {
   pr?: boolean;
   approvePlan?: boolean;
   ask?: boolean;
+  /** Agent M: implementers may run shell commands a human approves (--commands). */
+  commands?: boolean;
   /** A GitHub label: loops pull new issues with it in (--intake github:LABEL). */
   intakeLabel?: string;
   plugins?: PluginOpts;
@@ -385,6 +382,7 @@ const flags = (b: {
   ...(b.pr ? ["--pr"] : []),
   ...(b.approvePlan ? ["--approve-plan"] : []),
   ...(b.ask === true ? ["--ask"] : b.ask === false ? ["--no-ask"] : []),
+  ...(b.commands === true ? ["--commands"] : b.commands === false ? ["--no-commands"] : []),
   ...(typeof b.intakeLabel === "string" && LABEL.test(b.intakeLabel) ? ["--intake", `github:${b.intakeLabel}`] : []),
   ...pluginFlags(b.plugins),
 ];
@@ -461,6 +459,46 @@ const answerQuestion = (s: Session, id: string, answer: string) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     );
     child.stdin?.end(answer);
+  });
+
+/** Agent M: allow, deny or always-allow a command an agent wants to run (`orch decide`, which checks the ID). */
+const decideCommand = (s: Session, id: string, decision: string) =>
+  new Promise<void>((ok, fail) =>
+    execFile(process.execPath, [TSX_CLI, ORCH, "decide", id, decision], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    ),
+  );
+
+/** Count money spent today toward the daily budget. */
+function addSpent(cost: number) {
+  if (!(cost > 0)) return;
+  if (spent.day !== today()) spent = { day: today(), usd: 0 };
+  spent.usd += cost;
+  saveSettings();
+  sendGlobal();
+}
+
+/** Agent M chat: `orch chat` with the question and every open repo (it reads their status); its cost counts toward the daily budget. */
+const askAgentM = (question: string, session?: string) =>
+  new Promise<{ answer: string; session?: string; cost: number }>((ok, fail) => {
+    const list = [...sessions.values()];
+    const input = JSON.stringify({ question, session, repos: list.map((s) => s.repo), running: list.filter((s) => s.child).map((s) => s.repo) });
+    const child = execFile(
+      process.execPath,
+      [TSX_CLI, ORCH, "chat"],
+      { cwd: homedir(), encoding: "utf8", windowsHide: true, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },
+      (err, out, stderr) => {
+        if (err) return fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message));
+        try {
+          const r = JSON.parse(out.trim().split(/\r?\n/).pop() ?? "");
+          addSpent(Number(r.cost));
+          ok(r);
+        } catch {
+          fail(new Error("Agent M returned no answer"));
+        }
+      },
+    );
+    child.stdin?.end(input);
   });
 
 const body = (req: http.IncomingMessage) =>
@@ -678,6 +716,12 @@ http
           startNext();
           return json(200, { ok: true });
         }
+        if (url.pathname === "/api/agent-m/ask") {
+          if (typeof b.question !== "string" || !b.question.trim() || b.question.length > 4000)
+            return json(400, { error: "question required (up to 4000 characters)" });
+          if (b.session !== undefined && (typeof b.session !== "string" || !/^[\w-]{1,100}$/.test(b.session))) return json(400, { error: "invalid session" });
+          return json(200, await askAgentM(b.question, b.session));
+        }
         if (url.pathname === "/api/clear-limit") {
           // "Try now": lift the usage-limit hold early, and forget readings over a cap; a run that hits
           // the limit (or reads usage over a cap) again sets it again.
@@ -808,6 +852,12 @@ http
           await answerQuestion(s, b.id, b.answer);
           return json(200, { ok: true });
         }
+        if (url.pathname === "/api/decide-command") {
+          if (typeof b.id !== "string" || !["allow", "deny", "always"].includes(b.decision))
+            return json(400, { error: "command ID and decision (allow, deny, always) required" });
+          await decideCommand(s, b.id, b.decision);
+          return json(200, { ok: true });
+        }
         if (url.pathname === "/api/share") {
           // `orch share`: proposes a CLAUDE.md section on an orchestrator/claude-md-* branch; the working tree is untouched.
           requestStart(s, ["share", ...flags({ ...b, dryRun: false })], "share to CLAUDE.md");
@@ -843,6 +893,7 @@ http
       res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
       createReadStream(file).pipe(res);
     } catch (e) {
+      console.error("Server error:", e);
       json(500, { error: (e as Error).message });
     }
   })
