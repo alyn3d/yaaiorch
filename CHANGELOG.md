@@ -13,6 +13,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [0.5.4] - 2026-11-16
 
 ### Added
+- Desktop app on macOS and Linux: find `claude`, `gh`, `git` and `node` when started from Finder, the Dock or a launcher, by taking PATH from the login shell plus the usual install dirs (`~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, …).
 - Opt-in worktrees for parallel build tasks. Every task starts from the same round snapshot; diffs apply back after completion, and a conflicting worktree is preserved with its recovery path reported.
 - A cross-repo Overview work board for active tasks, human input, verification/PR review, and completed queue goals.
 - A landing-page screenshot slider, including a simulated three-project work board.

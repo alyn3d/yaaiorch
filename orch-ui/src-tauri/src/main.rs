@@ -1543,7 +1543,63 @@ fn main() {
             doctor,
             browser_detect,
             browser_configure,
+/// macOS/Linux: an app started from Finder, the Dock or a desktop launcher gets a minimal PATH
+/// (/usr/bin:/bin:/usr/sbin:/sbin), not the one the user's shell sets up, so `claude`, `gh`, `git` from
+/// Homebrew or `node` would not be found. Take PATH from the login shell (bounded by a timeout, its output
+/// fenced by markers so rc-file chatter is ignored), then add the usual install dirs that exist.
+#[cfg(not(windows))]
+fn fix_path() {
+    use std::time::{Duration, Instant};
+    const MARK: &str = "__YAAIORCH_PATH__";
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+    let from_shell = (|| {
+        let mut child = Command::new(&shell)
+            .args(["-ilc", &format!("printf '{MARK}%s{MARK}' \"$PATH\"")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(25)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+        out.split(MARK).nth(1).map(str::to_string)
+    })()
+    .unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = [
+        format!("{home}/.local/bin"),
+        format!("{home}/.claude/local"),
+        format!("{home}/.npm-global/bin"),
+        format!("{home}/.bun/bin"),
+        format!("{home}/.volta/bin"),
+        "/opt/homebrew/bin".into(),
+        "/usr/local/bin".into(),
+    ];
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut dirs: Vec<String> = Vec::new();
+    for d in from_shell.split(':').chain(current.split(':')).map(str::to_string).chain(extra) {
+        if !d.is_empty() && !dirs.contains(&d) && (from_shell.split(':').any(|s| s == d) || current.split(':').any(|c| c == d) || Path::new(&d).is_dir()) {
+            dirs.push(d);
+        }
+    }
+    std::env::set_var("PATH", dirs.join(":"));
+}
+
             plugins
+    #[cfg(not(windows))]
+    fix_path();
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
