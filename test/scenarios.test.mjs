@@ -114,6 +114,65 @@ const writeConfig = (dir, cfg) => {
 
 // spawnSync blocks, so the scenarios run one after another; the timeout makes a hang fail instead of stalling CI.
 describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
+  test("a custom agent can replace QA while keeping the QA role read-only", () => {
+    const dir = repo();
+    writeConfig(dir, { keep: true });
+    mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "agents", "my-qa.md"), "---\nname: my-qa\ndescription: A custom QA agent\n---\n\nVerify the goal carefully.\n");
+    git(dir, "add", ".claude");
+    git(dir, "commit", "-m", "add custom QA");
+    const swap = orch(dir, ["agents", "--swap", "qa=my-qa"]);
+    assert.equal(swap.code, 0, swap.out);
+    const cfg = JSON.parse(readFileSync(join(dir, ".orchestrator", "config.json"), "utf8"));
+    assert.equal(cfg.keep, true);
+    assert.equal(cfg.swap.qa, "my-qa");
+
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(
+      r.calls.some((call) => call.startsWith("call agent=my-qa mode=default ")),
+      r.calls.join("\n"),
+    );
+    assert.ok(
+      r.calls.every((call) => !call.startsWith("call agent=qa ")),
+      "the built-in qa was not called",
+    );
+    assert.ok(
+      r.calls.some((call) => call.startsWith("call agent=my-qa ") && call.endsWith("builtin=false")),
+      r.calls.join("\n"),
+    );
+  });
+
+  test("a plan task keeps the be role but runs the swapped build agent", () => {
+    const dir = repo();
+    mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
+    writeFileSync(
+      join(dir, ".claude", "agents", "backend-builder.md"),
+      "---\nname: backend-builder\ndescription: A custom backend builder\n---\n\nBuild the backend task.\n",
+    );
+    git(dir, "add", ".claude");
+    git(dir, "commit", "-m", "add custom builder");
+    assert.equal(orch(dir, ["agents", "--swap", "be=backend-builder"]).code, 0);
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(r.ev("plan")[0].tasks.some((task) => task.agent === "be"));
+    assert.ok(
+      r.calls.some((call) => call.startsWith("call agent=backend-builder mode=acceptEdits ")),
+      r.calls.join("\n"),
+    );
+    assert.ok(!r.calls.some((call) => call.startsWith("call agent=be ")), "the built-in be was not called");
+  });
+
+  test("swapping to a missing or built-in agent fails clearly", () => {
+    const dir = repo();
+    const missing = orch(dir, ["agents", "--swap", "qa=missing-agent"]);
+    assert.notEqual(missing.code, 0);
+    assert.match(missing.out, /swap target "missing-agent" for "qa" is not an agent/);
+    const builtin = orch(dir, ["agents", "--swap", "qa=critic"]);
+    assert.notEqual(builtin.code, 0);
+    assert.match(builtin.out, /swap target "critic" for "qa" must be a user or project agent, not a built-in/);
+  });
+
   test("browser setup requires selecting the current script and preserves existing settings", () => {
     const dir = repo();
     mkdirSync(join(dir, "web"));

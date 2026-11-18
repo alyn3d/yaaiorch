@@ -5,6 +5,12 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Agent swaps: use a differently named user or project agent in any built-in role with config `"swap"`, `orch agents --swap be=backend-builder`, or **Use instead** on the **Agents** page. Plans, permissions and model roles stay unchanged; `--unswap` restores the built-in.
+
+### Fixed
+- The Tauri dev app now prefers its freshly rebuilt `orch.mjs`, so newly added CLI options such as agent `--swap` are available without a stale packaged-resource copy taking precedence.
+
 ## [0.5.5] - 2026-11-18
 
 ### Added

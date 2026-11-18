@@ -349,12 +349,15 @@ fn orch_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("ORCH_PATH") {
         return Ok(PathBuf::from(p));
     }
+    let dev = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/orch.mjs"));
+    if cfg!(debug_assertions) && dev.exists() {
+        return Ok(dev);
+    }
     if let Ok(p) = app.path().resolve("resources/orch.mjs", BaseDirectory::Resource) {
         if p.exists() {
             return Ok(strip_verbatim(p));
         }
     }
-    let dev = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/orch.mjs"));
     if dev.exists() {
         return Ok(dev);
     }
@@ -1146,6 +1149,22 @@ fn save_agent(app: AppHandle, repo: String, name: String, content: String) -> Re
     }
 }
 
+#[tauri::command(async)]
+fn swap_agent(app: AppHandle, repo: String, role: String, target: Option<String>) -> Result<(), String> {
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let args = if let Some(target) = target {
+        vec!["agents".into(), "--swap".into(), format!("{role}={target}")]
+    } else {
+        vec!["agents".into(), "--unswap".into(), role]
+    };
+    let out = node_cmd(&app, &dir, &args)?.output().map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// `orch learn`: a read-only pass that writes the project brief. A run like any other (slot, budget, log).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -1723,6 +1742,7 @@ fn main() {
             history,
             visual_image,
             save_agent,
+            swap_agent,
             stop,
             clear_log,
             rollback,

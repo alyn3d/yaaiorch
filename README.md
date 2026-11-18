@@ -172,7 +172,12 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
 
 - **Agents.** Built-in `architect`, `fe`, `be` and `qa` live in [`orch-agents.ts`](orch-agents.ts).
   Agents in `~/.claude/agents` and your repo's `.claude/agents` are discovered too and override
-  built-ins with the same name, so you can bring your own specialists.
+  built-ins with the same name, so you can bring your own specialists. To use a differently named
+  agent in a built-in role, set `"swap": { "be": "backend-builder", "qa": "my-qa" }` in
+  `.orchestrator/config.json`, run `orch agents --swap be=backend-builder`, or choose **Use instead**
+  on the **Agents** page. Undo it with `orch agents --unswap be` or **Use built-in**. Plans and events
+  still use the role name (`be`), while the Claude call uses `backend-builder`; role permissions and
+  model selection stay unchanged.
 - **Plans** are JSON: tasks with a phase (`foundation`, `build`, `verify`) and the files each task owns.
   No file is owned twice, which is what makes parallel builds in one working tree safe.
 - **Models.** Each power tier maps the roles (architect, implementers, heavy tasks, QA, fast-path agent)

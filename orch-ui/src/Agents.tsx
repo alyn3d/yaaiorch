@@ -48,6 +48,8 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
   }, [repo, refresh]);
 
   const agent = roster?.agents.find((a) => a.name === selected);
+  const customAgents = roster?.agents.filter((item) => item.source !== "builtin") ?? [];
+  const swap = roster?.swap?.[agent?.name ?? ""];
   const startEdit = (entry?: RosterEntry) => {
     setError("");
     if (!entry) setSelected("");
@@ -73,6 +75,19 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
       await transport.saveAgent(repo, name, content);
       setSelected(name);
       setEditing(false);
+      setRefresh((n) => n + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const setSwap = async (target?: string) => {
+    if (!agent) return;
+    setSaving(true);
+    setError("");
+    try {
+      await transport.swapAgent(repo, agent.name, target);
       setRefresh((n) => n + 1);
     } catch (e) {
       setError((e as Error).message);
@@ -179,6 +194,36 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
                       <button onClick={() => startEdit(agent)}>{agent.source === "project" ? "Edit" : "Create project override"}</button>
                     </div>
                     <p className="muted">{agent.description || "No description"}</p>
+                    {agent.source === "builtin" && (
+                      <div className="agent-swap">
+                        <label>
+                          Use instead
+                          <select
+                            aria-label={`Agent to use instead of ${agent.name}`}
+                            value={swap ?? ""}
+                            disabled={saving}
+                            onChange={(event) => setSwap(event.target.value || undefined)}
+                          >
+                            <option value="">Built-in {agent.name}</option>
+                            {swap && !customAgents.some((item) => item.name === swap) && (
+                              <option value={swap} disabled>
+                                {swap} (missing)
+                              </option>
+                            )}
+                            {customAgents.map((item) => (
+                              <option key={item.name} value={item.name}>
+                                {item.name} — {sourceLabel(item.source)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {swap && (
+                          <button disabled={saving} onClick={() => setSwap()}>
+                            Use built-in
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <pre className="agent-prompt">{promptOf(agent.content) || "No instructions provided."}</pre>
                   </>
                 ) : (

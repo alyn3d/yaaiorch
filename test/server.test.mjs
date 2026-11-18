@@ -134,6 +134,22 @@ describe("browser-mode server guard", { timeout: 60_000 }, () => {
     const helper = updated.json().agents.find((a) => a.name === "helper");
     assert.equal(helper?.source, "project");
     assert.equal(helper?.content, content);
+
+    const swapped = await request("/api/agents/swap", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-orch-token": t },
+      body: { repo, role: "be", target: "helper" },
+    });
+    assert.equal(swapped.status, 200, swapped.text);
+    const rosterWithSwap = await request(`/api/agents?repo=${encodeURIComponent(repo)}`, { headers: { "x-orch-token": t } });
+    assert.equal(rosterWithSwap.json().swap.be, "helper");
+    const unswapped = await request("/api/agents/swap", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-orch-token": t },
+      body: { repo, role: "be" },
+    });
+    assert.equal(unswapped.status, 200, unswapped.text);
+    assert.deepEqual((await request(`/api/agents?repo=${encodeURIComponent(repo)}`, { headers: { "x-orch-token": t } })).json().swap, {});
   });
 
   test("browser setup is token-protected, scoped to an open repo and requires a detected selection", async () => {

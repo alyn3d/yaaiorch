@@ -676,6 +676,13 @@ http
           if (typeof b.name !== "string" || typeof b.content !== "string") return json(400, { error: "agent name and content are required" });
           return json(200, JSON.parse(await orchOutput(s.repo, ["agents", "--save-agent", b.name], b.content)));
         }
+        if (url.pathname === "/api/agents/swap") {
+          const s = mustGet(typeof b.repo === "string" ? b.repo : null);
+          if (typeof b.role !== "string") return json(400, { error: "built-in role is required" });
+          if (b.target !== undefined && typeof b.target !== "string") return json(400, { error: "swap target must be an agent name" });
+          const args = typeof b.target === "string" ? ["agents", "--swap", `${b.role}=${b.target}`] : ["agents", "--unswap", b.role];
+          return json(200, JSON.parse(await orchOutput(s.repo, args)));
+        }
         if (url.pathname === "/api/add-repo") {
           if (typeof b.path !== "string" || !b.path.trim()) return json(400, { error: "path required" });
           const s = addRepo(b.path.trim());

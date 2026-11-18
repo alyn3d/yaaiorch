@@ -61,6 +61,8 @@ export interface Transport {
   visualImage(repo: string, file: string): Promise<string>;
   /** Save a project-level agent definition (also creates an override of a built-in or user agent). */
   saveAgent(repo: string, name: string, content: string): Promise<void>;
+  /** Use a custom agent in a built-in role, or undo the mapping when `target` is omitted. */
+  swapAgent(repo: string, role: string, target?: string): Promise<void>;
   /** Agent M: ask about the setup and the open repos (Haiku, read-only); `session` continues a conversation. */
   agentMAsk(question: string, session?: string): Promise<AgentMReply>;
   /** Agent M: gather the machine status in the background so the first question is quick (fire and forget). */
@@ -208,6 +210,7 @@ const web: Transport = {
     });
   },
   saveAgent: (repo, name, content) => post("agents", { repo, name, content }),
+  swapAgent: (repo, role, target) => post("agents/swap", { repo, role, target }),
   agentMAsk: (question, session) => post("agent-m/ask", { question, session }),
   agentMWarm: () => post("agent-m/warm", {}),
 };
@@ -297,6 +300,7 @@ const tauri: Transport = {
     );
   },
   saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
+  swapAgent: (repo, role, target) => tauriInvoke("swap_agent", { repo, role, target }),
   agentMAsk: (question, session) => tauriInvoke<AgentMReply>("agent_m_ask", { question, session }),
   agentMWarm: () => tauriInvoke("agent_m_warm"),
 };

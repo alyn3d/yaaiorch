@@ -58,7 +58,7 @@ export type Power = "max" | "heavy" | "balanced" | "economy";
 export type Plugin = { id: string; name: string; scope: string; enabled: boolean; tokens?: number };
 export type RosterEntry = { name: string; description: string; source: "builtin" | "user" | "project"; content: string };
 export type RosterSkill = { name: string; description: string; source: "user" | "project" };
-export type AgentRoster = { agents: RosterEntry[]; skills: RosterSkill[] };
+export type AgentRoster = { agents: RosterEntry[]; skills: RosterSkill[]; swap?: Record<string, string> };
 /** One line of `orch doctor --json`. */
 export type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };
 

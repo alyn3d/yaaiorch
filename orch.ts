@@ -51,7 +51,8 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch loop             process the queue continuously (Ctrl+C stops after current goal)
   orch status           show queue
   orch history [ID] --json   list recorded goal attempts, or read one attempt's events
-  orch agents [--json]  list agents + skills the architect will see
+  orch agents [--json] [--swap ROLE=AGENT | --unswap ROLE]
+                        list agents + skills, or use a custom agent in a built-in role
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
@@ -148,6 +149,7 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   and opens them in Chrome or Edge after the checks, and QA gets screenshots and measurements (a page
                   that does not render fails the round); also "visual": false in config
 Agents: built-in (architect, fe, be, qa), overridden by ~/.claude/agents and ./.claude/agents.
+        "swap" in .orchestrator/config.json maps a built-in role to a differently named custom agent.
 The architect and verifiers run read-only; implementers may edit.
 Checks: after each build phase the orchestrator runs the repo's checks itself and a non-zero exit
 fails the round. From .orchestrator/config.json {"checks": {"name": "command"}, "allow": ["Bash(...)"]},
@@ -195,7 +197,7 @@ type Item = {
   priority?: number;
 };
 type AgentSource = "builtin" | "user" | "project";
-type Entry = { name: string; description: string; builtin?: boolean; source?: AgentSource; content?: string };
+type Entry = { name: string; description: string; builtin?: boolean; source?: AgentSource; content?: string; runAs?: string };
 type TokenUsage = { input: number; output: number; cacheRead: number; cacheCreation: number };
 type Result = {
   agent: string;
@@ -595,6 +597,7 @@ function parseFrontmatter(text: string): Record<string, string> {
 }
 const frontmatter = (path: string) => parseFrontmatter(readFileSync(path, "utf8"));
 const roots = () => [join(homedir(), ".claude"), join(process.cwd(), ".claude")];
+const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 function discoverAgents(): Entry[] {
   const found = new Map<string, Entry>();
@@ -621,8 +624,7 @@ function discoverAgents(): Entry[] {
 }
 
 function saveAgent(name: string, content: string) {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name))
-    throw new Error("agent name must start with a letter or number and contain only letters, numbers, dashes or underscores");
+  if (!AGENT_NAME_RE.test(name)) throw new Error("agent name must start with a letter or number and contain only letters, numbers, dashes or underscores");
   if (content.length > 100_000) throw new Error("agent definition is too large (maximum 100 KB)");
   const fm = parseFrontmatter(content);
   if (fm.name !== name) throw new Error(`agent frontmatter name must be "${name}"`);
@@ -662,6 +664,7 @@ type Config = {
   checks?: Record<string, string>;
   allow?: string[];
   models?: Partial<Record<Role, string>> & { agents?: Record<string, string> };
+  swap?: Record<string, string>;
   onLimit?: "wait" | "stop";
   usageCap?: { "5h"?: number; week?: number };
   plugins?: { off?: boolean; disable?: string[]; hooks?: boolean };
@@ -712,6 +715,55 @@ function readJsonFile<T>(path: string, fallback: T): T {
   } catch (e) {
     throw new Error(`cannot parse ${path}: ${msg(e)}`, { cause: e });
   }
+}
+
+const BUILTIN_ROLES = Object.keys(BUILTIN_AGENTS);
+
+/** Keep plan/event names as roles while replacing the Claude agent selected for a call. */
+function applyAgentSwaps(roster: Entry[], swap: Config["swap"]): Entry[] {
+  if (swap === undefined) return roster;
+  if (!swap || typeof swap !== "object" || Array.isArray(swap)) throw new Error("config.json swap must be an object of role=agent names");
+  const byName = new Map(roster.map((a) => [a.name, a]));
+  for (const [role, target] of Object.entries(swap)) {
+    if (!BUILTIN_ROLES.includes(role)) throw new Error(`cannot swap unknown built-in agent "${role}"`);
+    if (typeof target !== "string" || !AGENT_NAME_RE.test(target)) throw new Error(`swap for "${role}" has invalid agent name "${String(target)}"`);
+    const agent = byName.get(target);
+    if (!agent) throw new Error(`swap target "${target}" for "${role}" is not an agent (known: ${[...byName.keys()].join(", ")})`);
+    if (agent.source === "builtin") throw new Error(`swap target "${target}" for "${role}" must be a user or project agent, not a built-in`);
+  }
+  return roster.map((entry) => {
+    const target = swap[entry.name];
+    if (!target) return entry;
+    const custom = byName.get(target)!;
+    return { ...custom, name: entry.name, runAs: custom.name, builtin: false };
+  });
+}
+
+function configuredRoster(cfg: Config): Entry[] {
+  return applyAgentSwaps(discoverAgents(), cfg.swap);
+}
+
+function saveAgentSwap(spec: string | undefined, unswap: string | undefined) {
+  if ((spec === undefined) === (unswap === undefined)) throw new Error("usage: orch agents --swap ROLE=AGENT | --unswap ROLE");
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const next = { ...(cfg.swap ?? {}) };
+  let role: string;
+  let target: string | undefined;
+  if (spec !== undefined) {
+    const parts = spec.split("=");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error(`--swap: expected ROLE=AGENT, got "${spec}"`);
+    [role, target] = parts;
+    applyAgentSwaps(discoverAgents(), { [role]: target });
+    next[role] = target;
+  } else {
+    role = unswap!;
+    if (!AGENT_NAME_RE.test(role) || !BUILTIN_ROLES.includes(role)) throw new Error(`cannot unswap unknown built-in agent "${role}"`);
+    delete next[role];
+  }
+  if (Object.keys(next).length) cfg.swap = next;
+  else delete cfg.swap;
+  writeFileAtomic(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  return { ok: true, role, ...(target ? { target } : {}) };
 }
 
 /** Checks from .orchestrator/config.json, else the usual package.json scripts (skipping npm's placeholder test). */
@@ -2010,7 +2062,7 @@ async function runOnce(
       ...(agent.builtin ? ["--agents", BUILTIN_FILE] : []),
       ...(existsSync(AGENT_SETTINGS) ? ["--settings", readOnly ? READONLY_SETTINGS : AGENT_SETTINGS] : []),
       "--agent",
-      agent.name,
+      agent.runAs ?? agent.name,
       "--model",
       model,
       // stream-json (needs --verbose) also carries rate_limit_event lines with the subscription's usage.
@@ -3378,10 +3430,10 @@ function briefForGoal(): { text: string; stale: boolean } {
  * and the plugin choice like a goal does.
  */
 async function learn(o: Opts) {
-  const roster = discoverAgents();
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const roster = configuredRoster(cfg);
   const architect = roster.find((a) => a.name === "architect")!;
   writeBuiltins(roster);
-  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   const checks = loadChecks(cfg);
   writeAgentSettings(cfg, checks, o.plugins);
   const ctx: RunCtx = {
@@ -3450,10 +3502,10 @@ async function share(o: Opts) {
   const notes = existsSync(NOTES_FILE) ? readFileSync(NOTES_FILE, "utf8").trim() : "";
   if (!brief && !notes) throw new Error(`nothing learned yet: no ${BRIEF_FILE} or ${NOTES_FILE} (run a goal or "orch learn" first)`);
   if (!o.dryRun) git("rev-parse", "--verify", "HEAD"); // needs a commit to branch from
-  const roster = discoverAgents();
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const roster = configuredRoster(cfg);
   const architect = roster.find((a) => a.name === "architect")!;
   writeBuiltins(roster);
-  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   writeAgentSettings(cfg, loadChecks(cfg), o.plugins);
   const ctx: RunCtx = {
     budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
@@ -3688,10 +3740,10 @@ const needs = (g: SplitGoal, i: number) =>
  * goal sets it up and which also gets suggested checks. Emits `split_proposal` (goals, checks, cost).
  */
 async function splitBrief(brief: string, o: Opts, fresh: boolean, setup?: string, proposeOnly = false) {
-  const roster = discoverAgents();
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const roster = configuredRoster(cfg);
   const architect = roster.find((a) => a.name === "architect")!;
   writeBuiltins(roster);
-  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   writeAgentSettings(cfg, loadChecks(cfg), o.plugins);
   const ctx: RunCtx = {
     budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
@@ -3879,10 +3931,10 @@ async function coverageCheck(o: Opts): Promise<{ queued: number; cost: number }>
     mine.some((i) => i.status === "pending" || i.status === "running" || i.status === "blocked")
   )
     return { queued: 0, cost: 0 };
-  const roster = discoverAgents();
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const roster = configuredRoster(cfg);
   const architect = roster.find((a) => a.name === "architect")!;
   writeBuiltins(roster);
-  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   writeAgentSettings(cfg, loadChecks(cfg), o.plugins);
   const ctx: RunCtx = {
     budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
@@ -4056,7 +4108,7 @@ async function runRecordedGoal(goal: string, o: Opts, id?: number, brief?: strin
       const rounds = lr.state as { failures: string[] }[];
       appendNotes(goal, passed, rounds.length, goalNotes, rounds[0]?.failures ?? [], rounds.at(-1)?.failures ?? []);
       await tidyNotes(
-        discoverAgents().find((a) => a.name === "architect")!,
+        configuredRoster(readJsonFile<Config>(CONFIG_FILE, {})).find((a) => a.name === "architect")!,
         o,
         ctx,
       );
@@ -4134,13 +4186,15 @@ function visualSetup(cfg: Config, o: Opts): { serve: ServeConfig; exe: string } 
 async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: LastRun, resumed: string[] | null = null, title?: string): Promise<boolean> {
   PROTECT = o.protect;
   SECRET_SCAN = o.secretScan;
-  const roster = discoverAgents();
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const roster = configuredRoster(cfg);
   const byName = new Map(roster.map((a) => [a.name, a]));
   const architect = byName.get("architect")!; // always present: built-in unless overridden
   // The critic and the reviewers review; they are never given build or verify tasks.
   const reviewerNames = o.review === null ? [] : o.review.length ? o.review : ["reviewer"];
   for (const n of reviewerNames) if (!byName.has(n)) throw new Error(`reviewer "${n}" is not an agent (known: ${[...byName.keys()].join(", ")})`);
-  const workers = roster.filter((a) => !["architect", "critic", "reviewer", ...reviewerNames].includes(a.name));
+  const swapTargets = new Set(Object.values(cfg.swap ?? {}));
+  const workers = roster.filter((a) => !["architect", "critic", "reviewer", ...reviewerNames].includes(a.name) && !swapTargets.has(a.name));
   const critic = byName.get("critic");
   /** Diff reviews each round runs next to QA: the critic against the goal, the reviewers for bugs and security. */
   const diffReviewers: { agent: Entry; lens: Lens }[] = [
@@ -4149,7 +4203,6 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   ];
   const skills = discoverSkills();
   writeBuiltins(roster);
-  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   let checks = loadChecks(cfg);
   writeAgentSettings(cfg, checks, o.plugins);
   const browserCheck = visualSetup(cfg, o);
@@ -5298,6 +5351,8 @@ async function main() {
       "no-visual": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       "save-agent": { type: "string" },
+      swap: { type: "string" },
+      unswap: { type: "string" },
       github: { type: "string" },
       backlog: { type: "string" },
       setup: { type: "string" },
@@ -5359,24 +5414,37 @@ async function main() {
     case "history":
       if (!values.json || rest.length > 1) throw new Error("usage: orch history [ID] --json");
       return console.log(JSON.stringify(rest[0] ? readRunHistory(rest[0]) : listRunHistory()));
-    case "agents":
+    case "agents": {
       if (typeof values["save-agent"] === "string") {
         const path = saveAgent(values["save-agent"], readFileSync(0, "utf8"));
         return console.log(JSON.stringify({ ok: true, path }));
       }
-      if (values.json) return console.log(JSON.stringify({ agents: discoverAgents(), skills: discoverSkills() }));
+      if (typeof values.swap === "string" || typeof values.unswap === "string") return console.log(JSON.stringify(saveAgentSwap(values.swap, values.unswap)));
+      if (values.json) {
+        const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+        return console.log(JSON.stringify({ agents: discoverAgents(), skills: discoverSkills(), swap: cfg.swap ?? {} }));
+      }
       console.log(
         "agents:\n" +
           discoverAgents()
             .map((a) => `  ${a.name}${a.source === "builtin" ? " (built-in)" : ""}: ${a.description}`)
             .join("\n"),
       );
+      const swap = readJsonFile<Config>(CONFIG_FILE, {}).swap ?? {};
+      if (Object.keys(swap).length)
+        console.log(
+          "swaps:\n" +
+            Object.entries(swap)
+              .map(([role, agent]) => `  ${role} -> ${agent}`)
+              .join("\n"),
+        );
       return console.log(
         "skills:\n" +
           discoverSkills()
             .map((s) => `  ${s.name}: ${s.description}`)
             .join("\n"),
       );
+    }
     case "learn": {
       const o = parseOpts(values);
       acquireRunLock("learn");

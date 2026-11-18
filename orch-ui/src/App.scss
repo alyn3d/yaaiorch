@@ -744,6 +744,18 @@ button {
   flex-direction: column;
   gap: 12px;
 }
+.agent-swap {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  label {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 6px;
+    color: var(--text-2);
+  }
+}
 .agent-prompt {
   min-height: 260px;
   max-height: 580px;
