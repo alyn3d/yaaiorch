@@ -777,6 +777,13 @@ describe("protected paths and secret formats", () => {
     assert.equal(o.protectedBy(".\\.github\\workflows\\x.yml", [".github/workflows/"]), ".github/workflows/");
     assert.equal(o.protectedBy("src/a.ts", [".github/workflows/"]), undefined);
   });
+  test("Agent M: only plain commands can be always-allowed (no wildcard, parentheses or secret in the rule)", () => {
+    for (const ok of ["npm install zod", "npm run build -- --mode=prod", "git log -5"]) assert.equal(o.alwaysBlocked(ok), "", ok);
+    assert.match(o.alwaysBlocked("ls *.ts"), /wildcard/);
+    assert.match(o.alwaysBlocked("npm test:*"), /wildcard/);
+    assert.match(o.alwaysBlocked("echo $(whoami)"), /parentheses/);
+    assert.match(o.alwaysBlocked(`curl -H "key: ${"AKIA" + "ABCDEFGHIJKLMNOP"}" localhost`), /secret/);
+  });
   test("secret formats: real-looking keys yes, ordinary code no", () => {
     const found = (text) => o.SECRETS.filter(([, re]) => re.test(text)).map(([what]) => what);
     const k = (...parts) => parts.join("");

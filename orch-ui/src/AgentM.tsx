@@ -58,13 +58,15 @@ export function CommandCard({ repo, command, showRepo, onDecide }: { repo: strin
           <button className="primary" disabled={busy} onClick={() => decide("allow")}>
             Allow
           </button>
-          <button
-            disabled={busy}
-            onClick={() => decide("always")}
-            title="Allow it now, and this exact command in later runs of this repo without asking (config.json allow)."
-          >
-            Always allow
-          </button>
+          {!command.noAlways && (
+            <button
+              disabled={busy}
+              onClick={() => decide("always")}
+              title="Allow it now, and this exact command in later runs of this repo without asking (config.json allow)."
+            >
+              Always allow
+            </button>
+          )}
           <button className="danger" disabled={busy} onClick={() => decide("deny")}>
             Deny
           </button>

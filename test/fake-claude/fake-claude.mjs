@@ -30,6 +30,7 @@
 //   FAKE_COMMAND=<agent>=<cmd>[;<agent>=<cmd>]   with --permission-prompt-tool, that agent asks the MCP server
 //                            from --mcp-config about running <cmd> (Bash) like the real CLI, and logs
 //                            "<agent>: command=<cmd> behavior=<allow|deny> message=<why>"; FAKE_COMMAND_TOOL picks the tool
+//                            FAKE_COMMAND_CRASH=1: the agent dies hard (with the MCP server) while its command waits
 //   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
 //   FAKE_TIDY=bad            the notes tidy call returns no usable notes
 //   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
@@ -48,7 +49,7 @@
 //                            utilizations (fractions, e.g. 0.83,0.24); windows reset FAKE_USAGE_RESET_S (3600) s from now
 // Also answers `--version` and `auth status --json` for `orch doctor`, `plugin list --json` and
 // `plugin details <id>` for `orch plugins`, and honours --max-budget-usd.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync, readdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -242,6 +243,16 @@ if (permitTool && wanted) {
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = await rpc("tools/list", {});
   if (!tools.result.tools.some((t) => `mcp__${permitTool.split("__")[1]}__${t.name}` === permitTool)) throw new Error("permission tool not listed");
+  if (env.FAKE_COMMAND_CRASH) {
+    // Ask, then die hard (with the MCP server) while the command waits for an answer: no outcome is written.
+    void rpc("tools/call", { name: permitTool.split("__")[2], arguments: { tool_name: "Bash", input: { command }, tool_use_id: "toolu_fake" } });
+    const dir = ".orchestrator/commands";
+    while (!(existsSync(dir) && readdirSync(dir).some((f) => /^[0-9a-f-]{36}\.json$/.test(f)))) await sleep(50);
+    await sleep(400); // let the run announce it
+    child.kill("SIGKILL");
+    log(`${agent}: crashed while ${command} waits`);
+    process.exit(1);
+  }
   const res = await rpc("tools/call", {
     name: permitTool.split("__")[2],
     arguments: { tool_name: env.FAKE_COMMAND_TOOL ?? "Bash", input: { command, description: "needed for the task" }, tool_use_id: "toolu_fake" },

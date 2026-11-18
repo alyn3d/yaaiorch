@@ -469,6 +469,18 @@ const decideCommand = (s: Session, id: string, decision: string) =>
     ),
   );
 
+/** Run `orch <args>` in a repo without blocking the server (SSE keeps flowing for every repo); resolves with its stdout. */
+const orchOutput = (repo: string, args: string[], input?: string) =>
+  new Promise<string>((ok, fail) => {
+    const child = execFile(
+      process.execPath,
+      [TSX_CLI, ORCH, ...args],
+      { cwd: repo, encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (err, out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(out)),
+    );
+    child.stdin?.end(input ?? "");
+  });
+
 /** Count money spent today toward the daily budget. */
 function addSpent(cost: number) {
   if (!(cost > 0)) return;
@@ -644,19 +656,14 @@ http
       }
       if (url.pathname === "/api/agents" && req.method === "GET") {
         const s = mustGet(url.searchParams.get("repo"));
-        return json(200, JSON.parse(execFileSync(process.execPath, [TSX_CLI, ORCH, "agents", "--json"], { cwd: s.repo, encoding: "utf8" })));
+        return json(200, JSON.parse(await orchOutput(s.repo, ["agents", "--json"])));
       }
       if (req.method === "POST") {
         const b = await body(req);
         if (url.pathname === "/api/agents") {
           const s = mustGet(typeof b.repo === "string" ? b.repo : null);
           if (typeof b.name !== "string" || typeof b.content !== "string") return json(400, { error: "agent name and content are required" });
-          const out = execFileSync(process.execPath, [TSX_CLI, ORCH, "agents", "--save-agent", b.name], {
-            cwd: s.repo,
-            encoding: "utf8",
-            input: b.content,
-          });
-          return json(200, JSON.parse(out));
+          return json(200, JSON.parse(await orchOutput(s.repo, ["agents", "--save-agent", b.name], b.content)));
         }
         if (url.pathname === "/api/add-repo") {
           if (typeof b.path !== "string" || !b.path.trim()) return json(400, { error: "path required" });

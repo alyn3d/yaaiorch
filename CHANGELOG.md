@@ -10,6 +10,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - **Ask Agent M**: a chat on the Agent M page for questions about your setup and open repos ("Which MCP servers are connected?", "Why did the last run fail?"). Haiku answers from a status of the machine (`orch doctor`, plugins, `claude mcp list`, cached for 10 minutes) and of each repo (queue, last run, recent runs with their failures, brief), and may read the repos' files but never changes them or runs commands. Follow-ups continue the same session; the cost counts toward the daily budget. `orch chat` (JSON on stdin) backs it.
 
 ### Fixed
+- Agent M: **Always allow** is refused (and hidden) for a command with `*`, parentheses or a secret, since the allow rule would act as a wildcard or store the secret; **Allow** still works. A command whose agent crashed while it waited is reported as cancelled instead of staying "waiting".
+- A render error in one page no longer blanks the whole app: the page shows the error with **Try again** and **Reload**, and the sidebar stays usable.
+- The desktop app no longer freezes while adding or retrying a goal, and the browser server no longer pauses live updates while it lists or saves agents.
 - CI typechecking and scenario tests now account for supported Node.js APIs, parallel agent ordering, worktree paths, and slower test runners.
 - Normalize planned paths across platforms and report a missing GitHub CLI consistently on Linux and macOS.
 - Keep the dashboard eval reference within mobile viewports across platform fonts.

@@ -10,6 +10,7 @@ import { Limits, clock, overCap } from "./Limits";
 import { AgentsPage } from "./Agents";
 import { AgentMPanel, commandsOf, useAgentMChat } from "./AgentM";
 import { About } from "./About";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
@@ -248,108 +249,110 @@ export function App() {
       </aside>
 
       <main className="main">
-        {about && (
-          <About
-            onClose={() => {
-              setAbout(false);
-              aboutButton.current?.focus();
-            }}
-          />
-        )}
-        {error && (
-          <p className="error callout" role="alert">
-            {error}
-          </p>
-        )}
-        {newProject && (
-          <NewProjectDialog
-            onClose={() => setNewProject(false)}
-            onCreated={(repo) => {
-              setNewProject(false);
-              setActive(repo);
-            }}
-          />
-        )}
-
-        {global.usageLimit && global.usageLimit.until > now && (
-          <section className="callout warn banner" role="status">
-            <div className="callout-text">
-              <strong>Claude usage limit reached</strong>
-              <span>
-                in {baseName(global.usageLimit.repo)}. New runs in all repos wait until {clock(global.usageLimit.until)}; running ones wait on their own.
-              </span>
-            </div>
-            <button onClick={() => guard(() => transport.clearLimit())} title="Start waiting runs now; if the limit is still on, they hit it again and wait.">
-              Try now
-            </button>
-          </section>
-        )}
-        {(() => {
-          const o = overCap(global, now);
-          return (
-            o && (
-              <section className="callout warn banner" role="status">
-                <div className="callout-text">
-                  <strong>Usage cap reached</strong>
-                  <span>
-                    Claude {o.label} usage is at {o.pct}% (your cap: {o.cap}%). New runs wait and running goals pause before their next agent call until{" "}
-                    {clock(o.resetsAt)}.
-                  </span>
-                </div>
-                <button
-                  onClick={() => guard(() => transport.clearLimit())}
-                  title="Forget the reading and start waiting runs now; the next agent call reads the usage again."
-                >
-                  Try now
-                </button>
-              </section>
-            )
-          );
-        })()}
-        {global.budget.limit !== null && global.budget.spent >= global.budget.limit && (
-          <section className="callout bad banner" role="status">
-            <div className="callout-text">
-              <strong>Daily budget used up</strong>
-              <span>
-                {usd(global.budget.spent)} of {usd(global.budget.limit)} spent today. New runs wait until tomorrow; raise or clear <em>Daily $</em> to continue
-                now.
-              </span>
-            </div>
-          </section>
-        )}
-
-        {order.length === 0 && !newProject && current !== AGENT_M && (
-          <section className="empty-state">
-            <img src="/logo-64.png" alt="" width={48} height={48} />
-            <h2>No repo open</h2>
-            <p className="muted">
-              Open a git repo, or start a new project from a spec. Each repo gets its own queue and log; up to {maxParallel} run at the same time.
+        <ErrorBoundary resetKey={current}>
+          {about && (
+            <About
+              onClose={() => {
+                setAbout(false);
+                aboutButton.current?.focus();
+              }}
+            />
+          )}
+          {error && (
+            <p className="error callout" role="alert">
+              {error}
             </p>
-            <div className="row">
-              <button className="primary" onClick={() => (canPickRepo ? addRepo() : setAdding(true))}>
-                Open repo
+          )}
+          {newProject && (
+            <NewProjectDialog
+              onClose={() => setNewProject(false)}
+              onCreated={(repo) => {
+                setNewProject(false);
+                setActive(repo);
+              }}
+            />
+          )}
+
+          {global.usageLimit && global.usageLimit.until > now && (
+            <section className="callout warn banner" role="status">
+              <div className="callout-text">
+                <strong>Claude usage limit reached</strong>
+                <span>
+                  in {baseName(global.usageLimit.repo)}. New runs in all repos wait until {clock(global.usageLimit.until)}; running ones wait on their own.
+                </span>
+              </div>
+              <button onClick={() => guard(() => transport.clearLimit())} title="Start waiting runs now; if the limit is still on, they hit it again and wait.">
+                Try now
               </button>
-              <button onClick={() => setNewProject(true)}>New project</button>
-            </div>
-          </section>
-        )}
+            </section>
+          )}
+          {(() => {
+            const o = overCap(global, now);
+            return (
+              o && (
+                <section className="callout warn banner" role="status">
+                  <div className="callout-text">
+                    <strong>Usage cap reached</strong>
+                    <span>
+                      Claude {o.label} usage is at {o.pct}% (your cap: {o.cap}%). New runs wait and running goals pause before their next agent call until{" "}
+                      {clock(o.resetsAt)}.
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => guard(() => transport.clearLimit())}
+                    title="Forget the reading and start waiting runs now; the next agent call reads the usage again."
+                  >
+                    Try now
+                  </button>
+                </section>
+              )
+            );
+          })()}
+          {global.budget.limit !== null && global.budget.spent >= global.budget.limit && (
+            <section className="callout bad banner" role="status">
+              <div className="callout-text">
+                <strong>Daily budget used up</strong>
+                <span>
+                  {usd(global.budget.spent)} of {usd(global.budget.limit)} spent today. New runs wait until tomorrow; raise or clear <em>Daily $</em> to
+                  continue now.
+                </span>
+              </div>
+            </section>
+          )}
 
-        {showOverview && current === OVERVIEW && (
-          <Overview sessions={sessions} order={order} now={now} onOpen={setActive} onStop={(repo) => guard(() => transport.call("stop", { repo }))} />
-        )}
+          {order.length === 0 && !newProject && current !== AGENT_M && (
+            <section className="empty-state">
+              <img src="/logo-64.png" alt="" width={48} height={48} />
+              <h2>No repo open</h2>
+              <p className="muted">
+                Open a git repo, or start a new project from a spec. Each repo gets its own queue and log; up to {maxParallel} run at the same time.
+              </p>
+              <div className="row">
+                <button className="primary" onClick={() => (canPickRepo ? addRepo() : setAdding(true))}>
+                  Open repo
+                </button>
+                <button onClick={() => setNewProject(true)}>New project</button>
+              </div>
+            </section>
+          )}
 
-        {current === AGENTS && <AgentsPage repos={order} repo={agentRepo} onRepoChange={setAgentRepo} />}
+          {showOverview && current === OVERVIEW && (
+            <Overview sessions={sessions} order={order} now={now} onOpen={setActive} onStop={(repo) => guard(() => transport.call("stop", { repo }))} />
+          )}
 
-        {current === AGENT_M && (
-          <AgentMPanel
-            sessions={sessions}
-            order={order}
-            decide={(repo, id, decision) => transport.call("decide-command", { repo, id, decision })}
-            chat={agentMChat}
-          />
-        )}
+          {current === AGENTS && <AgentsPage repos={order} repo={agentRepo} onRepoChange={setAgentRepo} />}
 
-        {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
+          {current === AGENT_M && (
+            <AgentMPanel
+              sessions={sessions}
+              order={order}
+              decide={(repo, id, decision) => transport.call("decide-command", { repo, id, decision })}
+              chat={agentMChat}
+            />
+          )}
+
+          {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
+        </ErrorBoundary>
       </main>
     </div>
   );

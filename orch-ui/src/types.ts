@@ -174,5 +174,7 @@ export type AgentCommand = {
   tool: string;
   command: string;
   description?: string;
+  /** "Always allow" is refused for it (a wildcard, parentheses or a secret would end up in the rule). */
+  noAlways?: boolean;
   decision?: string;
 };

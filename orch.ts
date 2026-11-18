@@ -1398,6 +1398,16 @@ function lockLive(path: string, lockId: string): boolean {
 
 /** The settings rule "always" adds: the exact command, as Claude Code's allow rules spell it. */
 const allowRule = (tool: string, command: string) => `${tool}(${command})`;
+/**
+ * Why a command cannot be always-allowed, or "" when it can. Claude Code reads `*` (and a trailing `:*`) in an
+ * allow rule as a wildcard, so such a command would allow many others; and a rule would store a secret in plain text.
+ */
+function alwaysBlocked(command: string): string {
+  if (command.includes("*")) return "it contains *, which an allow rule would read as a wildcard";
+  if (/[()]/.test(command)) return "it contains parentheses, which an allow rule cannot hold";
+  if (redactOutput(command) !== command) return "it contains what looks like a secret";
+  return "";
+}
 
 /** Per-call MCP config files, removed when the call ends (or this process exits). */
 const permitFiles = new Set<string>();
@@ -1438,6 +1448,7 @@ function permitConfig(agent: string, round: number | undefined, taskId: number |
     cleanup: () => {
       rmSync(file, { force: true });
       permitFiles.delete(file);
+      cancelCommands(call);
     },
   };
 }
@@ -1483,6 +1494,7 @@ function scanCommands() {
         tool: r.tool,
         command,
         ...(r.description ? { description: redactOutput(r.description) } : {}),
+        ...(alwaysBlocked(r.command) ? { noAlways: true } : {}),
       });
       console.log(`\n${r.agent} wants to run: ${command}\nAnswer with: orch decide ${id} allow|deny|always (or Agent M in the UI)`);
     } else if (kind === "done.json") {
@@ -1495,6 +1507,20 @@ function scanCommands() {
   }
 }
 
+/**
+ * An agent call ended: whatever of its commands still waits has nobody to run it (its claude, and the MCP server
+ * with it, may have been killed without writing an outcome). Report those as cancelled and remove their files.
+ */
+function cancelCommands(call: string) {
+  scanCommands(); // outcomes written just before the call ended are reported as they are
+  for (const [id, owner] of [...announcedCommands]) {
+    if (owner !== call) continue;
+    announcedCommands.delete(id);
+    for (const ext of ["json", "decision.json", "claim", "done.json"]) rmSync(join(COMMANDS_DIR, `${id}.${ext}`), { force: true });
+    emit("command_decided", { id, decision: "cancelled" });
+  }
+}
+
 /** `orch decide ID allow|deny|always`: answer a waiting command. "always" also adds it to config.json's `allow`. */
 function decideCommand(id: string | undefined, decision: string | undefined) {
   if (!id || !UUID_RE.test(id) || !["allow", "deny", "always"].includes(decision ?? "")) throw new Error("usage: orch decide ID allow|deny|always");
@@ -1502,6 +1528,8 @@ function decideCommand(id: string | undefined, decision: string | undefined) {
   if (!existsSync(request)) throw new Error("no command with that ID is waiting");
   const r = JSON.parse(readFileSync(request, "utf8")) as CommandRequest;
   if (!lockLive(RUN_LOCK, r.lockId)) throw new Error("no command with that ID is waiting");
+  const blocked = decision === "always" ? alwaysBlocked(r.command) : "";
+  if (blocked) throw new Error(`cannot always allow this command: ${blocked}; allow it once instead`);
   const claim = join(COMMANDS_DIR, `${id}.claim`);
   try {
     closeSync(openSync(claim, "wx", 0o600));
@@ -5444,6 +5472,7 @@ async function main() {
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
 export {
   priorityOf,
+  alwaysBlocked,
   protectRe,
   protectedBy,
   SECRETS,

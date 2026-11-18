@@ -165,7 +165,16 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
           ...run,
           commands: [
             ...(run.commands ?? []),
-            { id: ev.id, agent: ev.agent, round: ev.round, taskId: ev.taskId, tool: ev.tool, command: ev.command, description: ev.description },
+            {
+              id: ev.id,
+              agent: ev.agent,
+              round: ev.round,
+              taskId: ev.taskId,
+              tool: ev.tool,
+              command: ev.command,
+              description: ev.description,
+              noAlways: ev.noAlways === true || undefined,
+            },
           ],
         }
       );

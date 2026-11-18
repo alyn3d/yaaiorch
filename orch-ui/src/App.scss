@@ -2037,3 +2037,14 @@ input.limit {
     padding-left: 14px;
   }
 }
+.ui-error {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  h3 {
+    margin: 0;
+  }
+  p {
+    margin: 0;
+  }
+}

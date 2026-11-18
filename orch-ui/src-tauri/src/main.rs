@@ -1000,7 +1000,7 @@ fn run_loop(
     request_start(&app, &repo, args, "queue loop".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn add_goal(app: AppHandle, repo: String, goal: String) -> Result<(), String> {
     if goal.trim().is_empty() {
         return Err("goal required".into());
@@ -1039,7 +1039,7 @@ fn intake_goals(app: AppHandle, repo: String, github: String) -> Result<(), Stri
 }
 
 /// `orch retry ID`: a failed or blocked goal, and the goals it blocked, back in the queue.
-#[tauri::command]
+#[tauri::command(async)]
 fn retry_goal(app: AppHandle, repo: String, id: u64) -> Result<(), String> {
     let key = key_of(Path::new(&repo));
     let out = node_cmd(&app, &repo_of(&app, &key)?, &["retry".into(), id.to_string()])?

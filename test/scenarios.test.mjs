@@ -1045,6 +1045,44 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.match(bad.out, /--command-timeout must be/);
   });
 
+  test("--commands: a wildcard command cannot be always-allowed; a crashed agent's waiting command is cancelled", async () => {
+    const dir = repo();
+    const run = orchAsync(dir, ["run", "glob", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "be=ls *.ts" });
+    const events = () =>
+      run
+        .output()
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("@@ORCH@@ "))
+        .map((line) => JSON.parse(line.slice(9)));
+    const decide = (...args) => spawnSync(process.execPath, [TSX, ORCH, "decide", ...args], { cwd: dir, encoding: "utf8" });
+    try {
+      await until(() => events().some((e) => e.type === "command_wait"));
+      const wait = events().find((e) => e.type === "command_wait");
+      assert.equal(wait.noAlways, true);
+      const always = decide(wait.id, "always");
+      assert.notEqual(always.status, 0);
+      assert.match(always.stderr, /wildcard; allow it once instead/);
+      assert.equal(decide(wait.id, "allow").status, 0, "the refused always did not claim the command");
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.ok(!existsSync(join(dir, ".orchestrator", "config.json")), "no allow rule was written");
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+
+    const crash = repo();
+    const r = orch(crash, ["run", "crash", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "be=npm i x", FAKE_COMMAND_CRASH: "1" });
+    assert.ok(r.calls.some((c) => /be: crashed while npm i x waits/.test(c)));
+    const waits = r.ev("command_wait");
+    assert.equal(waits.length, 1);
+    assert.deepEqual(
+      r.ev("command_decided").map((e) => [e.id, e.decision]),
+      [[waits[0].id, "cancelled"]],
+    );
+    assert.deepEqual(readdirSync(join(crash, ".orchestrator", "commands")), []);
+  });
+
   test("orch chat: Agent M answers from the repos' status with a read-only Haiku call and continues its session", () => {
     const dir = repo();
     const other = repo({ git: false });
