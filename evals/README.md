@@ -40,6 +40,7 @@ Runs orch for real (this spends money). Options:
 | `--claude-bin PATH` | | a different `claude`, e.g. a fake, to test the runner for free |
 | `--user-plugins` | off | keep your own Claude Code plugins and hooks; by default orch runs with `--plugins off --no-hooks` and the control group without them too, so results do not depend on the machine |
 | `--orch PATH` | | run a built `orch.mjs` instead of `../orch.ts` |
+| `--usage-cap 5h=60` | | treat the subscription's usage at that percentage (`5h=N`, `week=N`, or both) like the limit, so the eval leaves the rest for you: orch gets `--usage-cap`, and no new run or series goal starts once the latest reading is over it. Stops, or pauses with `--wait-on-limit` |
 | `--wait-on-limit` | off | on a Claude usage limit, pause until the reset and carry on (for overnight runs) |
 | `--resume STAMP` | | finish `results/STAMP.jsonl`: skip recorded runs, drop runs a usage limit spoiled |
 
