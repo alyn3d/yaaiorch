@@ -344,7 +344,7 @@ a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 |---|---|---|
 | `<target>/.orchestrator/queue.json` | orch.ts / UI | Queue |
 | `<target>/.orchestrator/last-run.json` | orch.ts | Latest goal: status, total cost, `checkpoint` (only while that branch exists; drives the UI's rollback offer), and per round power, plan, touched files, checks, failures, cost |
-| `<target>/.orchestrator/runs/<id>.jsonl` | orch.ts | Append-only structured events for one goal attempt, including plan-only and CI-fix attempts; recognized secrets redacted, never committed |
+| `<target>/.orchestrator/runs/<id>.jsonl` | orch.ts | Append-only structured events for one goal attempt, including plan-only and CI-fix attempts; recognized secrets redacted, never committed. The newest 200 are kept (`ORCH_HISTORY_KEEP`); listing reads a large file's first line and last 256 KB only |
 | `<target>/.orchestrator/questions/` | orch.ts | Temporary pending questions and answers, tied to the active run lock; never committed |
 | `<target>/.orchestrator/readonly-settings.json` | orch.ts | Allow-list plus edit-tool deny for the architect and verifiers |
 | `<target>` git branches `orchestrator/discarded-*` | orch.ts | Work thrown away by `orch rollback` |

@@ -3,7 +3,7 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -188,6 +188,68 @@ describe("failureKey, verdicts and reviews", () => {
     ])
       assert.ok(!o.TRANSIENT_RE.test(t), t);
   });
+});
+
+describe("run history: listing reads only the ends of large runs, and old runs are pruned", () => {
+  let h, dir;
+  const here = process.cwd();
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    h = await tsImport(pathToFileURL(join(root, "orch-history.ts")).href, import.meta.url);
+  });
+  const inRepo = (fn) => {
+    dir = mkdtempSync(join(tmpdir(), "yaaiorch-history-"));
+    process.chdir(dir);
+    try {
+      return fn();
+    } finally {
+      process.chdir(here);
+    }
+  };
+  const runFile = (ms, events) => {
+    const id = `${ms}-12345678-1234-4234-8234-123456789abc`;
+    mkdirSync(join(".orchestrator", "runs"), { recursive: true });
+    writeFileSync(join(".orchestrator", "runs", `${id}.jsonl`), events.map((e) => JSON.stringify(e) + "\n").join(""));
+    return id;
+  };
+  const start = { type: "goal_start", t: 1, goal: "Big goal", maxRounds: 3 };
+  const filler = (n) => Array.from({ length: n }, (_, i) => ({ type: "task_activity", t: 2 + i, pad: "x".repeat(1000) }));
+
+  test("a large run is summarized from its first line and its goal_end near the end", () =>
+    inRepo(() => {
+      const id = runFile(1700000000000, [start, ...filler(600), { type: "goal_end", t: 9, passed: true, cost: 1.25 }]);
+      assert.deepEqual(h.listRunHistory(), [{ id, goal: "Big goal", startedAt: 1, endedAt: 9, status: "passed", cost: 1.25, truncated: undefined }]);
+    }));
+
+  test("a goal_end far from the end is still found (full read), and damage near the end makes it unreadable", () =>
+    inRepo(() => {
+      const id = runFile(1700000000000, [start, { type: "goal_end", t: 5, passed: false, cost: 0.5 }, ...filler(600)]);
+      assert.equal(h.listRunHistory()[0].status, "failed");
+      writeFileSync(join(".orchestrator", "runs", `${id}.jsonl`), [start, ...filler(600)].map((e) => JSON.stringify(e)).join("\n") + "\n{broken\n");
+      const [entry] = h.listRunHistory();
+      assert.equal(entry.status, "unreadable");
+      assert.match(entry.error, /invalid run history/);
+    }));
+
+  test("a limit reads only the newest runs; a new run prunes beyond ORCH_HISTORY_KEEP", () =>
+    inRepo(() => {
+      const ids = [1, 2, 3, 4].map((n) => runFile(1700000000000 + n, [start, { type: "goal_end", t: 5, passed: true, cost: 0 }]));
+      assert.deepEqual(
+        h.listRunHistory(2).map((e) => e.id),
+        [ids[3], ids[2]],
+      );
+      process.env.ORCH_HISTORY_KEEP = "3";
+      try {
+        const created = h.createRunHistory();
+        const left = readdirSync(join(".orchestrator", "runs")).sort();
+        assert.equal(left.length, 3);
+        assert.ok(left.includes(created.split(/[\\/]/).pop()), "the new run is kept");
+        assert.ok(!left.includes(`${ids[0]}.jsonl`) && !left.includes(`${ids[1]}.jsonl`), "the oldest go");
+      } finally {
+        delete process.env.ORCH_HISTORY_KEEP;
+      }
+    }));
 });
 
 describe("claude-bin: start claude without a shell on Windows", () => {

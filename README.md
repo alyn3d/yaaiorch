@@ -223,7 +223,7 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   separately for each repo in the desktop app or browser's local storage.
 - **Run history.** Expand **Run history** on a repo page to list and replay goal attempts, including retries, plan-only
   runs and CI fixes. An unfinished recording may be running or interrupted. History is kept in
-  `.orchestrator/runs/` in that repo, including when using the CLI without event streaming. Recognized secrets are
+  `.orchestrator/runs/` in that repo (the newest 200 attempts are kept), including when using the CLI without event streaming. Recognized secrets are
   redacted, but goals, plans, reports and diffs can still contain sensitive information: protect this folder and
   delete recordings manually when no longer needed. History is never committed by the orchestrator.
 - **Goals that build on each other.** The split says which earlier goals each one needs (shown as "after 1, 3";

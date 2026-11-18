@@ -1623,7 +1623,7 @@ function repoStatus(repo: string, running: boolean): string {
       lines.push(
         `Last run: "${clip(oneLine(last.goal), 140)}" ${last.status}, ${usd(last.cost ?? 0)}${last.branch ? `, branch ${last.branch}` : ""}${last.pr ? `, PR ${last.pr}` : ""}`,
       );
-    const runs = listRunHistory().slice(0, 5);
+    const runs = listRunHistory(5);
     if (runs.length) lines.push("Recent runs (newest first):");
     for (const r of runs) {
       let why = "";
