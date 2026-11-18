@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 import type { OrchEvent, RoundView, RunView, TaskView, TokenUsage } from "./types";
 import { isActivity } from "./runProgress";
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 /**
  * Built-in agents for orch.ts. They are bundled into orch.mjs, so the desktop app does not
  * depend on any agent files on disk. A user-level (~/.claude/agents) or project-level

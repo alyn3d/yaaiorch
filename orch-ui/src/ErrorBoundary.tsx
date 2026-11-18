@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 type Props = { children: ReactNode; /** Changing it (another page picked) clears the error and renders the children again. */ resetKey?: string };

@@ -392,3 +392,9 @@ Releases up to and including 0.2.0 were published under the MIT License, and tho
 available under it; later versions are GPL-3.0.
 
 YAAIORCH is an independent project and is not affiliated with Anthropic.
+
+### Project name and branding
+
+If you distribute a fork, please give it a distinct name and branding and make clear that it is not
+the official YAAIORCH project. You may identify it as a fork of YAAIORCH. This request does not
+change the rights granted by the software license.

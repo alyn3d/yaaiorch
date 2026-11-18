@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Puts the Node.js binary the desktop app ships with into src-tauri/binaries/node-<target triple>[.exe], where Tauri's
 // externalBin picks it up and installs it next to the app, so users need no Node.js of their own.
 //

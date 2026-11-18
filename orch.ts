@@ -1,4 +1,7 @@
 #!/usr/bin/env tsx
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target repo root. Usage: see USAGE below.
 import { spawn, spawnSync, execFileSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import {

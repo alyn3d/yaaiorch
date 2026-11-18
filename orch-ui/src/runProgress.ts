@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 import type { ActivityKind, RoundView, RunView, TaskView } from "./types";
 
 export const ACTIVITY_LABELS: Record<ActivityKind, string> = {

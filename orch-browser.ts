@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Browser checks for QA: find a Chromium-based browser, start the repo's dev server, open the pages a plan names
 // over the Chrome DevTools Protocol (Node's built-in WebSocket, no dependencies) and save screenshots and
 // measurements for the verifiers. Used by orch.ts; bundled into orch.mjs.

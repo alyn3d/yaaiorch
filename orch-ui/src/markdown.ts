@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // A small Markdown subset for Agent M's answers: headings, paragraphs, bullet and numbered lists, fenced code,
 // and inline bold, italic, code and links. Pure (no HTML is produced), so the UI renders it as React elements
 // and nothing in an answer can inject markup. Unit-tested.

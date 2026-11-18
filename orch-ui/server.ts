@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 /**
  * Local server for the YAAIORCH UI, for several repos at once (one session per repo).
  *   ORCH_REPO=<repo> or ORCH_REPOS=<repo>;<repo>…  repos to open at start (the list is also remembered)

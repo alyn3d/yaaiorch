@@ -124,7 +124,7 @@ node evals/run.ts --cases node-chunk-bug,api-post,py-roman --power economy --rep
    the compare links at the bottom.
 3. Commit, then tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
 4. The **Release** workflow builds Windows, macOS and Linux installers, attaches them with the CLI
-   bundle and `SHA256SUMS.txt` to a **draft** release. Check the draft, then publish it.
+   bundle, `LICENSE.txt` and `SHA256SUMS.txt` to a **draft** release. Check the draft, then publish it.
 
 ## License
 

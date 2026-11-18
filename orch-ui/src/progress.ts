@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Progress of the latest brief in a repo's queue: pure, so it can be unit-tested.
 import type { Item } from "./types";
 

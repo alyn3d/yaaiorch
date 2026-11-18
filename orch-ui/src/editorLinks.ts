@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 /** Editors a repo can be opened in, through the URL scheme each one registers when installed (no process spawned). */
 export const EDITORS = [
   { id: "vscode", label: "VS Code" },

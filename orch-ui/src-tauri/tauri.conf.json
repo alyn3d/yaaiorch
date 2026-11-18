@@ -27,6 +27,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "copyright": "Copyright (C) 2026 alyn3d and contributors",
+    "licenseFile": "../../LICENSE",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -35,7 +37,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/orch.mjs": "resources/orch.mjs"
+      "resources/orch.mjs": "resources/orch.mjs",
+      "../../LICENSE": "licenses/YAAIORCH-LICENSE.txt"
     },
     "externalBin": [
       "binaries/node"

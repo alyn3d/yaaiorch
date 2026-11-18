@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 import type { Session } from "./useOrch";
 
 export const BOARD_LANES = ["Working", "Needs you", "In review", "Done"] as const;

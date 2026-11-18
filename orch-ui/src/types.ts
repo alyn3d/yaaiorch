@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 /** `note`: why a pending goal is waiting, e.g. "usage limit: retrying after …". */
 export type Item = {
   id: number;

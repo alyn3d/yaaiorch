@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isTauri } from "./transport";
 

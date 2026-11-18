@@ -95,7 +95,8 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           mkdir -p out
-          cp orch-ui/src-tauri/resources/orch.mjs "out/yaaiorch-cli-${TAG}.mjs"
           gh release download "$TAG" --dir out --pattern '*' --clobber
+          cp orch-ui/src-tauri/resources/orch.mjs "out/yaaiorch-cli-${TAG}.mjs"
+          cp LICENSE out/LICENSE.txt
           (cd out && sha256sum * | grep -v SHA256SUMS > SHA256SUMS.txt)
-          gh release upload "$TAG" "out/yaaiorch-cli-${TAG}.mjs" out/SHA256SUMS.txt --clobber
+          gh release upload "$TAG" "out/yaaiorch-cli-${TAG}.mjs" out/LICENSE.txt out/SHA256SUMS.txt --clobber

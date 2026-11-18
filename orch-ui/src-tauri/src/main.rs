@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! Tauri shell for YAAIORCH, for several repos at once (one session per repo). Spawns the bundled
 //! `orch.mjs` (built from ../orch.ts) with `node` inside each repo and forwards its output and

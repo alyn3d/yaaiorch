@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Find the `claude` executable once, so it can be spawned without a shell on Windows.
 //
 // Node cannot spawn a .cmd/.bat file without a shell, and going through cmd.exe means its quoting and

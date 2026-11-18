@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Desktop notifications: the Tauri notification plugin in the desktop app, the browser's Notification API in
 // browser mode. Off until the user turns them on (the browser asks for permission then).
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";

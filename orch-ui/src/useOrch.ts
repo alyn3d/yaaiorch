@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Finding, Global, OrchEvent, RunView, State } from "./types";
 import { reduce } from "./reduce";

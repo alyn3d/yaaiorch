@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Which run events deserve a desktop notification, and what it says. Pure, so it can be unit-tested.
 
 type Ev = { type: string; [k: string]: unknown };

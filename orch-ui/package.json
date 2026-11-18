@@ -13,7 +13,7 @@
     "dev": "concurrently -k \"tsx watch server.ts\" \"vite\"",
     "build": "tsc --noEmit && vite build",
     "start": "tsx server.ts",
-    "build:orch": "esbuild ../orch.ts --bundle --platform=node --format=esm --target=node20 --outfile=src-tauri/resources/orch.mjs",
+    "build:orch": "esbuild ../orch.ts --bundle --platform=node --format=esm --target=node20 --banner:js=\"/*! Copyright (C) 2026 alyn3d and contributors. SPDX-License-Identifier: GPL-3.0-only */\" --outfile=src-tauri/resources/orch.mjs",
     "build:app": "npm run build:orch && npm run build",
     "fetch:node": "node scripts/fetch-node.mjs",
     "tauri": "tauri",

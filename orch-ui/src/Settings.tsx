@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 alyn3d and contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 import { useEffect, useState } from "react";
 import type { Power } from "./types";
 import { DEFAULT_PLUGINS, PluginsPanel, type PluginSettings } from "./Plugins";
