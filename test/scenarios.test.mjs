@@ -1083,6 +1083,25 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.deepEqual(readdirSync(join(crash, ".orchestrator", "commands")), []);
   });
 
+  test("orch chat --warm: gathers the machine status once, and the next question uses it", () => {
+    const dir = repo();
+    const chatDir = join(dir, "..", `${basename(dir)}-warm`);
+    const env = { ...process.env, CLAUDE_BIN: FAKE, FAKE_LOG: `${dir}.fake.log`, ORCH_CHAT_DIR: chatDir };
+    const run = (args, body) => spawnSync(process.execPath, [TSX, ORCH, "chat", ...args], { cwd: dir, input: JSON.stringify(body), encoding: "utf8", env });
+    const mcpCalls = () => (existsSync(`${dir}.fake.log`) ? (readFileSync(`${dir}.fake.log`, "utf8").match(/^mcp list$/gm)?.length ?? 0) : 0);
+    const warm = run(["--warm"], { repos: [dir] });
+    assert.equal(warm.status, 0, warm.stderr);
+    assert.deepEqual(JSON.parse(warm.stdout.trim()), { warmed: true });
+    assert.equal(mcpCalls(), 1);
+    assert.ok(existsSync(join(chatDir, "context-cache.json")));
+    assert.ok(!existsSync(join(chatDir, "context-cache.lock")), "the lock is released");
+    assert.equal(run(["--warm"], { repos: [dir] }).status, 0);
+    const ask = run([], { question: "Which MCP servers are connected?", repos: [dir] });
+    assert.equal(ask.status, 0, ask.stderr);
+    assert.match(JSON.parse(ask.stdout.trim().split(/\r?\n/).pop()).answer, /figma connected/);
+    assert.equal(mcpCalls(), 1, "neither the second warm-up nor the question gathered it again");
+  });
+
   test("orch chat: Agent M answers from the repos' status with a read-only Haiku call and continues its session", () => {
     const dir = repo();
     const other = repo({ git: false });

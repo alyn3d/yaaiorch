@@ -63,6 +63,8 @@ export interface Transport {
   saveAgent(repo: string, name: string, content: string): Promise<void>;
   /** Agent M: ask about the setup and the open repos (Haiku, read-only); `session` continues a conversation. */
   agentMAsk(question: string, session?: string): Promise<AgentMReply>;
+  /** Agent M: gather the machine status in the background so the first question is quick (fire and forget). */
+  agentMWarm(): Promise<void>;
 }
 
 // ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
@@ -207,6 +209,7 @@ const web: Transport = {
   },
   saveAgent: (repo, name, content) => post("agents", { repo, name, content }),
   agentMAsk: (question, session) => post("agent-m/ask", { question, session }),
+  agentMWarm: () => post("agent-m/warm", {}),
 };
 
 // ---------- desktop: Tauri commands + events ----------
@@ -295,6 +298,7 @@ const tauri: Transport = {
   },
   saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
   agentMAsk: (question, session) => tauriInvoke<AgentMReply>("agent_m_ask", { question, session }),
+  agentMWarm: () => tauriInvoke("agent_m_warm"),
 };
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

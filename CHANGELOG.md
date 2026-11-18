@@ -5,6 +5,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Changed
+- Agent M's answers are formatted (headings, lists, bold, code, links) instead of showing raw Markdown, rendered as elements so an answer cannot inject markup.
+- Agent M's first answer no longer waits for the machine status: opening the page gathers it in the background (`orch chat --warm`), and a question asked meanwhile waits for that instead of gathering it again.
+
 ### Added
 - **Agent M** (`--commands`, config `"commands": "ask"`, **Commands via Agent M** in run settings): implementers may run shell commands, each one only after you allow it. Agent M (a new sidebar page with a count of waiting commands, and cards in the run view) lists them across all repos with the agent, its reason and the exact command: **Allow**, **Always allow** (adds the exact command to config `allow`) or **Deny**. Unanswered commands are denied after `--command-timeout` minutes (default 10); waiting does not count against `--agent-timeout`. Read-only roles never ask. Built on Claude Code's `--permission-prompt-tool` with a small MCP server (`orch permit`); `orch decide ID allow|deny|always` answers from a terminal. New events `command_wait` and `command_decided`.
 - **Ask Agent M**: a chat on the Agent M page for questions about your setup and open repos ("Which MCP servers are connected?", "Why did the last run fail?"). Haiku answers from a status of the machine (`orch doctor`, plugins, `claude mcp list`, cached for 10 minutes) and of each repo (queue, last run, recent runs with their failures, brief), and may read the repos' files but never changes them or runs commands. Follow-ups continue the same session; the cost counts toward the daily budget. `orch chat` (JSON on stdin) backs it.

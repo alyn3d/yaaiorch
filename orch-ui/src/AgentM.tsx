@@ -3,7 +3,73 @@ import type { Session } from "./useOrch";
 import type { AgentCommand } from "./types";
 import { baseName } from "./repoStatus";
 import { transport } from "./transport";
+import { parseMarkdown, type Inline } from "./markdown";
+import { openExternal } from "./links";
 import "./AgentM.scss";
+
+/** Inline spans as elements; links open in the system browser (desktop) or a new tab. */
+function Spans({ inline }: { inline: Inline[] }) {
+  return (
+    <>
+      {inline.map((s, i) =>
+        s.kind === "bold" ? (
+          <strong key={i}>{s.text}</strong>
+        ) : s.kind === "italic" ? (
+          <em key={i}>{s.text}</em>
+        ) : s.kind === "code" ? (
+          <code key={i}>{s.text}</code>
+        ) : s.kind === "link" ? (
+          <a key={i} href={s.href} target="_blank" rel="noreferrer" onClick={(e) => openExternal(e, s.href)}>
+            {s.text}
+          </a>
+        ) : (
+          <span key={i}>{s.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+/** Agent M's answer, rendered from its Markdown as React elements (no HTML is injected). */
+function Markdown({ text }: { text: string }) {
+  return (
+    <div className="md">
+      {parseMarkdown(text).map((b, i) => {
+        if (b.kind === "code")
+          return (
+            <pre key={i}>
+              <code>{b.text}</code>
+            </pre>
+          );
+        if (b.kind === "heading") {
+          const H = (["h4", "h4", "h5"] as const)[b.level - 1];
+          return (
+            <H key={i}>
+              <Spans inline={b.inline} />
+            </H>
+          );
+        }
+        if (b.kind === "list") {
+          const L = b.ordered ? "ol" : "ul";
+          return (
+            <L key={i}>
+              {b.items.map((item, j) => (
+                <li key={j}>
+                  <Spans inline={item} />
+                </li>
+              ))}
+            </L>
+          );
+        }
+        return (
+          <p key={i}>
+            <Spans inline={b.inline} />
+          </p>
+        );
+      })}
+    </div>
+  );
+}
 
 export type CommandDecision = "allow" | "always" | "deny";
 type Decide = (repo: string, id: string, decision: CommandDecision) => Promise<boolean>;
@@ -147,7 +213,7 @@ function Chat({ chat }: { chat: AgentMChat }) {
         {chat.messages.map((m, i) => (
           <div key={i} className={`agent-m-msg ${m.role} ${m.error ? "error" : ""}`}>
             <span className="who">{m.role === "you" ? "You" : "Agent M"}</span>
-            <p>{m.text}</p>
+            {m.role === "agent" && !m.error ? <Markdown text={m.text} /> : <p>{m.text}</p>}
             {m.cost !== undefined && m.cost > 0 && <span className="muted cost">${m.cost.toFixed(3)}</span>}
           </div>
         ))}
@@ -204,6 +270,12 @@ export function AgentMPanel({
 }) {
   const { waiting, answered } = commandsOf(sessions, order);
   const [error, setError] = useState("");
+  // Gather the machine status now, while the user reads or types, so the first answer does not wait for it.
+  useEffect(() => {
+    transport.agentMWarm().catch(() => {
+      /* only a head start: asking still works without it */
+    });
+  }, []);
   const onDecide: Decide = async (repo, id, decision) => {
     setError("");
     try {

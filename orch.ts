@@ -70,7 +70,8 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch answer ID        answer an agent's question with text from stdin
   orch decide ID allow|deny|always   answer a shell command an agent wants to run (--commands)
   orch chat             ask Agent M (Haiku, read-only) about your setup and repos: {"question", "session"?, "repos"?, "running"?}
-                        as JSON on stdin; prints {"answer", "session", "cost"}
+                        as JSON on stdin; prints {"answer", "session", "cost"}. --warm: only gather the machine status
+                        (cached 10 minutes) so the next question is quick
   orch share [--dry-run]  propose what orch learned (brief and lasting notes) as a CLAUDE.md section, committed
                         on an orchestrator/claude-md-* branch for you to review and merge (--dry-run: print it)
   orch plugins [--json] [--details]  Claude Code plugins installed for this repo (--details: token cost)
@@ -1562,12 +1563,46 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 /** Machine-wide facts (doctor, plugins, MCP servers), slow to gather: cached for 10 minutes. */
 function machineStatus(firstRepo?: string): string {
   const cacheFile = join(chatDir(), "context-cache.json");
-  try {
-    const c = JSON.parse(readFileSync(cacheFile, "utf8")) as { at: number; text: string };
-    if (Date.now() - c.at < CHAT_CACHE_MS && typeof c.text === "string") return c.text;
-  } catch {
-    /* no cache yet */
+  const lockFile = join(chatDir(), "context-cache.lock");
+  const cached = () => {
+    try {
+      const c = JSON.parse(readFileSync(cacheFile, "utf8")) as { at: number; text: string };
+      return Date.now() - c.at < CHAT_CACHE_MS && typeof c.text === "string" ? c.text : undefined;
+    } catch {
+      return undefined; // no cache yet
+    }
+  };
+  const fresh = cached();
+  if (fresh !== undefined) return fresh;
+  // Another orch (the page's warm-up) is gathering it: wait for that instead of doing the slow part twice.
+  const busy = () => {
+    try {
+      return Date.now() - statSync(lockFile).mtimeMs < 90_000;
+    } catch {
+      return false;
+    }
+  };
+  for (const until = Date.now() + 90_000; busy() && Date.now() < until;) {
+    sleepSync(250);
+    const done = cached();
+    if (done !== undefined) return done;
   }
+  let locked = false;
+  try {
+    mkdirSync(chatDir(), { recursive: true });
+    closeSync(openSync(lockFile, "wx"));
+    locked = true;
+  } catch {
+    /* a stale lock, or another process just took it: gather it anyway */
+  }
+  try {
+    return gatherMachineStatus(firstRepo, cacheFile);
+  } finally {
+    if (locked) rmSync(lockFile, { force: true });
+  }
+}
+
+function gatherMachineStatus(firstRepo: string | undefined, cacheFile: string): string {
   const parts: string[] = [`OS: ${process.platform} ${process.arch}`];
   const here = process.cwd();
   try {
@@ -1658,8 +1693,14 @@ type ChatRequest = { question: string; session?: string; repos?: string[]; runni
  * `orch chat`: a question (JSON on stdin) answered by a cheap model that sees a status of the machine and the
  * open repos, and may read their files but not change anything or run commands. Prints {answer, session, cost}.
  */
-async function chat(): Promise<void> {
+async function chat(warm = false): Promise<void> {
   const req = JSON.parse(readFileSync(0, "utf8")) as ChatRequest;
+  if (warm) {
+    // `orch chat --warm`: only gather the machine status into the cache, so the first question is quick.
+    const first = (Array.isArray(req.repos) ? req.repos : []).find((r) => typeof r === "string" && isAbsolute(r) && existsSync(r));
+    machineStatus(first);
+    return console.log(JSON.stringify({ warmed: true }));
+  }
   const question = typeof req.question === "string" ? req.question.trim() : "";
   if (!question || question.length > 4000) throw new Error("question must be between 1 and 4000 characters");
   if (req.session !== undefined && !/^[\w-]{1,100}$/.test(req.session)) throw new Error("invalid session ID");
@@ -5256,6 +5297,7 @@ async function main() {
       reviewers: { type: "string" },
       details: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
+      warm: { type: "boolean", default: false },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -5342,7 +5384,7 @@ async function main() {
     case "permit":
       return permitServer();
     case "chat":
-      return chat();
+      return chat(!!values.warm);
     case "intake": {
       const sources = [
         ...(values.github ? parseIntake(`github:${values.github}`) : []),

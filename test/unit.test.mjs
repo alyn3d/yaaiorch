@@ -252,6 +252,67 @@ describe("run history: listing reads only the ends of large runs, and old runs a
     }));
 });
 
+describe("Agent M answers: Markdown subset (orch-ui/src/markdown.ts)", () => {
+  let md;
+  before(async () => {
+    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
+    const { tsImport } = await import(pathToFileURL(api).href);
+    md = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "markdown.ts")).href, import.meta.url);
+  });
+  test("inline: bold, italic, code (literal inside), http links only", () => {
+    assert.deepEqual(md.parseInline("Run **npm test** or `a **b**` then *fast* and _slow_ in snake_case_name"), [
+      { kind: "text", text: "Run " },
+      { kind: "bold", text: "npm test" },
+      { kind: "text", text: " or " },
+      { kind: "code", text: "a **b**" },
+      { kind: "text", text: " then " },
+      { kind: "italic", text: "fast" },
+      { kind: "text", text: " and " },
+      { kind: "italic", text: "slow" },
+      { kind: "text", text: " in snake_case_name" },
+    ]);
+    assert.deepEqual(md.parseInline("[docs](https://example.com/a) [bad](javascript:alert(1))"), [
+      { kind: "link", text: "docs", href: "https://example.com/a" },
+      { kind: "text", text: " [bad](javascript:alert(1))" },
+    ]);
+  });
+  test("blocks: headings, paragraphs joined, lists by kind, wrapped items, fenced code kept as is", () => {
+    const blocks = md.parseMarkdown(
+      [
+        "## Connected",
+        "Two servers",
+        "are up.",
+        "",
+        "- figma",
+        "- github",
+        "  with a wrapped line",
+        "1. first",
+        "2) second",
+        "```bash",
+        "npm i **x**",
+        "",
+        "  indented",
+        "```",
+        "tail",
+      ].join("\r\n"),
+    );
+    assert.deepEqual(
+      blocks.map((b) => b.kind),
+      ["heading", "paragraph", "list", "list", "code", "paragraph"],
+    );
+    assert.equal(blocks[0].level, 2);
+    assert.deepEqual(blocks[1].inline, [{ kind: "text", text: "Two servers are up." }]);
+    assert.equal(blocks[2].ordered, false);
+    assert.equal(blocks[2].items.length, 2);
+    assert.equal(blocks[2].items[1].map((s) => s.text).join(""), "github with a wrapped line");
+    assert.equal(blocks[3].ordered, true);
+    assert.equal(blocks[3].items.length, 2);
+    assert.deepEqual(blocks[4], { kind: "code", lang: "bash", text: "npm i **x**\n\n  indented" });
+    assert.deepEqual(md.parseMarkdown("```\nnever closed"), [{ kind: "code", lang: "", text: "never closed" }]);
+    assert.deepEqual(md.parseMarkdown(""), []);
+  });
+});
+
 describe("claude-bin: start claude without a shell on Windows", () => {
   let cb, dir;
   before(async () => {

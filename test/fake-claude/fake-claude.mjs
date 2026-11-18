@@ -76,6 +76,7 @@ if (args[0] === "plugin") {
 
 // `mcp list`, as the real CLI prints it.
 if (args[0] === "mcp") {
+  if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, "mcp list\n");
   console.log("Checking MCP server health...\n\nfigma: https://mcp.figma.com/mcp (HTTP) - ✓ Connected");
   process.exit(0);
 }

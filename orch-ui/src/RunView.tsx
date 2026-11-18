@@ -1,18 +1,9 @@
 import { useEffect, useState } from "react";
 import type { RoundDiff, RunView as Run, TaskView, TokenUsage } from "./types";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { isTauri, transport } from "./transport";
+import { transport } from "./transport";
+import { openExternal } from "./links";
 import { CommandCard } from "./AgentM";
 import { ACTIVITY_LABELS, failureSummary, roundPhases, taskTimeline } from "./runProgress";
-
-/** A link out of the app: the desktop app's webview does not open new windows, so ask the system browser. */
-function openExternal(e: React.MouseEvent, url: string) {
-  if (!isTauri || !/^https?:\/\//.test(url)) return;
-  e.preventDefault();
-  openUrl(url).catch(() => {
-    /* nothing to do: the URL is on screen to copy */
-  });
-}
 
 const fmt = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000));
