@@ -1278,6 +1278,43 @@ fn approve_plan(app: AppHandle, repo: String, plan: Option<Value>, reject: Optio
 }
 
 /// Agent M: allow, deny or always-allow a shell command an agent wants to run (`orch decide`, which checks the ID).
+/// Agent M: gather the machine status in the background (`orch chat --warm`), one at a time, so the first
+/// question is quick. Returns at once.
+#[tauri::command]
+fn agent_m_warm(app: AppHandle) {
+    static WARMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    if WARMING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let run = || -> Result<(), String> {
+            use std::io::Write;
+            let repos: Vec<String> = {
+                let st = app.state::<AppState>();
+                let g = st.0.lock().unwrap();
+                g.sessions.iter().map(|s| s.repo.display().to_string()).collect()
+            };
+            let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir);
+            let mut child = node_cmd(&app, &home, &["chat".into(), "--warm".into()])?
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(json!({ "repos": repos }).to_string().as_bytes());
+            }
+            child.wait().map_err(|e| e.to_string())?;
+            Ok(())
+        };
+        let _ = run();
+        WARMING.store(false, Ordering::SeqCst);
+    });
+}
+
 /// Agent M chat: `orch chat` with the question and every open repo (it reads their status); its cost counts
 /// toward the daily budget. Returns {answer, session, cost}.
 #[tauri::command(async)]
@@ -1695,6 +1732,7 @@ fn main() {
             answer_question,
             decide_command,
             agent_m_ask,
+            agent_m_warm,
             split_brief,
             accept_split,
             stop_after,

@@ -513,6 +513,17 @@ const askAgentM = (question: string, session?: string) =>
     child.stdin?.end(input);
   });
 
+/** Agent M: gather the machine status in the background (`orch chat --warm`), one at a time, so the first question is quick. */
+let warming = false;
+const warmAgentM = () => {
+  if (warming) return;
+  warming = true;
+  const child = execFile(process.execPath, [TSX_CLI, ORCH, "chat", "--warm"], { cwd: homedir(), encoding: "utf8", windowsHide: true, timeout: 180_000 }, () => {
+    warming = false;
+  });
+  child.stdin?.end(JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo) }));
+};
+
 const body = (req: http.IncomingMessage) =>
   new Promise<any>((ok, bad) => {
     let s = "";
@@ -721,6 +732,10 @@ http
           saveSettings();
           sendInit();
           startNext();
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/agent-m/warm") {
+          warmAgentM();
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/agent-m/ask") {

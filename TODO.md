@@ -146,9 +146,8 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Commands you approve** (`--commands`): implementers' shell commands wait for Allow / Always allow / Deny on
   the Agent M page, through Claude Code's `--permission-prompt-tool` and `orch permit`.
 - [x] **Ask Agent M**: a Haiku chat about the setup and open repos, read-only, with follow-ups.
-- [ ] **Formatted answers**: render the chat's Markdown (lists, code, bold) instead of plain text.
-- [ ] **Faster first answer**: gather the machine status (doctor, plugins, MCP servers) when the app starts, so
-  the first question does not wait about 30 seconds.
+- [x] **Formatted answers**: the chat's Markdown (headings, lists, bold, code, links) as elements.
+- [x] **Faster first answer**: opening Agent M gathers the machine status in the background (`orch chat --warm`).
 - [ ] **What a command does**: a one-line explanation and risk note from Haiku under each waiting command; the human
   still decides.
 - [ ] **Always-allowed commands** per repo: list them in run settings and let the user remove one (config `allow`).
