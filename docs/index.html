@@ -401,7 +401,7 @@
         display: flex;
         justify-content: center;
         gap: 8px;
-        margin-top: 18px;
+        margin-top: 16px;
       }
 
       .shot-controls[hidden],
@@ -430,6 +430,24 @@
       .shot-controls button:focus-visible {
         outline: 2px solid var(--blue);
         outline-offset: 3px;
+      }
+
+      .shot-progress {
+        width: 100%;
+        height: 3px;
+        margin: 16px auto 0;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--border);
+      }
+
+      .shot-progress span {
+        display: block;
+        width: 100%;
+        height: 100%;
+        background: var(--violet);
+        transform: scaleX(0);
+        transform-origin: left;
       }
 
       .trust-strip {
@@ -875,6 +893,7 @@
           </div>
           <figcaption>Agent M, simulated: an agent waits for your OK to run a command, and the chat explains a failed run.</figcaption>
         </figure>
+        <div class="shot-progress" aria-hidden="true" hidden><span></span></div>
         <div class="shot-controls" role="group" aria-label="Choose a screenshot" hidden>
           <button type="button" aria-controls="shot-run" aria-pressed="true">Run details</button>
           <button type="button" aria-controls="shot-board" aria-pressed="false">Work board</button>
@@ -1042,15 +1061,55 @@
     <script>
       (() => {
         const controls = document.querySelector(".shot-controls");
-        const buttons = [...controls.querySelectorAll("button")];
+        const buttons = [...controls.querySelectorAll("button[aria-controls]")];
+        const progress = document.querySelector(".shot-progress");
+        const progressBar = progress.querySelector("span");
         const slides = buttons.map((button) => document.getElementById(button.getAttribute("aria-controls")));
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+        const slideDuration = 4000;
+        let current = 0;
+        let timer = null;
+        let progressAnimation = null;
         const show = (index) => {
+          current = index;
           buttons.forEach((button, i) => button.setAttribute("aria-pressed", String(i === index)));
           slides.forEach((slide, i) => (slide.hidden = i !== index));
         };
-        buttons.forEach((button, i) => button.addEventListener("click", () => show(i)));
+        const pause = () => {
+          clearInterval(timer);
+          timer = null;
+          progressAnimation?.cancel();
+          progressAnimation = null;
+        };
+        const play = () => {
+          clearInterval(timer);
+          progressAnimation?.cancel();
+          timer = setInterval(() => show((current + 1) % slides.length), slideDuration);
+          progressAnimation = progressBar.animate([{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], {
+            duration: slideDuration,
+            iterations: Infinity,
+          });
+        };
+        const updatePlayback = () => {
+          if (document.hidden || reducedMotion.matches || controls.matches(":hover") || controls.contains(document.activeElement)) pause();
+          else play();
+        };
+        buttons.forEach((button, i) =>
+          button.addEventListener("click", () => {
+            show(i);
+            if (timer !== null) play();
+          }),
+        );
+        controls.addEventListener("mouseenter", updatePlayback);
+        controls.addEventListener("mouseleave", updatePlayback);
+        controls.addEventListener("focusin", updatePlayback);
+        controls.addEventListener("focusout", () => setTimeout(updatePlayback, 0));
+        document.addEventListener("visibilitychange", updatePlayback);
+        reducedMotion.addEventListener("change", updatePlayback);
         show(0);
         controls.hidden = false;
+        progress.hidden = false;
+        updatePlayback();
       })();
 
       // "Get YAAIORCH" downloads the latest release's installer for the visitor's OS. Without JavaScript, an
