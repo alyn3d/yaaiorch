@@ -33,7 +33,7 @@
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { resolveClaude } from "../claude-bin.ts";
@@ -82,11 +82,14 @@ const { values: a } = parseArgs({
     "agent-timeout": { type: "string", default: "15" },
     "eval-timeout": { type: "string", default: "30" },
     "claude-bin": { type: "string" },
+    "user-plugins": { type: "boolean", default: false },
     orch: { type: "string" },
     "wait-on-limit": { type: "boolean", default: false },
     resume: { type: "string" },
   },
 });
+// orch runs inside each run's work dir, so a relative --claude-bin path would not be found there.
+if (a["claude-bin"] && /[\\/]/.test(a["claude-bin"])) a["claude-bin"] = resolve(a["claude-bin"]);
 /** Same wording orch.ts matches; also catches records an older orch wrote as plain failures. */
 const LIMIT_RE = /\b(?:hit|reached) your [^\n.]{0,40}?limit\b/i;
 
@@ -255,6 +258,9 @@ function runOrch(dir: string, goal: string, power: string): Promise<{ exit: numb
       a["max-cost"]!,
       "--agent-timeout",
       a["agent-timeout"]!,
+      // Your own Claude Code plugins and hooks (skills, session-start instructions) would change what every agent
+      // sees and costs, so results would depend on the machine. Off unless --user-plugins.
+      ...(a["user-plugins"] ? [] : ["--plugins", "off", "--no-hooks"]),
     ];
     const env = { ...process.env, ORCH_EVENTS: "1", FORCE_COLOR: "0", ...(a["claude-bin"] ? { CLAUDE_BIN: a["claude-bin"] } : {}) };
     const p = spawn(process.execPath, args, { cwd: dir, env, windowsHide: true, detached: process.platform !== "win32" });
@@ -293,6 +299,22 @@ function runOrch(dir: string, goal: string, power: string): Promise<{ exit: numb
 
 // ---------- single-agent control: one `claude -p` call with the same goal, permissions, budget and checks ----------
 const CLAUDE = a["claude-bin"] ?? process.env.CLAUDE_BIN ?? "claude";
+/** The control group's settings without the user's plugins and hooks, like orch's --plugins off --no-hooks (unless --user-plugins). */
+let pluginsOff: { enabledPlugins?: Record<string, false>; disableAllHooks?: true } | undefined;
+function noUserPlugins() {
+  if (a["user-plugins"]) return {};
+  if (!pluginsOff) {
+    const r = spawnSync(CLAUDE_CMD.file, [...CLAUDE_CMD.pre, "plugin", "list", "--json"], { encoding: "utf8", shell: CLAUDE_CMD.shell, windowsHide: true, timeout: 60_000 });
+    let ids: string[] = [];
+    try {
+      ids = (JSON.parse(r.stdout) as { id?: string; enabled?: boolean }[]).filter((p) => p.id && p.enabled !== false).map((p) => p.id!);
+    } catch {
+      /* no list: hooks are still disabled */
+    }
+    pluginsOff = { ...(ids.length ? { enabledPlugins: Object.fromEntries(ids.map((id) => [id, false as const])) } : {}), disableAllHooks: true };
+  }
+  return pluginsOff;
+}
 /** Started the same way orch.ts starts it: no shell on Windows (see claude-bin.ts). */
 const CLAUDE_CMD = resolveClaude(CLAUDE);
 if (CLAUDE_CMD.missing && a.single) throw new Error(`"${CLAUDE}" not found on PATH; install Claude Code or pass --claude-bin`);
@@ -323,7 +345,7 @@ function runSingle(dir: string, goal: string, model: string): Promise<SingleResu
   const cmds = [...Object.values(checks), ...(checks.test ? ["npm test"] : []), "git status", "git diff", "git log", "git show"];
   const allow = cmds.flatMap((cmd) => [`Bash(${cmd}:*)`, `PowerShell(${cmd}:*)`]);
   mkdirSync(join(dir, ".orchestrator"), { recursive: true });
-  writeFileSync(join(dir, ".orchestrator", "single-settings.json"), JSON.stringify({ permissions: { allow } }, null, 2));
+  writeFileSync(join(dir, ".orchestrator", "single-settings.json"), JSON.stringify({ permissions: { allow }, ...noUserPlugins() }, null, 2));
   const prompt =
     `Complete this task in the repository in the current directory.\n\nTask: ${goal}\n\n` +
     `Follow the repository's existing conventions and add or update tests. ` +
@@ -551,7 +573,7 @@ const lines: string[] = [];
 lines.push(`# Eval ${stamp}`, "");
 lines.push(`Cases: ${cases.map((c) => c.id).join(", ")}  `);
 lines.push(
-  `Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["orch-model"] ? `, orch models ${a["orch-model"]}` : ""}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}`,
+  `Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["orch-model"] ? `, orch models ${a["orch-model"]}` : ""}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}${a["user-plugins"] ? ", with your plugins and hooks" : ", without plugins or hooks"}`,
   "",
 );
 if (stoppedBy)
