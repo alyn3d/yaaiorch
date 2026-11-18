@@ -110,7 +110,10 @@ const SUGGESTIONS = ["Which MCP servers are connected?", "Why did the last run f
 function Chat({ chat }: { chat: AgentMChat }) {
   const [text, setText] = useState("");
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "nearest" }), [chat.messages.length, chat.busy]);
+  // A block body: scrollIntoView returns a Promise in newer browsers, and React would call a returned value as the cleanup.
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "nearest" });
+  }, [chat.messages.length, chat.busy]);
   const send = (q: string) => {
     if (!q.trim() || chat.busy) return;
     setText("");
