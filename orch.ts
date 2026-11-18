@@ -139,8 +139,10 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   (GitHub CLI) against your branch; also "pr": true in config
          --no-resume   fix rounds start every implementer cold (default: an agent that worked on the same
                   files in the round before continues its session); also "resume": false in config
-         --fast   round 1 is one agent doing the whole goal, judged by the checks (QA only if there
-                  are no checks); if that fails, later rounds run the full architect/build/QA loop
+         --no-fast   start with the full architect/build/QA loop. By default round 1 is one agent doing the
+                  whole goal, judged by the checks (QA only if there are no checks), and later rounds run the full loop
+                  if that fails; --approve-plan, --critic and --dry-run turn this default off (--fast keeps it on);
+                  also "fast": false in config
          --no-visual   no browser checks. They run when .orchestrator/config.json has "serve": {"url":
                   "http://localhost:5173", "command": "npm run dev"}: the architect names pages, orch starts the app
                   and opens them in Chrome or Edge after the checks, and QA gets screenshots and measurements (a page
@@ -676,6 +678,8 @@ type Config = {
   pr?: boolean;
   approvePlan?: boolean;
   ask?: boolean;
+  /** false: no direct attempt first (on by default, see parseOpts). */
+  fast?: boolean;
   /** "ask" (or true): agents may run shell commands once a human approves each one (Agent M); default off. */
   commands?: "ask" | boolean;
   /** Minutes a command waits for an answer before it is denied (default 10). */
@@ -5197,6 +5201,10 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   if (!Number.isInteger(ciFixesRaw) || ciFixesRaw < 0 || ciFixesRaw > 5)
     throw new Error(`--ci-fixes must be 0 to 5, got "${values["ci-fixes"] ?? cfg.ciFixes}"`);
   const ciFixes = values["no-ci-watch"] || cfg.ciWatch === false ? -1 : ciFixesRaw;
+  // The direct attempt is the default (in the evals it passed every case at about half the cost and time of the full
+  // loop, and a failed attempt falls back to it). Plan approval, the plan critic and --dry-run need round 1's plan, so
+  // they turn the default off; an explicit --fast still wins, and --no-fast or "fast": false turn it off.
+  const fast = values["no-fast"] ? false : values.fast ? true : cfg.fast !== undefined ? cfg.fast === true : !(approvePlan || critic || values["dry-run"]);
   const retries = Number(values.retries ?? cfg.retries ?? 1);
   if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
   return {
@@ -5206,7 +5214,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     park: false,
     agentTimeoutMs: timeout * 60_000,
     maxCost,
-    fast: !!values.fast,
+    fast,
     models,
     onLimit,
     usageCap,
@@ -5250,6 +5258,7 @@ async function main() {
       "until-empty": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       fast: { type: "boolean", default: false },
+      "no-fast": { type: "boolean", default: false },
       model: { type: "string" },
       "on-limit": { type: "string" },
       "usage-cap": { type: "string" },

@@ -22,6 +22,8 @@
 //   --claude-bin PATH    use another claude (a fake, to test the runner without spending tokens)
 //   --orch PATH          run this orch.mjs instead of ../orch.ts through tsx
 //   --wait-on-limit      on a Claude usage limit, pause until the reset and carry on (default: stop)
+//   --usage-cap 5h=60    treat the subscription's usage at this percentage like the limit (also week=N), so the
+//                        eval leaves the rest of the window for you; passed to orch, and checked before each run
 //   --resume STAMP       finish results/STAMP.jsonl: skip runs already recorded, drop ones a usage limit spoiled
 //
 // A run cut short by the usage limit (orch exit code 3) is never recorded as a failure.
@@ -33,7 +35,7 @@
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { resolveClaude } from "../claude-bin.ts";
@@ -82,11 +84,43 @@ const { values: a } = parseArgs({
     "agent-timeout": { type: "string", default: "15" },
     "eval-timeout": { type: "string", default: "30" },
     "claude-bin": { type: "string" },
+    "user-plugins": { type: "boolean", default: false },
     orch: { type: "string" },
     "wait-on-limit": { type: "boolean", default: false },
+    "usage-cap": { type: "string" },
     resume: { type: "string" },
   },
 });
+// orch runs inside each run's work dir, so a relative --claude-bin path would not be found there.
+if (a["claude-bin"] && /[\\/]/.test(a["claude-bin"])) a["claude-bin"] = resolve(a["claude-bin"]);
+const CAP_SPEC = /^(?:5h|week)=\d{1,3}(?:,(?:5h|week)=\d{1,3})?$/;
+if (a["usage-cap"] !== undefined && !CAP_SPEC.test(a["usage-cap"])) fail(`--usage-cap must look like 5h=60 or 5h=60,week=80, got "${a["usage-cap"]}"`);
+/** --usage-cap per window, as orch's usage events name them. */
+const caps: Partial<Record<"fiveHour" | "week", number>> = Object.fromEntries(
+  (a["usage-cap"] ?? "")
+    .split(",")
+    .filter(Boolean)
+    .map((p) => p.split("="))
+    .map(([w, n]) => [w === "5h" ? "fiveHour" : "week", Number(n)]),
+);
+/** The newest reading any finished run reported (orch's `usage` events). */
+const usageNow: Partial<Record<"fiveHour" | "week", { pct: number; resetsAt: number }>> = {};
+function noteUsage(events: any[]) {
+  for (const e of events)
+    if (e.type === "usage")
+      for (const w of ["fiveHour", "week"] as const) if (typeof e[w]?.pct === "number" && typeof e[w]?.resetsAt === "number") usageNow[w] = e[w];
+}
+/** A window at or over its cap and not reset yet: when it resets. Orch only learns the usage from its own first call. */
+function capReached(): { what: string; resetAt: number } | null {
+  for (const w of ["fiveHour", "week"] as const) {
+    const r = usageNow[w];
+    const cap = caps[w];
+    if (cap !== undefined && r && r.pct >= cap && r.resetsAt > Date.now())
+      return { what: `${w === "fiveHour" ? "5-hour" : "weekly"} usage at ${r.pct}% (cap ${cap}%)`, resetAt: r.resetsAt };
+  }
+  return null;
+}
+
 /** Same wording orch.ts matches; also catches records an older orch wrote as plain failures. */
 const LIMIT_RE = /\b(?:hit|reached) your [^\n.]{0,40}?limit\b/i;
 
@@ -117,11 +151,12 @@ const SUFFIXES: Record<string, string[]> = {
   novisual: ["--no-visual"],
 };
 const tierOf = (label: string) => label.split("+")[0];
-const suffixArgs = (label: string) =>
-  label
-    .split("+")
-    .slice(1)
-    .flatMap((x) => SUFFIXES[x] ?? []);
+// orch starts with a direct attempt by default; a tier without "+fast" keeps meaning the full loop, so its results
+// compare with earlier ones.
+const suffixArgs = (label: string) => {
+  const parts = label.split("+").slice(1);
+  return [...(parts.includes("fast") ? [] : ["--no-fast"]), ...parts.flatMap((x) => SUFFIXES[x] ?? [])];
+};
 for (const p of powers) {
   const bad = p
     .split("+")
@@ -255,6 +290,10 @@ function runOrch(dir: string, goal: string, power: string): Promise<{ exit: numb
       a["max-cost"]!,
       "--agent-timeout",
       a["agent-timeout"]!,
+      ...(a["usage-cap"] ? ["--usage-cap", a["usage-cap"]] : []),
+      // Your own Claude Code plugins and hooks (skills, session-start instructions) would change what every agent
+      // sees and costs, so results would depend on the machine. Off unless --user-plugins.
+      ...(a["user-plugins"] ? [] : ["--plugins", "off", "--no-hooks"]),
     ];
     const env = { ...process.env, ORCH_EVENTS: "1", FORCE_COLOR: "0", ...(a["claude-bin"] ? { CLAUDE_BIN: a["claude-bin"] } : {}) };
     const p = spawn(process.execPath, args, { cwd: dir, env, windowsHide: true, detached: process.platform !== "win32" });
@@ -293,6 +332,27 @@ function runOrch(dir: string, goal: string, power: string): Promise<{ exit: numb
 
 // ---------- single-agent control: one `claude -p` call with the same goal, permissions, budget and checks ----------
 const CLAUDE = a["claude-bin"] ?? process.env.CLAUDE_BIN ?? "claude";
+/** The control group's settings without the user's plugins and hooks, like orch's --plugins off --no-hooks (unless --user-plugins). */
+let pluginsOff: { enabledPlugins?: Record<string, false>; disableAllHooks?: true } | undefined;
+function noUserPlugins() {
+  if (a["user-plugins"]) return {};
+  if (!pluginsOff) {
+    const r = spawnSync(CLAUDE_CMD.file, [...CLAUDE_CMD.pre, "plugin", "list", "--json"], {
+      encoding: "utf8",
+      shell: CLAUDE_CMD.shell,
+      windowsHide: true,
+      timeout: 60_000,
+    });
+    let ids: string[] = [];
+    try {
+      ids = (JSON.parse(r.stdout) as { id?: string; enabled?: boolean }[]).filter((p) => p.id && p.enabled !== false).map((p) => p.id!);
+    } catch {
+      /* no list: hooks are still disabled */
+    }
+    pluginsOff = { ...(ids.length ? { enabledPlugins: Object.fromEntries(ids.map((id) => [id, false as const])) } : {}), disableAllHooks: true };
+  }
+  return pluginsOff;
+}
 /** Started the same way orch.ts starts it: no shell on Windows (see claude-bin.ts). */
 const CLAUDE_CMD = resolveClaude(CLAUDE);
 if (CLAUDE_CMD.missing && a.single) throw new Error(`"${CLAUDE}" not found on PATH; install Claude Code or pass --claude-bin`);
@@ -323,7 +383,7 @@ function runSingle(dir: string, goal: string, model: string): Promise<SingleResu
   const cmds = [...Object.values(checks), ...(checks.test ? ["npm test"] : []), "git status", "git diff", "git log", "git show"];
   const allow = cmds.flatMap((cmd) => [`Bash(${cmd}:*)`, `PowerShell(${cmd}:*)`]);
   mkdirSync(join(dir, ".orchestrator"), { recursive: true });
-  writeFileSync(join(dir, ".orchestrator", "single-settings.json"), JSON.stringify({ permissions: { allow } }, null, 2));
+  writeFileSync(join(dir, ".orchestrator", "single-settings.json"), JSON.stringify({ permissions: { allow }, ...noUserPlugins() }, null, 2));
   const prompt =
     `Complete this task in the repository in the current directory.\n\nTask: ${goal}\n\n` +
     `Follow the repository's existing conventions and add or update tests. ` +
@@ -407,15 +467,15 @@ let stoppedBy = "";
 let pausedUntil = 0;
 
 /** Usage limit hit: never recorded; pause (--wait-on-limit) or stop, and put the job back. */
-function onLimit(job: Job, resetAt?: number) {
+function onLimit(job: Job, resetAt?: number, why = "usage limit") {
   const { c, power, rep } = job;
   jobs.unshift(job);
   if (a["wait-on-limit"]) {
     pausedUntil = Math.max(pausedUntil, (resetAt ?? Date.now() + 29 * 60_000) + 60_000);
-    console.log(`limit ${c.id} ${power} #${rep}: usage limit; pausing until ${new Date(pausedUntil).toLocaleString()}, then retrying`);
+    console.log(`limit ${c.id} ${power} #${rep}: ${why}; pausing until ${new Date(pausedUntil).toLocaleString()}, then retrying`);
   } else {
-    if (!stoppedBy) stoppedBy = `Claude usage limit${resetAt ? ` (resets ${new Date(resetAt).toLocaleString()})` : ""}`;
-    console.log(`limit ${c.id} ${power} #${rep}: usage limit; stopping (no new runs start)`);
+    if (!stoppedBy) stoppedBy = `Claude ${why}${resetAt ? ` (resets ${new Date(resetAt).toLocaleString()})` : ""}`;
+    console.log(`limit ${c.id} ${power} #${rep}: ${why}; stopping (no new runs start)`);
   }
 }
 
@@ -493,7 +553,10 @@ async function one(job: Job) {
     error: string | undefined;
   let last: Awaited<ReturnType<typeof runOrch>> | undefined;
   for (const [i, goal] of goalsOf(c).entries()) {
+    const capped = capReached();
+    if (capped) return onLimit(job, capped.resetAt, capped.what);
     const r = (last = await runOrch(dir, goal, power));
+    noteUsage(r.events);
     const end = [...r.events].reverse().find((e) => e.type === "goal_end");
     // Usage limit: not the orchestrator's fault and not a result.
     if (r.exit === 3 || end?.usageLimit) return onLimit(job, end?.resetAt);
@@ -539,6 +602,12 @@ const workers = Array.from({ length: Math.max(1, Number(a.parallel)) }, async ()
     while (pausedUntil > Date.now() && !stoppedBy) await sleep(Math.min(5000, pausedUntil - Date.now()));
     const job = jobs.shift();
     if (!job) break;
+    // Not even one more call over the cap: a new orch would only learn the usage from its first call.
+    const capped = capReached();
+    if (capped) {
+      onLimit(job, capped.resetAt, capped.what);
+      continue;
+    }
     await one(job);
   }
 });
@@ -551,7 +620,7 @@ const lines: string[] = [];
 lines.push(`# Eval ${stamp}`, "");
 lines.push(`Cases: ${cases.map((c) => c.id).join(", ")}  `);
 lines.push(
-  `Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["orch-model"] ? `, orch models ${a["orch-model"]}` : ""}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}`,
+  `Settings: max-rounds ${a["max-rounds"]}, max-cost $${a["max-cost"]}, repeat ${a.repeat}${a["orch-model"] ? `, orch models ${a["orch-model"]}` : ""}${a["claude-bin"] ? `, claude-bin ${a["claude-bin"]}` : ""}${a["user-plugins"] ? ", with your plugins and hooks" : ", without plugins or hooks"}${a["usage-cap"] ? `, usage cap ${a["usage-cap"]}` : ""}`,
   "",
 );
 if (stoppedBy)
@@ -559,7 +628,7 @@ if (stoppedBy)
     `**Stopped early: ${stoppedBy}.** ${jobs.length} run(s) not done. Finish with:`,
     "",
     "```",
-    `node evals/run.ts --resume ${stamp} --power ${powers.join(",") || "none"}${singles.length ? ` --single ${singles.join(",")}` : ""} --repeat ${a.repeat}${wanted ? ` --cases ${wanted.join(",")}` : ""}`,
+    `node evals/run.ts --resume ${stamp} --power ${powers.join(",") || "none"}${singles.length ? ` --single ${singles.join(",")}` : ""} --repeat ${a.repeat}${wanted ? ` --cases ${wanted.join(",")}` : ""}${a["usage-cap"] ? ` --usage-cap ${a["usage-cap"]}` : ""}${a["user-plugins"] ? " --user-plugins" : ""}`,
     "```",
     "",
   );

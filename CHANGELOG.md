@@ -6,6 +6,10 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Changed
+- **The fast path is the default**: round 1 is one agent doing the whole goal, judged by the checks, and the full loop runs only if that fails. In the [November 2026 evals](docs/evals/2026-11-18.md) it passed all 18 runs (as did the full loop, with no false passes either way) at about half the cost and time. `--no-fast` or config `"fast": false` turns it off; `--approve-plan`, `--critic` and `--dry-run` keep the full loop unless `--fast` is given too. The UI's **Fast path** box is now ticked by default (repos with saved settings keep theirs).
+- Eval runner: plugins and hooks off by default (`--user-plugins`), `--usage-cap` to leave part of the subscription window free, a plain tier now means the full loop (`--no-fast`), and a relative `--claude-bin` works.
+
+### Changed
 - Agent M's answers are formatted (headings, lists, bold, code, links) instead of showing raw Markdown, rendered as elements so an answer cannot inject markup.
 - Agent M's first answer no longer waits for the machine status: opening the page gathers it in the background (`orch chat --warm`), and a question asked meanwhile waits for that instead of gathering it again.
 
