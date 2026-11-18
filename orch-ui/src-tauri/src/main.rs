@@ -668,8 +668,8 @@ fn flags(power: &str, max_rounds: u32, dry_run: bool, extra: &Extra) -> Vec<Stri
         v.push("--on-limit".into());
         v.push(l.into());
     }
-    if extra.fast.unwrap_or(false) {
-        v.push("--fast".into());
+    if let Some(fast) = extra.fast {
+        v.push(if fast { "--fast" } else { "--no-fast" }.into());
     }
     if extra.critic.unwrap_or(false) {
         v.push("--critic".into());

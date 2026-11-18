@@ -103,7 +103,7 @@ Other commands:
 | `orch learn` | study the repo once (read-only) and write the project brief that later goals reuse |
 | `orch plugins [--details]` | list your Claude Code plugins (with `--details`: context tokens each adds per call) |
 
-Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--no-brief` (do not keep a project brief), `--no-resume` (fix rounds start every implementer cold), `--approve-plan` (wait for you to build, edit or send back each plan), `--intake github:LABEL,backlog:FILE` (a loop pulls goals from GitHub issues or a backlog file), `--branch` (each goal on its own `orch/<id>-<slug>` branch; yours never changes), `--worktrees` (isolate parallel build tasks in Git worktrees), `--pr` (push a passed goal's branch and open a pull request with `gh`), `--strict-files` (a file changed outside the plan fails the round), `--max-cost-total USD` (budget for a whole `loop` run), `--no-notes` (do not keep lessons between goals), `--critic` (review each plan before building), `--diff-critic` (also review each round's change against the goal), `--review` / `--reviewers A,B` (review each change for bugs and security, optionally with your own agents), `--fast` (experimental: try one agent first, full loop only if checks fail), `--max-rounds N` (5), `--max-cost USD`,
+Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--no-brief` (do not keep a project brief), `--no-resume` (fix rounds start every implementer cold), `--approve-plan` (wait for you to build, edit or send back each plan), `--intake github:LABEL,backlog:FILE` (a loop pulls goals from GitHub issues or a backlog file), `--branch` (each goal on its own `orch/<id>-<slug>` branch; yours never changes), `--worktrees` (isolate parallel build tasks in Git worktrees), `--pr` (push a passed goal's branch and open a pull request with `gh`), `--strict-files` (a file changed outside the plan fails the round), `--max-cost-total USD` (budget for a whole `loop` run), `--no-notes` (do not keep lessons between goals), `--critic` (review each plan before building), `--diff-critic` (also review each round's change against the goal), `--review` / `--reviewers A,B` (review each change for bugs and security, optionally with your own agents), `--no-fast` (start with the full loop; by default one agent tries the goal first and the full loop runs only if that fails, see the [evals](docs/evals/2026-11-18.md)), `--max-rounds N` (5), `--max-cost USD`,
 `--agent-timeout MIN` (30), `--dry-run` (plan only). Run `orch` without arguments for the full usage.
 
 ### Browser UI
@@ -353,8 +353,11 @@ node evals/run.ts --reference                          # checks the suite itself
 node evals/run.ts --cases node-chunk-bug --power economy   # real run, costs money
 ```
 
-10 cases over three small fixture repos (Node library, Node API, Python), graded by hidden tests.
-See [evals/README.md](evals/README.md).
+28 cases over small fixture repos (Node, Python, Go, static web; features, bugfixes, refactors, long and multi-goal
+tasks), graded by hidden tests the agents never see. See [evals/README.md](evals/README.md).
+
+Latest results ([November 2026](docs/evals/2026-11-18.md)): 55 runs, every one passed the hidden tests and none was a
+false pass. One direct attempt did as well as the full loop at about half the cost and time, so it is the default.
 
 ## Roadmap
 

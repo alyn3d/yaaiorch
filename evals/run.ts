@@ -151,11 +151,12 @@ const SUFFIXES: Record<string, string[]> = {
   novisual: ["--no-visual"],
 };
 const tierOf = (label: string) => label.split("+")[0];
-const suffixArgs = (label: string) =>
-  label
-    .split("+")
-    .slice(1)
-    .flatMap((x) => SUFFIXES[x] ?? []);
+// orch starts with a direct attempt by default; a tier without "+fast" keeps meaning the full loop, so its results
+// compare with earlier ones.
+const suffixArgs = (label: string) => {
+  const parts = label.split("+").slice(1);
+  return [...(parts.includes("fast") ? [] : ["--no-fast"]), ...parts.flatMap((x) => SUFFIXES[x] ?? [])];
+};
 for (const p of powers) {
   const bad = p
     .split("+")

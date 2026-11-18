@@ -53,10 +53,16 @@ function repo({ git: useGit = true } = {}) {
   return dir;
 }
 
+/**
+ * orch starts goals with a direct attempt by default; most scenarios test the full loop, so they ask for it
+ * (`--no-fast`) unless they pass --fast, --no-fast or `default` (as the first arg: run with orch's own default).
+ */
+const fullLoop = (args) => (args[0] === "default" ? args.slice(1) : args.some((x) => x === "--fast" || x === "--no-fast") ? args : [...args, "--no-fast"]);
+
 /** Run `orch <args>` in dir with the fake claude. Returns exit code, output, parsed events and the fake's call log. */
 function orch(dir, args, env = {}) {
   const logFile = `${dir}.fake.log`;
-  const r = spawnSync(process.execPath, [TSX, ORCH, ...args], {
+  const r = spawnSync(process.execPath, [TSX, ORCH, ...fullLoop(args)], {
     cwd: dir,
     encoding: "utf8",
     timeout: 120_000,
@@ -80,7 +86,7 @@ function orch(dir, args, env = {}) {
 
 /** Start `orch <args>` without waiting; `done` resolves with exit code and output. */
 function orchAsync(dir, args, env = {}) {
-  const child = spawn(process.execPath, [TSX, ORCH, ...args], {
+  const child = spawn(process.execPath, [TSX, ORCH, ...fullLoop(args)], {
     cwd: dir,
     env: { ...process.env, CLAUDE_BIN: FAKE, ORCH_EVENTS: "1", FORCE_COLOR: "0", FAKE_LOG: `${dir}.fake.log`, ...env },
   });
@@ -2249,6 +2255,27 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
       /mode=acceptEdits/,
     );
     assert.ok(existsSync(join(dir, "src", "direct.txt")));
+  });
+
+  test("fast path is the default; plan approval, the plan critic, --dry-run, --no-fast and config turn it off", () => {
+    const mode = (dir, ...args) => {
+      const r = orch(dir, ["default", "run", "x", "--max-rounds", "1", ...args]);
+      return r.ev("round_start")[0]?.mode ?? "full";
+    };
+    const dir = repo();
+    writeConfig(dir, { checks: { ok: 'node -e "process.exit(0)"' } });
+    assert.equal(mode(dir), "direct");
+    assert.equal(mode(repo(), "--critic"), "full");
+    assert.equal(mode(repo(), "--critic", "--fast"), "direct", "an explicit --fast still wins");
+    assert.equal(mode(repo(), "--dry-run"), "full");
+    assert.equal(mode(repo(), "--no-fast"), "full");
+    const off = repo();
+    writeConfig(off, { fast: false });
+    assert.equal(mode(off), "full");
+    // Plan approval waits for a human, so only check that it is not skipped: the run waits on a plan.
+    const approve = repo();
+    const r = orch(approve, ["default", "run", "x", "--max-rounds", "1", "--approve-plan", "--dry-run"]);
+    assert.equal(r.ev("round_start")[0]?.mode ?? "full", "full");
   });
 
   test("fast path falls back to the full loop when the direct attempt fails its checks", () => {

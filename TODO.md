@@ -34,8 +34,11 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   (one case per PR)
 - [x] **Fast path** (`--fast`): round 1 is one `dev` agent judged by the checks (QA only without checks),
   falling back to the full loop on failure.
-- [ ] **Measure `--fast`** against the full loop and a single call (`--power economy,economy+fast --repeat 3`),
-  and make it the default for small goals if it holds.
+- [x] **Measure `--fast`**: 18/18 like the full loop, at about half the cost and time; now the default
+  ([results](docs/evals/2026-11-18.md)).
+- [ ] **Harder cases first**: the November 2026 run passed every case in round 1, including the multi-round ones
+  (`api-patch-contract` no longer forces a fix round), so round-2 features cannot be measured yet. See "Repo-scale
+  cases" above.
 
 ### Test the orchestrator itself
 - [x] Fake `claude` (`test/fake-claude/`) and 47 scenario tests (`npm test`), run in CI on Linux and
@@ -91,7 +94,8 @@ Each item should show its effect in the evals before it becomes the default.
   repo's CLAUDE.md, as a commit to review, so teammates and fresh clones get it.
 - [x] **Cases to measure them with**: two series cases (`tickets-series`, `api-series`: three goals in a row
   on one repo) and runner configs `+nomem` and `+critic`.
-- [ ] **Measure these** (brief, notes, context between rounds, per-task escalation, session resume, plan and diff
+- [ ] **Measure these** (brief and notes on the two series cases: no difference, 6/6 either way at the same cost,
+  [results](docs/evals/2026-11-18.md); still open on harder cases: context between rounds, per-task escalation, session resume, plan and diff
   critic, review lens; configs `+nomem`, `+noresume`, `+critic`, `+diffcritic`, `+review`): they were built
   without an eval, because the current cases all pass in round 1. Needs cases that take several
   rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.

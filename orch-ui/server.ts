@@ -372,7 +372,7 @@ const flags = (b: {
   ...(typeof b.maxCostTotal === "number" && b.maxCostTotal > 0 ? ["--max-cost-total", String(b.maxCostTotal)] : []),
   ...(typeof b.models === "string" && MODEL_SPEC.test(b.models) ? ["--model", b.models] : []),
   ...(b.onLimit === "wait" || b.onLimit === "stop" ? ["--on-limit", b.onLimit] : []),
-  ...(b.fast ? ["--fast"] : []),
+  ...(b.fast === true ? ["--fast"] : b.fast === false ? ["--no-fast"] : []),
   ...(b.critic ? ["--critic"] : []),
   ...(b.diffCritic ? ["--diff-critic"] : []),
   ...(b.review ? ["--review"] : []),

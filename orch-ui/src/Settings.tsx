@@ -64,7 +64,7 @@ export const DEFAULT_SETTINGS: RunSettings = {
   models: { architect: "", impl: "", heavy: "", qa: "", dev: "" },
   agentModels: "",
   onLimit: "wait",
-  fast: false,
+  fast: true,
   critic: false,
   diffCritic: false,
   review: false,
@@ -177,7 +177,10 @@ export function SettingsPanel({
             <option value="stop">Stop</option>
           </select>
         </label>
-        <label className="check" title="Round 1: one agent does the whole goal, judged by the repo's checks; the full loop runs only if that fails">
+        <label
+          className="check"
+          title="Round 1: one agent does the whole goal, judged by the repo's checks; the full loop runs only if that fails. On by default (as good as the full loop in the evals, at about half the cost); Approve plans and the plan critic still get the full loop."
+        >
           <input type="checkbox" checked={settings.fast} onChange={(e) => onChange({ ...settings, fast: e.target.checked })} /> Fast path
         </label>
         <label
