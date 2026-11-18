@@ -5,6 +5,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-11-18
+
 ### Added
 - Agent swaps: use a differently named user or project agent in any built-in role with config `"swap"`, `orch agents --swap be=backend-builder`, or **Use instead** on the **Agents** page. Plans, permissions and model roles stay unchanged; `--unswap` restores the built-in.
 
@@ -400,7 +402,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.6...HEAD
+[0.5.6]: https://github.com/alyn3d/yaaiorch/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/alyn3d/yaaiorch/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/alyn3d/yaaiorch/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/alyn3d/yaaiorch/compare/v0.5.2...v0.5.3
