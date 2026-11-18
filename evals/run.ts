@@ -115,7 +115,8 @@ function capReached(): { what: string; resetAt: number } | null {
   for (const w of ["fiveHour", "week"] as const) {
     const r = usageNow[w];
     const cap = caps[w];
-    if (cap !== undefined && r && r.pct >= cap && r.resetsAt > Date.now()) return { what: `${w === "fiveHour" ? "5-hour" : "weekly"} usage at ${r.pct}% (cap ${cap}%)`, resetAt: r.resetsAt };
+    if (cap !== undefined && r && r.pct >= cap && r.resetsAt > Date.now())
+      return { what: `${w === "fiveHour" ? "5-hour" : "weekly"} usage at ${r.pct}% (cap ${cap}%)`, resetAt: r.resetsAt };
   }
   return null;
 }
@@ -335,7 +336,12 @@ let pluginsOff: { enabledPlugins?: Record<string, false>; disableAllHooks?: true
 function noUserPlugins() {
   if (a["user-plugins"]) return {};
   if (!pluginsOff) {
-    const r = spawnSync(CLAUDE_CMD.file, [...CLAUDE_CMD.pre, "plugin", "list", "--json"], { encoding: "utf8", shell: CLAUDE_CMD.shell, windowsHide: true, timeout: 60_000 });
+    const r = spawnSync(CLAUDE_CMD.file, [...CLAUDE_CMD.pre, "plugin", "list", "--json"], {
+      encoding: "utf8",
+      shell: CLAUDE_CMD.shell,
+      windowsHide: true,
+      timeout: 60_000,
+    });
     let ids: string[] = [];
     try {
       ids = (JSON.parse(r.stdout) as { id?: string; enabled?: boolean }[]).filter((p) => p.id && p.enabled !== false).map((p) => p.id!);
