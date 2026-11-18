@@ -341,7 +341,8 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 YAAIORCH runs AI agents that **edit files and run commands in your repo**. Implementers run with
 Claude Code's `acceptEdits` permission mode plus an allow-list for your check commands; the architect
-and QA run in `default` mode with edit tools denied. Run it on a repo you have committed or pushed,
+and QA run in `default` mode with edit tools denied. With **Commands via Agent M** (`--commands`), implementers can
+also run any shell command you allow, on your machine and without a sandbox: read each one before you allow it. Run it on a repo you have committed or pushed,
 review the commits before you push them, and set `--max-cost`. Do not point it at a repo that holds
 secrets you would not show to the model.
 
