@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Fixed
+- Landing page: the screenshot slider keeps one frame ratio and a two-line caption slot, so the tabs no longer move between slides. The three screenshots were retaken at the same size and zoom.
+
 ## [0.5.6] - 2026-11-18
 
 ### Added

@@ -373,15 +373,20 @@
         border-radius: 14px;
         background: #09090b;
         box-shadow: 0 30px 80px rgb(0 0 0 / 45%);
+        aspect-ratio: 1917 / 1077;
       }
 
       .app-shot img {
         display: block;
         width: 100%;
-        height: auto;
+        height: 100%;
+        object-fit: cover;
+        object-position: top left;
       }
 
+      /* Room for two lines, so a longer caption never moves the tabs. */
       .app-shot figcaption {
+        min-height: 3em;
         margin-top: 14px;
         color: var(--muted);
         font-size: 14px;
