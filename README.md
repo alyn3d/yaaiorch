@@ -7,7 +7,9 @@
 YAAIORCH turns a goal into working code by looping AI agents until the code passes your checks.
 An **architect** agent plans the work, **implementer** agents build it in parallel, the orchestrator
 runs your repo's own checks (tests, typecheck, build), and a **QA** agent reviews the result. If
-anything fails, the failures go back to the architect and the loop runs again.
+anything fails, the failures go back to the architect and the loop runs again. By default a single agent tries
+the whole goal first, judged by your checks, and the full loop takes over only if that fails: in the evals that was
+as good at about half the cost.
 
 It drives the [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) CLI (`claude -p`),
 so it uses your existing Claude Code login, agents and skills. It ships as a CLI, a browser UI and a
@@ -33,9 +35,11 @@ goal ──► architect ──► foundation ──► build (parallel) ──�
   kept on a branch. There is a budget per goal, a timeout per agent, stuck detection that moves up a
   model tier or stops, and a queue that waits out Claude usage limits.
 - **It is measured.** `evals/` grades real runs with hidden tests the agents never see, per power
-  tier, including "false passes" (the orchestrator said done but the code is wrong).
+  tier, including "false passes" (the orchestrator said done but the code is wrong). The results are
+  published: [November 2026](docs/evals/2026-11-18.md), 55 runs, no false passes.
 - **Least privilege.** The architect and QA run read-only; implementers can only edit, plus run the
-  repo's check commands.
+  repo's check commands. With **Agent M** on, they can ask to run other commands, and each one waits
+  for you to allow it.
 
 ## Requirements
 
@@ -280,8 +284,8 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   terminal: `orch decide <id> allow|deny|always`. Commands run on your machine without a sandbox: read each one.
 - **Ask Agent M**: the same page has a chat for questions about your setup and open repos (which MCP servers are
   connected, why a run failed, what is left in the queues). Haiku answers from a status of your machine and repos and may
-  read the repos' files, but never changes anything or runs commands. The first question gathers that status (up to
-  half a minute; then cached for 10 minutes). Its cost counts toward the daily budget.
+  read the repos' files, but never changes anything or runs commands. Opening the page gathers that status in the
+  background (it is cached for 10 minutes), so answers take seconds. Its cost counts toward the daily budget.
 - **A branch and a pull request per goal** (optional, **Branch per goal** / **Open pull request** in the run
   settings, `--branch` / `--pr`): each goal runs on its own `orch/<id>-<slug>` branch and orch switches back
   afterwards, so your branch is never changed. With `--pr`, a passed goal's branch is pushed to `origin` and

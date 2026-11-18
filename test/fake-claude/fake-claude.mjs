@@ -30,7 +30,9 @@
 //   FAKE_COMMAND=<agent>=<cmd>[;<agent>=<cmd>]   with --permission-prompt-tool, that agent asks the MCP server
 //                            from --mcp-config about running <cmd> (Bash) like the real CLI, and logs
 //                            "<agent>: command=<cmd> behavior=<allow|deny> message=<why>"; FAKE_COMMAND_TOOL picks the tool
-//                            FAKE_COMMAND_CRASH=1: the agent dies hard (with the MCP server) while its command waits
+//                            FAKE_COMMAND_CRASH=1: the agent dies hard (with the MCP server) while its command waits;
+//                            FAKE_COMMAND_DESC=<text>: the reason it gives (demos)
+//   FAKE_CHAT_REPLY=<text>   orch chat (Agent M) answers with this text (demos)
 //   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
 //   FAKE_TIDY=bad            the notes tidy call returns no usable notes
 //   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
@@ -207,6 +209,10 @@ if (prompt.startsWith("You are Agent M")) {
   }
   const question = prompt.slice(prompt.lastIndexOf("Question: ") + "Question: ".length).trim();
   const queued = [...prompt.matchAll(/^- #(\d+) \[(\w+)\] (.+)$/gm)].map((m) => `#${m[1]} ${m[3]}`);
+  if (env.FAKE_CHAT_REPLY) {
+    reply(env.FAKE_CHAT_REPLY);
+    process.exit(0);
+  }
   reply(`Agent M heard: ${question}. Queued: ${queued.join("; ") || "nothing"}. MCP: ${/figma: .*Connected/.test(prompt) ? "figma connected" : "none"}.`);
   process.exit(0);
 }
@@ -256,7 +262,11 @@ if (permitTool && wanted) {
   }
   const res = await rpc("tools/call", {
     name: permitTool.split("__")[2],
-    arguments: { tool_name: env.FAKE_COMMAND_TOOL ?? "Bash", input: { command, description: "needed for the task" }, tool_use_id: "toolu_fake" },
+    arguments: {
+      tool_name: env.FAKE_COMMAND_TOOL ?? "Bash",
+      input: { command, description: env.FAKE_COMMAND_DESC ?? "needed for the task" },
+      tool_use_id: "toolu_fake",
+    },
   });
   const answer = JSON.parse(res.result.content[0].text);
   log(`${agent}: command=${command} behavior=${answer.behavior} message=${answer.message ?? ""}`);

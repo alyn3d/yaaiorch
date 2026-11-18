@@ -823,7 +823,10 @@
               <span class="step-tag">REVIEW</span>
             </div>
           </div>
-          <p class="loop-note"><b>Not done yet?</b> Failures go back into the plan. The next round tries again.</p>
+          <p class="loop-note">
+            <b>First try:</b> one agent takes the whole goal, judged by your checks. <b>Not done yet?</b> The full loop
+            takes over: failures go back into the plan, and the next round tries again.
+          </p>
         </div>
       </section>
 
@@ -854,9 +857,23 @@
           </div>
           <figcaption>A simulated three-project Overview: follow active work, approvals, PRs and completed queue goals.</figcaption>
         </figure>
+        <figure class="shot-slide" id="shot-agent-m">
+          <div class="shot-frame">
+            <img
+              src="assets/app-agent-m.webp"
+              width="1917"
+              height="1077"
+              loading="lazy"
+              decoding="async"
+              alt="The Agent M page: an agent asks to run npm install zod and waits for Allow, Always allow or Deny, above a chat answer explaining why a run failed."
+            />
+          </div>
+          <figcaption>Agent M, simulated: an agent waits for your OK to run a command, and the chat explains a failed run.</figcaption>
+        </figure>
         <div class="shot-controls" role="group" aria-label="Choose a screenshot" hidden>
           <button type="button" aria-controls="shot-run" aria-pressed="true">Run details</button>
           <button type="button" aria-controls="shot-board" aria-pressed="false">Work board</button>
+          <button type="button" aria-controls="shot-agent-m" aria-pressed="false">Agent M</button>
         </div>
       </section>
 
@@ -946,6 +963,24 @@
             <p>
               Browse built-in, user and project agents alongside discovered skills. Edit project agents or save a
               repo-local override without changing your global Claude Code definitions.
+            </p>
+          </article>
+          <article class="feature">
+            <span class="feature-mark" aria-hidden="true">09</span>
+            <h3>Agent M: you approve every command</h3>
+            <p>
+              Turn it on and agents can ask to install a dependency or run a generator. Each command waits on the Agent M
+              page, from every repo, for Allow, Always allow or Deny; nothing runs until you answer. The same page has a
+              chat that answers questions about your setup, MCP servers, queues and failed runs.
+            </p>
+          </article>
+          <article class="feature">
+            <span class="feature-mark" aria-hidden="true">10</span>
+            <h3>Measured in the open</h3>
+            <p>
+              Real runs are graded by hidden tests the agents never see, counting false passes too. The
+              <a class="text-link" href="https://github.com/alyn3d/yaaiorch/blob/main/docs/evals/2026-11-18.md">November 2026 results</a>: 55 runs, all passed, none falsely. A single direct
+              attempt matched the full loop at about half the cost, so it now goes first.
             </p>
           </article>
         </div>
