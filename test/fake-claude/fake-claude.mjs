@@ -46,6 +46,8 @@
 //   FAKE_GROUP_FAULT=backend|frontend|both   the group coordinator's fault call (default frontend); FAKE_GROUP_REVISE=1
 //                            adds contract "REVISED". Without "Integration failed" in the prompt it answers a plan.
 //                            FAKE_GROUP_BULLETS=1: every goal it gives starts with "- " (a markdown bullet list)
+//                            FAKE_GROUP_ONLY=backend|frontend: its plan has a goal for that repo only
+//   FAKE_LEAK=<agent>        that implementer also writes leaked-by-<agent>.txt into its first --add-dir (another repo)
 //   FAKE_SECRET_ONCE=<agent> that agent's first call writes an AWS-style access key into its files
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
@@ -327,7 +329,11 @@ if (prompt.startsWith("You are the group coordinator.")) {
       "```json\n" +
         JSON.stringify({
           contract: "GET /api/items → Item[]",
-          goals: { backend: `${bullet}serve GET /api/items`, frontend: `${bullet}show the items from GET /api/items` },
+          goals: Object.fromEntries(
+            Object.entries({ backend: `${bullet}serve GET /api/items`, frontend: `${bullet}show the items from GET /api/items` }).filter(
+              ([role]) => !env.FAKE_GROUP_ONLY || role === env.FAKE_GROUP_ONLY,
+            ),
+          ),
         }) +
         "\n```",
     );
@@ -489,6 +495,10 @@ if (prompt.startsWith("You are the group coordinator.")) {
     writeFileSync(secretFlag, "1");
     for (const f of files) writeFileSync(f, `export const key = "${"AKIA" + "ABCDEFGHIJKLMNOP"}";\n`);
     log(`${agent}: wrote a secret`);
+  }
+  if (env.FAKE_LEAK === agent && addDirs.length) {
+    writeFileSync(`${addDirs[0]}/leaked-by-${agent}.txt`, "written into another repo\n");
+    log(`${agent}: leaked into ${addDirs[0]}`);
   }
   if (env.FAKE_STRAY_FILE && agent === "be") {
     mkdirSync(dirname(env.FAKE_STRAY_FILE), { recursive: true });

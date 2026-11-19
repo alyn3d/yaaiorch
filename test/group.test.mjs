@@ -431,6 +431,32 @@ describe("member run flags", () => {
       const sub = run("--read-dir", join(dir, "sub"));
       assert.notEqual(sub.status, 0);
       assert.match(sub.stderr, /--read-dir: .* inside it/);
+      // A glob character would make the deny rule match other paths (or none): refused, as is a UNC path.
+      for (const name of ["x[1]", "x{a}", "x!y", ...(process.platform === "win32" ? [] : ["x*", "x?"])]) {
+        const odd = join(dirname(dir), `${basename(dir)}-${name}`);
+        mkdirSync(odd);
+        try {
+          const r = run("--read-dir", odd);
+          assert.notEqual(r.status, 0, name);
+          assert.match(r.stderr, /--read-dir: .* has a character that permission rules read as a pattern/, name);
+        } finally {
+          rmSync(odd, { recursive: true, force: true });
+        }
+      }
+      if (process.platform === "win32") {
+        const unc = run("--read-dir", "\\\\localhost\\c$\\x");
+        assert.notEqual(unc.status, 0);
+        assert.match(unc.stderr, /--read-dir: .* is a network \(UNC\) path/);
+      }
+      // Spaces and parentheses are fine (the deny rules hold for them with the real CLI).
+      const spaced = join(dirname(dir), `${basename(dir)}-a b (x)`);
+      mkdirSync(spaced);
+      try {
+        const ok = run("--read-dir", spaced, "--dry-run");
+        assert.doesNotMatch(ok.stderr, /--read-dir/);
+      } finally {
+        rmSync(spaced, { recursive: true, force: true });
+      }
       const noCtx = run("--group-context", join(dir, "nope.md"));
       assert.notEqual(noCtx.status, 0);
       assert.match(noCtx.stderr, /--group-context: cannot read/);
@@ -1026,6 +1052,32 @@ describe("orch group run", { timeout: 600_000 }, () => {
     }
   });
 
+  test("a write into the other repo fails the group, naming the file; both repos end clean after parking", () => {
+    const s = setup();
+    try {
+      // Only the backend builds; its agent also writes into the frontend repo (as a script would, past the deny rules).
+      const r = group(s, ["run", "shop", "list the items"], { FAKE_LEAK: "dev", FAKE_GROUP_ONLY: "backend" });
+      assert.equal(r.code, 1, r.out);
+      assert.ok(existsSync(join(s.home, "fake.log")), r.out);
+      assert.match(readFileSync(join(s.home, "fake.log"), "utf8"), /dev: leaked into/, r.out);
+      const end = r.ev("group_end").at(-1);
+      assert.equal(end.ok, false);
+      assert.match(end.reason, /frontend: leaked-by-dev\.txt/, end.reason);
+      for (const [dir, start] of [
+        [s.be, s.heads.be],
+        [s.fe, s.heads.fe],
+      ]) {
+        assert.equal(head(dir), start);
+        assert.equal(git(dir, "status", "--porcelain", "--", ".", ":!.orchestrator"), "", dir);
+      }
+      assert.match(end.parked.frontend, /^orchestrator\/failed-group-/);
+      assert.match(git(s.fe, "show", "--stat", "--format=", end.parked.frontend), /leaked-by-dev\.txt/);
+      assert.deepEqual(locks(s), []);
+    } finally {
+      clean(s);
+    }
+  });
+
   const refused = (what, prepare, re) =>
     test(`refuses ${what}`, () => {
       const s = setup();
@@ -1054,6 +1106,17 @@ describe("orch group run", { timeout: 600_000 }, () => {
     /already running/,
   );
   refused("a missing member repo", (s) => rmSync(s.fe, { recursive: true, force: true }), /does not exist/);
+  refused(
+    "a member path with a pattern character",
+    (s) => {
+      const odd = join(s.home, "fe[1]");
+      initRepo(odd);
+      const g = JSON.parse(readFileSync(join(s.home, "groups", "shop.json"), "utf8"));
+      g.repos[1].path = odd;
+      writeFileSync(join(s.home, "groups", "shop.json"), JSON.stringify(g));
+    },
+    /fe\[1\] has a character that permission rules read as a pattern/,
+  );
 
   test("approve-plan waits for orch approve --group", async () => {
     const s = setup();

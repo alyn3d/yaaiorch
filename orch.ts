@@ -5599,13 +5599,21 @@ function memberFlags(values: Record<string, string | boolean | string[] | undefi
   const here = realpathSync.native(process.cwd());
   const same = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
   const readDirs: string[] = [];
+  // The path goes into deny rules (readDenyRules), which read these characters as a pattern: such a rule could match
+  // other paths, or miss this one. A UNC path has no drive form for a rule. Spaces and parentheses are fine.
+  const glob = /[[\]*?{}!]/;
+  const unc = (p: string) => /^[\\/]{2}/.test(p);
   for (const d of Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []) {
+    if (unc(d)) throw new Error(`--read-dir: "${d}" is a network (UNC) path; give the group a local directory`);
     let real: string;
     try {
       real = realpathSync.native(resolve(d));
     } catch {
       throw new Error(`--read-dir: "${d}" does not exist`);
     }
+    if (unc(real)) throw new Error(`--read-dir: "${d}" is a network (UNC) path (${real}); give the group a local directory`);
+    if (glob.test(real))
+      throw new Error(`--read-dir: "${real}" has a character that permission rules read as a pattern ([ ] * ? { } !); move or rename the repo`);
     if (!statSync(real).isDirectory()) throw new Error(`--read-dir: "${d}" is not a directory`);
     if (same(real, here)) throw new Error(`--read-dir: "${d}" is this repo itself`);
     // Its deny rules would cover this repo too (or the other way round): only a separate directory makes sense.

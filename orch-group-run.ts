@@ -197,6 +197,11 @@ function checkMember(r: GroupRepo) {
     return process.platform === "win32" ? real.toLowerCase() : real;
   };
   if (top.status !== 0 || norm(top.stdout.trim()) !== norm(r.path)) throw new Error(`group ${r.role} repo ${r.path} is not the top of a git repo`);
+  // The other member gets it as --read-dir, whose deny rules need a local path without pattern characters (memberFlags).
+  const real = realpathSync.native(r.path);
+  if (/^[\\/]{2}/.test(real)) throw new Error(`group ${r.role} repo ${r.path} is a network (UNC) path; groups need local directories`);
+  if (/[[\]*?{}!]/.test(real))
+    throw new Error(`group ${r.role} repo ${r.path} has a character that permission rules read as a pattern ([ ] * ? { } !); move or rename it`);
 }
 
 const stampNow = () => {
@@ -464,6 +469,23 @@ async function runChildren(
   return ends;
 }
 
+/**
+ * After a step's children: every member's tree must be clean. A run commits its own work, so an uncommitted change is
+ * a write it did not make (an agent writing into the other repo past the deny rules) or a commit that failed. Throws
+ * naming the files; the group then parks them with the rest.
+ */
+async function checkTrees(s: Run, step: "build" | "integration" | "fix") {
+  const found = await Promise.all(
+    ROLES.map(async (role) => {
+      const r = await member(repoOf(s, role), s.locks.get(role)!, ["head"]);
+      const files = Array.isArray(r.dirty) ? r.dirty.map(String) : [];
+      return files.length ? `${role}: ${files.slice(0, 20).join(", ")}${files.length > 20 ? ` and ${files.length - 20} more` : ""}` : "";
+    }),
+  );
+  const dirty = found.filter(Boolean);
+  if (dirty.length) throw new Error(`uncommitted changes after the ${step} (written outside a member run's own commits, e.g. into the other repo): ${dirty.join("; ")}`);
+}
+
 /** The last `n` characters: a failure report part stays bounded however much a child printed. */
 const clip = (t: string, n = 4000) => (t.length > n ? `…${t.slice(-n)}` : t);
 const bullets = (xs: string[]) => xs.map((x) => `- ${x}`).join("\n");
@@ -563,6 +585,8 @@ async function integrationStep(s: Run): Promise<void> {
         if (s.stopped) throw new Stopped();
         const [end] = ends;
         if (end.code === 3) throw new Limit("a member run hit the Claude usage limit");
+        // Also before a pass: nothing may be left uncommitted in either repo.
+        await checkTrees(s, "integration");
         if (end.code === 0) {
           console.log(`integration round ${round}: the frontend works against the running backend`);
           return;
@@ -575,6 +599,7 @@ async function integrationStep(s: Run): Promise<void> {
       if (call.goals.backend) await server.stopAndWait();
       const ends = await runChildren(s, "fix", round, call.goals, ["--no-fast"]);
       childrenPassed(s, ends, "fix");
+      await checkTrees(s, "fix");
       if (call.goals.backend && !owned) throw new Error("backend changed; restart your backend and rerun");
       // A fixed backend starts again; otherwise the next round checks the one running.
       down = call.goals.backend ? await start(round + 1) : undefined;
@@ -652,6 +677,7 @@ async function steps(s: Run): Promise<GroupOutcome> {
   for (const role of ROLES) if (!plan.goals[role]) console.log(`${role}: nothing to build for this goal`);
   const ends = await runChildren(s, "build", 1, plan.goals, s.o.fast === true ? ["--fast"] : s.o.fast === false ? ["--no-fast"] : []);
   childrenPassed(s, ends, "build");
+  await checkTrees(s, "build");
   await integrationStep(s);
   if (s.stopped) throw new Stopped();
   s.ending = true;
