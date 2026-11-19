@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Repo groups: one goal across a backend and a frontend repo (`orch group add|run|stop|rollback`, command line only for now). A coordinator writes the API contract and a goal per repo, both repos build in parallel against it, then the frontend is checked in a browser against the running backend; a failure goes back to the side at fault. On failure both repos are reset and their work parked; `orch group rollback` undoes a passed goal in both.
+
 ### Changed
 - The landing page screenshots rotate every four seconds with a progress bar, pausing for interaction or reduced-motion preferences.
 - Added source and release license notices and guidance to distinguish unofficial forks from YAAIORCH.

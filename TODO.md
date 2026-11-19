@@ -118,6 +118,14 @@ Each item should show its effect in the evals before it becomes the default.
 - [ ] **Repo groups in the UI: member sessions busy during a group run.** The backends route a member's events to its
   session only while that session has no run of its own (else they stay wrapped in the group's session); starting groups
   from the UI must refuse a member's own start during a group run, and a group start while a member runs or waits to start.
+- [ ] **Repo groups in the UI.** A group page to define, start, approve and stop groups, show the contract and the two
+  repos' progress; needs an approval-wait event for group plans (the plan only waits in `plan-pending.json` now), and
+  member sessions that show a synthetic "stopped" after a reload (the group's events replay only in the group's session).
+- [ ] **Repo groups: more than two repos and other roles** (several backends, a shared library, a mobile app).
+- [ ] **Repo groups: `--on-limit wait`.** A usage limit parks both repos as interrupted and exits 3; waiting for the
+  reset and resuming the parked work is not built.
+- [ ] **Repo groups: PR mode** (a branch and pull request per repo, linked to each other).
+- [ ] **Repo groups: evals** (cases with a backend and a frontend repo, graded by hidden tests on both).
 
 ## Greenfield
 

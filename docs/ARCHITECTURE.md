@@ -35,6 +35,7 @@ The desktop app ships its own Node.js as a Tauri sidecar (`bundle.externalBin: [
     orch doctor [--json]  first-run checks: node, claude installed and logged in, git, clean repo, leftover checkpoints, checks
     orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work kept on orchestrator/discarded-*
     orch prune [--older-than DAYS]  delete orchestrator/* branches older than DAYS (14)
+    orch group add|list|remove|run|stop|rollback  one goal across a backend and a frontend repo (see Repo groups)
 
 Options: `--max-rounds N` (5), `--power max|heavy|balanced|economy` (heavy), `--max-cost USD` (per goal, none by default), `--agent-timeout MIN` (30), `--poll S` (15), `--until-empty`, `--dry-run`, `--worktrees` (isolate parallel build tasks; config `worktrees: true`; `--no-worktrees` overrides it). Worktrees require Git. It runs in the target repo (current working directory). Errors print one line; set `ORCH_DEBUG=1` for stack traces.
 
@@ -141,6 +142,20 @@ Each agent is a one-shot headless call:
 
 `orch.ts` appends the required reply format to every prompt, so discovered agents follow it too: the architect returns a JSON `Plan`, implementers end with `Status: COMPLETE|PARTIAL|FAILED`, verifiers return JSON `{passed, failures[]}`.
 
+### Repo groups (`orch-group.ts`, `orch-group-run.ts`)
+
+`orch group run NAME "<goal>"` builds one goal across a group's backend and frontend repo (version 1: exactly one of each). The group process runs in neither repo: it holds the group lock (`~/.yaaiorch/groups/<name>/run.lock`) and both repos' run locks, and passes the lock ids to its children in `ORCH_GROUP_LOCK`, so a child does not take (or refuse) the lock again. It must not import `orch.ts`, so the lock and atomic-write helpers come in as `GroupDeps`; every repo-level git step runs as a hidden `orch group-member checkpoint|park|drop|head|verify|reset ...` child in that repo, and the coordinator as `orch group-member coordinate plan|fault` (JSON on stdin, one JSON line on stdout) in the backend repo, so it reuses `runOnce`, budget, models and swaps.
+
+1. **Checkpoint** both repos (`orchestrator/checkpoint-*`).
+2. **Coordinator** (read-only, the other repo readable) replies `{contract, goals: {backend?, frontend?}}`; `group_plan`. With `--approve-plan`, `group-dir/plan-pending.json` waits for `plan-decision.json`, which only `orch approve --group NAME [--reject WHY | --plan-stdin]` writes (an edited plan is `{contract, goals}`; a rejection re-asks the coordinator). The contract goes to `.orchestrator/contract.md` in both repos (never committed) and, with the other repo's path, to a `--group-context` file per repo.
+3. **Build**: one `orch run` child per repo with a goal, in parallel, with `--group-context`, `--read-dir <other repo>`, `--strict-files`, `--no-commands` (no Agent M) and `--on-limit stop`. The other repo is readable but writes to it are denied in the child's settings; a script can still write there, `--strict-files` is the backstop. In a member run the repo's own `branch`, `pr`, `approvePlan`, `worktrees` and `ask` settings are ignored. The frontend's group `env` (`{backend}` replaced) reaches the frontend's children in every step, build included; an entry still containing `{backend}` (no serve) is left out. The first failing child stops the other.
+4. **Integration**, with a backend `serve` (the group's, else the backend repo's config; none: skipped, `group_step` with `skipped`): a `DevServer` starts the backend in its repo (a server already answering at the URL is reused, not restarted), then a frontend child with `--no-fast` verifies the frontend against it. On failure the coordinator's fault call (`group_fault`) names the side(s) at fault and gives each a fix goal (a goal for a side not at fault is dropped); it may revise the contract (rewritten everywhere, `group_plan` with `revised`). The fix children run, a fixed backend is restarted, and integration runs again, up to `integrationRounds` (config, default 2). A failed fix child fails the group at once. A backend that does not come up counts as a failed round (`group_step` with `failed`).
+5. **End** (`group_end`): pass drops both checkpoints and records where each repo ended (`heads`); failure parks each repo's work on `orchestrator/failed-group-<stamp>` and resets it to the checkpoint; stop (`orch group stop NAME` writes a stop file) parks as `interrupted-group-<stamp>`. A usage limit in any child parks both repos as interrupted and exits 3: no wait and resume in version 1. Exit codes: 0 pass, 1 fail, 3 usage limit, 130 stopped.
+
+Budget with `--max-cost` (`childShare`): the build gets 60% (split over the repos that build), the rest is kept for integration and fix rounds, each taking what is left divided by the child steps still possible. Every call's cost counts toward it.
+
+`orch group rollback NAME` undoes the last passed run: `last-run.json` in the group dir holds each repo's start commit (`checkpoints`), the end commit (`heads`) and the `stamp`. Both repos are checked first (`group-member verify`), then each is reset to its start commit with everything after it, also the person's later commits, parked on `orchestrator/discarded-group-<stamp>` (the note says how many); `rolledBack` is recorded and `group_rollback` emitted. It refuses a failed run (already reset), an already rolled back one, and a run inside a group.
+
 ### Queue and loop
 
 `.orchestrator/queue.json` holds `{id, goal, status: pending|running|done|failed, note?}` (`note` explains a wait, shown in the UI queue). On start, `loop` resets items left `running` by a crash or Stop to `pending`. It picks the first pending item, runs it, then re-reads the queue before writing the result, so goals added meanwhile are kept. SIGINT finishes the current goal and exits. `loop` refuses `--dry-run`, since a planned-only goal would stay pending forever.
@@ -196,7 +211,16 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `usage_limit` | message, resetAt? (epoch ms) |
 | `goal_end` | passed, cost, error?, usageLimit?, resetAt? |
 | `waiting` | reason (`usage_limit` between goals, or `usage_cap` before an agent call, with `window`), until |
+| `group_start` | group, goal, repos[] ({path, role}): `orch group run` began |
+| `group_plan` | contract, goals ({backend?, frontend?}), cost, revised? (a fault call corrected the contract), edited? (a human edited it) |
+| `group_step` | step (`build`, `integration`, `fix`), repo? (role), round, skipped? (`no serve`), failed? (reason) |
+| `group_child` | repo (path), role, event: a member run's own event, wrapped |
+| `group_fault` | fault (`backend`, `frontend`, `both`), goals, cost, revised?: the coordinator's call after a failed integration |
+| `group_rollback` | group, parked ({role: branch or null}) |
+| `group_end` | ok, reason?, parked? ({role: branch or null}) |
 | `usage` | fiveHour?, week? (each {pct, resetsAt epoch ms}): the subscription's usage after an agent call |
+
+A group run prints the `group_*` events on stdout and each member's events wrapped in `group_child`. The backends count the cost of `group_plan` and `group_fault`, unwrap `group_child` and route the inner event to the session of that member repo while it has no run of its own; otherwise it stays wrapped in the group's session (`unwrapGroupEvent` in `server.ts`, `unwrap_group_event` in `main.rs`; `reduce.ts` folds the `group_*` events into the group's run view). Starting groups from the UI is not built yet.
 
 The UI turns some live events into desktop notifications (`notifyText.ts`: goal_end, approval_wait, question_wait, command_wait, waiting, blocked, loop_stop with reason budget; replayed events never notify), through the Tauri notification plugin in the desktop app or the browser's Notification API, when **Notify** is on and the window is not focused.
 The CLI parses complete assistant stream lines as they arrive for task activity, without changing its final result
@@ -359,6 +383,10 @@ a resource. Lookup order: `ORCH_PATH`, bundled resource, dev manifest path.
 | `~/.yaaiorch/browser/` | `orch browser install` | Chrome for Testing and `current.json` (its path), used when no browser is installed |
 | `<target>` git branches `orchestrator/checkpoint-*` | orch.ts | Rollback point of the running or last unfinished goal |
 | `<target>` git branches `orchestrator/failed-*` | orch.ts | Work of goals that failed in `loop` |
+| `~/.yaaiorch/groups/<name>.json` | orch.ts / user | A repo group: repos with roles, backend `serve`, frontend `env`, optional `contract`, `integrationRounds` |
+| `~/.yaaiorch/groups/<name>/` | orch.ts | A group's run state: `run.lock`, `stop`, `contract.md`, `context-<role>.md`, `plan-pending.json`, `plan-decision.json`, `last-run.json` |
+| `<target>/.orchestrator/contract.md` | orch.ts | The API contract of the running or last group goal, in both member repos; never committed |
+| `<target>` git branches `orchestrator/failed-group-*`, `interrupted-group-*`, `discarded-group-*` | orch.ts | Work of a failed, stopped or rolled back group goal |
 | `<app config>/repos.json` | Tauri | Open repos, the parallel limit, the daily budget and today's spending |
 | `~/.yaaiorch/ui.json` | server.ts | Same, for browser mode |
 

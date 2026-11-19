@@ -156,6 +156,56 @@ not mean the PR is approved or merged. Select a card to open its repo.
   It needs a Claude subscription login (API keys report no usage), and a call already running can go a
   little past the cap. Daily $ and the % caps can be used together.
 
+### Repo groups (backend and frontend)
+
+A group runs one goal across a backend repo and a frontend repo. Today it is CLI only (the UI shows the events
+of a group run, but cannot start one yet). Version 1 is exactly one backend and one frontend.
+
+```
+orch group add shop --repo /work/shop-api:backend --repo /work/shop-web:frontend \
+  --serve-command "npm run dev" --serve-url http://localhost:3000 --env VITE_API_URL={backend}
+orch group run shop "users can upload an avatar" [--max-cost 8] [--power heavy] [--approve-plan]
+```
+
+`orch group list [--json]`, `orch group remove NAME`, `orch group stop NAME` and `orch group rollback NAME` do what
+they say. A group is a small file, `~/.yaaiorch/groups/<name>.json`:
+
+```json
+{
+  "name": "shop",
+  "repos": [
+    { "path": "/work/shop-api", "role": "backend", "serve": { "command": "npm run dev", "url": "http://localhost:3000" } },
+    { "path": "/work/shop-web", "role": "frontend", "env": { "VITE_API_URL": "{backend}" } }
+  ],
+  "integrationRounds": 2
+}
+```
+
+- `serve` (backend) says how to start the backend for the integration step: `command`, a local `url`, optional
+  `baseUrl` (what the frontend should call, default the origin of `url`) and `timeout`. Without it the backend repo's
+  own `.orchestrator/config.json` `serve` is used; with neither, integration is skipped with a warning. URLs must be local.
+- `env` (frontend): environment variables for everything the frontend's runs start. `{backend}` becomes the
+  backend's base URL. Names are plain `NAME` identifiers; values are not secrets.
+- `contract` (optional): text of a standing API contract the coordinator keeps and extends.
+
+What a run does:
+
+1. A coordinator agent reads both repos and writes an API contract and one goal per repo
+   (`.orchestrator/contract.md` in both repos; with `--approve-plan`, answer with `orch approve --group NAME`).
+2. Both repos build in parallel, each as its own `orch run` with the contract, the other repo readable (never writable)
+   and `--strict-files`. The repo's own `branch`, `pr`, `approvePlan`, `worktrees` and `ask` settings are ignored in a group.
+3. The backend is started in its repo (a server already answering at the URL is used as is), and the frontend is
+   checked against it in the browser. On a failure the coordinator says which side is at fault, only that side gets a
+   fix goal, and integration runs again, up to `integrationRounds` (default 2).
+4. Pass: each repo keeps its commits on its current branch. Failure: each repo's work is parked on
+   `orchestrator/failed-group-*` and the repo is reset to where it started; stop parks as `interrupted-group-*`.
+
+`--max-cost` is split over the steps (60% for the build, the rest for integration and fixes). A usage limit parks the
+work as interrupted and exits with code 3; groups do not wait and resume yet. `orch group rollback NAME` undoes the
+last passed group goal in both repos (everything after the start commit goes to `orchestrator/discarded-group-*`,
+including commits you made since; it says so). It refuses a failed or already rolled back run, and checks both repos
+before it resets either. No pull requests: the result is commits on the local branches.
+
 ### Desktop app
 
 ```bash
