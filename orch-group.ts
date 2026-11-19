@@ -155,3 +155,16 @@ export function groupEnv(g: GroupConfig): Record<string, string> {
   for (const [k, v] of Object.entries(memberOf(g, "frontend").env ?? {})) out[k] = base === undefined ? v : v.split("{backend}").join(base);
   return out;
 }
+
+/**
+ * What a member run's agents are told about the group (written by the group to a file, passed as --group-context):
+ * the other repos, read-only, and the API contract both sides build against.
+ */
+export function groupSection(contract: string, others: { role: string; path: string }[]): string {
+  return (
+    `## Repo group\nThis repo is part of a group: one goal is built across several repos at once, against the API contract below. ` +
+    `Build only this repo's part. Other repos (read-only, never write there; read them where the contract leaves something open):\n` +
+    others.map((r) => `- ${r.role}: ${r.path}`).join("\n") +
+    `\n\n## API contract\n${contract.trim()}\n`
+  );
+}

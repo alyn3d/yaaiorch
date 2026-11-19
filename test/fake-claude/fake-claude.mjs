@@ -9,7 +9,9 @@
 //                                      (the fast path's `dev` agent writes src/direct.txt instead)
 //
 // Switches (environment):
-//   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap
+//   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap,
+//                            and "adddirs=<a|b>" at the end when --add-dir was given
+//   FAKE_PROMPTS=<dir>       write each call's prompt to <dir>/<time>-<pid>-<random>-<agent>.txt
 //   FAKE_QA=pass|fail|fail-once|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts;
 //                            fail-once fails the first verdict in the repo, then passes
 //   FAKE_TRANSIENT_ONCE=<agent>  that agent's first call fails with "API Error: 529 ... overloaded_error"
@@ -107,7 +109,17 @@ if (agentsFile) {
     process.exit(1);
   }
 }
-log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap} builtin=${Boolean(agentsFile)}`);
+const addDirs = args.flatMap((a, i) => (a === "--add-dir" && i + 1 < args.length ? [args[i + 1]] : []));
+log(
+  `call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap} builtin=${Boolean(agentsFile)}` +
+    (addDirs.length ? ` adddirs=${addDirs.join("|")}` : ""),
+);
+if (env.FAKE_PROMPTS) {
+  // pid + time + a random tail: unique across parallel implementers without a shared counter.
+  mkdirSync(env.FAKE_PROMPTS, { recursive: true });
+  const n = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  writeFileSync(`${env.FAKE_PROMPTS}/${n}-${agent ?? "x"}.txt`, prompt);
+}
 if (env.FAKE_ACTIVITY?.split(",").includes(agent)) {
   const content = [
     { type: "tool_use", name: "Read", input: { file_path: env.FAKE_ACTIVITY_SECRET } },

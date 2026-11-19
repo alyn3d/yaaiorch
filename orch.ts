@@ -30,6 +30,7 @@ import { BUILTIN_AGENTS } from "./orch-agents";
 import {
   backendBaseUrl,
   groupEnv,
+  groupSection,
   groupsDir,
   listGroups,
   memberOf,
@@ -844,12 +845,29 @@ function loadChecks(cfg: Config): Record<string, string> {
  * they may not. Read-only roles also deny the edit tools and run in permission mode "default", where
  * shell commands that write files are refused too (acceptEdits would let `echo > file` through).
  */
-function writeAgentSettings(cfg: Config, checks: Record<string, string>, plugins: PluginChoice) {
+function writeAgentSettings(cfg: Config, checks: Record<string, string>, plugins: PluginChoice, readDirs: string[] = []) {
   const cmds = [...Object.values(checks), ...(checks.test ? ["npm test"] : []), "git status", "git diff", "git log", "git show"];
   const allow = [...cmds.flatMap((c) => [`Bash(${c}:*)`, `PowerShell(${c}:*)`]), ...(cfg.allow ?? [])];
   const extra = pluginSettings(plugins);
-  writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow }, ...extra }, null, 2));
-  writeFileSync(READONLY_SETTINGS, JSON.stringify({ permissions: { allow, deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] }, ...extra }, null, 2));
+  const denyRead = readDenyRules(readDirs);
+  writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow, ...(denyRead.length ? { deny: denyRead } : {}) }, ...extra }, null, 2));
+  writeFileSync(
+    READONLY_SETTINGS,
+    JSON.stringify({ permissions: { allow, deny: ["Edit", "Write", "MultiEdit", "NotebookEdit", ...denyRead] }, ...extra }, null, 2),
+  );
+}
+
+/**
+ * Deny rules that keep agents from changing a --read-dir (another repo of a group). `//` starts an absolute path in a
+ * permission rule, and on Windows Claude Code matches paths in POSIX form (C:\a\b as /c/a/b). The Edit rule covers every
+ * built-in tool that edits files and shell redirections; the Write, MultiEdit and NotebookEdit ones are belt and braces.
+ */
+function readDenyRules(dirs: string[]): string[] {
+  return dirs.flatMap((d) => {
+    const m = /^([A-Za-z]):[\\/]*(.*)$/.exec(d);
+    const p = (m ? `/${m[1].toLowerCase()}/${m[2]}` : d).replace(/\\/g, "/").replace(/\/+$/, "");
+    return ["Edit", "Write", "MultiEdit", "NotebookEdit"].map((t) => `${t}(/${p}/**)`);
+  });
 }
 
 // ---------- plugins: which of the user's Claude Code plugins and hooks the agents get ----------
@@ -903,7 +921,7 @@ function pluginSettings(c: PluginChoice): { enabledPlugins?: Record<string, fals
   };
 }
 
-function parsePlugins(values: Record<string, string | boolean | undefined>, cfg: Config["plugins"]): PluginChoice {
+function parsePlugins(values: Record<string, string | boolean | string[] | undefined>, cfg: Config["plugins"]): PluginChoice {
   const mode = String(values.plugins ?? (cfg?.off ? "off" : "on"));
   if (mode !== "on" && mode !== "off") throw new Error(`--plugins must be on or off, got "${mode}"`);
   const fromCli =
@@ -1110,6 +1128,10 @@ type RunCtx = {
   questionRound?: number;
   /** --commands: implementers' shell commands go to Agent M, waiting this long for an answer. */
   commandTimeoutMs?: number;
+  /** --read-dir: other repos of a group, readable by every agent (--add-dir), never writable (writeAgentSettings). */
+  addDirs?: string[];
+  /** --group-context: the group section (other repos, API contract) for the architect; implementers and QA get it in repoContext. */
+  groupContext?: string;
 };
 
 // ---------- subscription usage: read from the CLI's rate_limit_event (stream-json) ----------
@@ -2127,6 +2149,8 @@ async function runOnce(
       ...(permit ? ["--mcp-config", permit.arg, "--permission-prompt-tool", PERMIT_TOOL] : []),
       ...(agent.builtin ? ["--agents", BUILTIN_FILE] : []),
       ...(existsSync(AGENT_SETTINGS) ? ["--settings", readOnly ? READONLY_SETTINGS : AGENT_SETTINGS] : []),
+      // Not through cmd.exe (a path could read as shell syntax there): the other repos are then only named in the prompt.
+      ...(claudeBin().shell ? [] : (ctx.addDirs ?? []).flatMap((d) => ["--add-dir", d])),
       "--agent",
       agent.runAs ?? agent.name,
       "--model",
@@ -3237,6 +3261,10 @@ type Opts = {
   intake: IntakeSource[];
   /** Paths no task may change (default: .github/workflows/). */
   protect: string[];
+  /** --group-context: the file's text (other repos of the group, API contract), for architect, implementers and QA. */
+  groupContext?: string;
+  /** --read-dir: other repos of a group; agents may read them (--add-dir), never write there. Resolved, real paths. */
+  readDirs: string[];
   /** Refuse to commit known key formats, private keys and .env files. */
   secretScan: boolean;
   /** Comment on the GitHub issue a goal came from (start, done, failed, blocked). */
@@ -3357,6 +3385,7 @@ async function makePlan(
         : "") +
     (notes ? `\nNotes from earlier goals in this repo (pitfalls and decisions; follow them unless this goal says otherwise):\n${notes}\n` : "") +
     specForPrompt() +
+    (ctx.groupContext ? `\n${ctx.groupContext}\n` : "") +
     VISUAL_HINT +
     (previous ? `\n${previous}\n` : "") +
     (failures.length ? `\nPrevious QA failures to fix:\n- ${failures.join("\n- ")}\n` : "") +
@@ -3899,7 +3928,7 @@ function acceptSplit(brief: string, goals: SplitGoal[]): number[] {
 }
 
 /** A brief from --brief-file (deleted afterwards with --brief-file-temp, as the UI's backends pass it) or the words. */
-function briefFrom(values: Record<string, string | boolean | undefined>, words: string[]): string {
+function briefFrom(values: Record<string, string | boolean | string[] | undefined>, words: string[]): string {
   const file = values["brief-file"] ?? values["spec-file"];
   if (!file) return words.join(" ");
   const text = readFileSync(String(file), "utf8");
@@ -3912,7 +3941,7 @@ function briefFrom(values: Record<string, string | boolean | undefined>, words: 
  * edits it); `--accept` queues goals given on stdin as {brief, goals}; neither: both at once. `--start` then runs the
  * loop until the queue is empty.
  */
-async function split(values: Record<string, string | boolean | undefined>, words: string[]) {
+async function split(values: Record<string, string | boolean | string[] | undefined>, words: string[]) {
   const o = { ...parseOpts(values), park: true };
   if (values.accept) {
     const input = JSON.parse(readFileSync(0, "utf8")) as { brief?: unknown; goals?: unknown };
@@ -4077,7 +4106,7 @@ async function awaitDecision(goal: string, round: number, plan: Plan, error?: st
 }
 
 /** `orch approve`: answer the waiting plan. Checks an edited plan here, so a mistake is reported at once. */
-function approve(values: Record<string, string | boolean | undefined>) {
+function approve(values: Record<string, string | boolean | string[] | undefined>) {
   if (!existsSync(PLAN_PENDING)) throw new Error("no plan is waiting for approval in this repo");
   const pending = JSON.parse(readFileSync(PLAN_PENDING, "utf8")) as { round: number };
   const d: Decision = { round: pending.round, action: values.reject !== undefined ? "reject" : "approve" };
@@ -4270,14 +4299,14 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const skills = discoverSkills();
   writeBuiltins(roster);
   let checks = loadChecks(cfg);
-  writeAgentSettings(cfg, checks, o.plugins);
+  writeAgentSettings(cfg, checks, o.plugins, o.readDirs);
   const browserCheck = visualSetup(cfg, o);
   /** Checks come from package.json too, which the agents may create or change: read them again each round. */
   const refreshChecks = () => {
     const next = loadChecks(cfg);
     if (JSON.stringify(next) === JSON.stringify(checks)) return;
     checks = next;
-    writeAgentSettings(cfg, checks, o.plugins);
+    writeAgentSettings(cfg, checks, o.plugins, o.readDirs);
     console.log(
       `checks now: ${
         Object.entries(checks)
@@ -4318,6 +4347,9 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   ctx.resume = o.resume;
   ctx.ask = o.ask;
   ctx.commandTimeoutMs = o.commandTimeoutMs || undefined;
+  // A group's member run: the other repos are readable, and the architect sees the group section (others get it in repoContext).
+  if (o.readDirs.length) ctx.addDirs = o.readDirs;
+  if (o.groupContext) ctx.groupContext = o.groupContext;
 
   for (let round = 1; round <= o.maxRounds; round++) {
     ctx.questionRound = round;
@@ -4426,7 +4458,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       (cfg.setup
         ? `## Dependencies\nNever install packages yourself. To add one, add it to the manifest (package.json, requirements.txt, ` +
           `pyproject.toml, go.mod, ...); the orchestrator runs \`${cfg.setup}\` before the checks.\n\n`
-        : "");
+        : "") +
+      (o.groupContext ? `${o.groupContext}\n\n` : "");
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
     const planTokens = tokenUsageDelta(ctx.budget.tokens, planTokensBefore);
     emit("plan", {
@@ -5253,7 +5286,7 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
   }
 }
 
-function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
+function parseOpts(values: Record<string, string | boolean | string[] | undefined>): Opts {
   const maxRounds = Number(values["max-rounds"]);
   if (!Number.isInteger(maxRounds) || maxRounds < 1) throw new Error(`--max-rounds must be a whole number of at least 1, got "${values["max-rounds"]}"`);
   const power = String(values.power);
@@ -5326,6 +5359,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const fast = values["no-fast"] ? false : values.fast ? true : cfg.fast !== undefined ? cfg.fast === true : !(approvePlan || critic || values["dry-run"]);
   const retries = Number(values.retries ?? cfg.retries ?? 1);
   if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
+  const { groupContext, readDirs } = memberFlags(values);
   return {
     maxRounds,
     power: power as Power,
@@ -5360,7 +5394,44 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     visual,
     strictFiles,
     maxCostTotal,
+    ...(groupContext ? { groupContext } : {}),
+    readDirs,
   };
+}
+
+/** A group's member run: --group-context names a readable file, each --read-dir an existing directory other than this repo. */
+function memberFlags(values: Record<string, string | boolean | string[] | undefined>): { groupContext?: string; readDirs: string[] } {
+  const file = values["group-context"];
+  let groupContext = "";
+  if (typeof file === "string") {
+    try {
+      groupContext = readFileSync(file, "utf8").trim();
+    } catch (e) {
+      throw new Error(`--group-context: cannot read "${file}" (${msg(e)})`, { cause: e });
+    }
+  }
+  const raw = values["read-dir"];
+  const here = realpathSync.native(process.cwd());
+  const same = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
+  const readDirs: string[] = [];
+  for (const d of Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []) {
+    let real: string;
+    try {
+      real = realpathSync.native(resolve(d));
+    } catch {
+      throw new Error(`--read-dir: "${d}" does not exist`);
+    }
+    if (!statSync(real).isDirectory()) throw new Error(`--read-dir: "${d}" is not a directory`);
+    if (same(real, here)) throw new Error(`--read-dir: "${d}" is this repo itself`);
+    // Its deny rules would cover this repo too (or the other way round): only a separate directory makes sense.
+    const inside = (a: string, b: string) => {
+      const r = relative(process.platform === "win32" ? b.toLowerCase() : b, process.platform === "win32" ? a.toLowerCase() : a);
+      return !!r && !r.startsWith("..") && !isAbsolute(r);
+    };
+    if (inside(here, real) || inside(real, here)) throw new Error(`--read-dir: "${d}" contains this repo or lies inside it`);
+    if (!readDirs.some((x) => same(x, real))) readDirs.push(real);
+  }
+  return { ...(groupContext ? { groupContext } : {}), readDirs };
 }
 
 type GroupFlags = { repo?: string[]; env?: string[]; json?: boolean; "serve-command"?: string; "serve-url"?: string; "base-url"?: string };
@@ -5483,6 +5554,8 @@ async function main() {
       "serve-url": { type: "string" },
       "base-url": { type: "string" },
       env: { type: "string", multiple: true },
+      "group-context": { type: "string" },
+      "read-dir": { type: "string", multiple: true },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -5739,6 +5812,8 @@ export {
   backendBaseUrl,
   groupEnv,
   groupsDir,
+  groupSection,
+  readDenyRules,
   acquireRunLock,
   releaseRunLock,
 };

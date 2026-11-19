@@ -4,9 +4,9 @@ import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { spawnSync, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -253,6 +253,164 @@ describe("run lock held by a group", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(`${dir}.fake.log`, { force: true });
+    }
+  });
+});
+
+describe("member run flags", () => {
+  const FAKE = join(root, "test", "fake-claude", process.platform === "win32" ? "claude.cmd" : "claude");
+  const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  /** The absolute form of a deny rule's path, as Claude Code matches it (Windows: C:\a\b is /c/a/b). */
+  const rulePath = (p) => {
+    const m = /^([A-Za-z]):[\\/](.*)$/.exec(p);
+    return m ? `/${m[1].toLowerCase()}/${m[2].replace(/\\/g, "/")}` : p;
+  };
+
+  test("groupSection names the other repos with their roles and carries the contract", () => {
+    const s = o.groupSection("GET /items -> Item[]", [{ role: "backend", path: "/x/be" }]);
+    assert.match(s, /part of a group/);
+    assert.match(s, /backend: \/x\/be/);
+    assert.match(s, /read-only/);
+    assert.match(s, /## API contract\nGET \/items -> Item\[\]/);
+    const two = o.groupSection("c", [
+      { role: "backend", path: "/x/be" },
+      { role: "frontend", path: "/x/fe" },
+    ]);
+    assert.match(two, /backend: \/x\/be/);
+    assert.match(two, /frontend: \/x\/fe/);
+  });
+
+  test("readDenyRules: Edit and the other edit tools on the absolute path", () => {
+    const rules = o.readDenyRules([process.platform === "win32" ? "D:\\a b\\fe" : "/a b/fe"]);
+    const p = process.platform === "win32" ? "/d/a b/fe" : "/a b/fe";
+    assert.deepEqual(rules, [`Edit(/${p}/**)`, `Write(/${p}/**)`, `MultiEdit(/${p}/**)`, `NotebookEdit(/${p}/**)`]);
+    assert.deepEqual(o.readDenyRules([]), []);
+  });
+
+  test("--group-context and --read-dir reach architect, implementers and QA", () => {
+    const dir = tmp();
+    const other = tmp();
+    const prompts = tmp();
+    const ctxFile = join(other, "group-context.md");
+    try {
+      git(dir, "init", "-q", "-b", "main");
+      git(dir, "config", "user.name", "test");
+      git(dir, "config", "user.email", "test@localhost");
+      git(dir, "config", "core.autocrlf", "false");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "init");
+      writeFileSync(ctxFile, "## API contract\nCONTRACT-MARKER\n");
+      const log = `${dir}.fake.log`;
+      const r = spawnSync(process.execPath, [TSX, ORCH, "run", "x", "--max-rounds", "1", "--no-fast", "--group-context", ctxFile, "--read-dir", other], {
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 120_000,
+        env: { ...process.env, ORCH_NO_MAIN: "", CLAUDE_BIN: FAKE, FAKE_QA: "pass", FAKE_LOG: log, FAKE_PROMPTS: prompts, FORCE_COLOR: "0" },
+      });
+      assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+      const real = realpathSync.native(other);
+      const calls = readFileSync(log, "utf8")
+        .split("\n")
+        .filter((l) => l.startsWith("call "));
+      assert.ok(calls.length >= 4, calls.join("\n"));
+      for (const c of calls) assert.ok(c.endsWith(` adddirs=${real}`), c);
+      const settings = JSON.parse(readFileSync(join(dir, ".orchestrator", "agent-settings.json"), "utf8"));
+      assert.ok(settings.permissions.deny.includes(`Edit(/${rulePath(real)}/**)`), JSON.stringify(settings));
+      const readonly = JSON.parse(readFileSync(join(dir, ".orchestrator", "readonly-settings.json"), "utf8"));
+      assert.ok(readonly.permissions.deny.includes("Edit"));
+      assert.ok(readonly.permissions.deny.includes(`Edit(/${rulePath(real)}/**)`), JSON.stringify(readonly));
+      const files = readdirSync(prompts);
+      const roles = new Set();
+      for (const f of files) {
+        const role = /-([a-z]+)\.txt$/.exec(f)[1];
+        roles.add(role);
+        assert.match(readFileSync(join(prompts, f), "utf8"), /CONTRACT-MARKER/, `${role}'s prompt lacks the contract`);
+      }
+      for (const role of ["architect", "fe", "be", "qa"]) assert.ok(roles.has(role), `no ${role} prompt in ${files.join(", ")}`);
+    } finally {
+      for (const d of [dir, other, prompts]) rmSync(d, { recursive: true, force: true });
+      rmSync(`${dir}.fake.log`, { force: true });
+    }
+  });
+
+  test("the fast path's dev agent gets the group context too", () => {
+    const dir = tmp();
+    const prompts = tmp();
+    const ctxFile = join(prompts, "..", `${basename(prompts)}.md`);
+    try {
+      git(dir, "init", "-q", "-b", "main");
+      git(dir, "config", "user.name", "test");
+      git(dir, "config", "user.email", "test@localhost");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "init");
+      writeFileSync(ctxFile, "CONTRACT-MARKER");
+      const r = spawnSync(process.execPath, [TSX, ORCH, "run", "x", "--max-rounds", "1", "--fast", "--group-context", ctxFile], {
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 120_000,
+        env: { ...process.env, ORCH_NO_MAIN: "", CLAUDE_BIN: FAKE, FAKE_QA: "pass", FAKE_PROMPTS: prompts, FORCE_COLOR: "0" },
+      });
+      assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+      const dev = readdirSync(prompts).filter((f) => f.endsWith("-dev.txt"));
+      assert.ok(dev.length, readdirSync(prompts).join(", "));
+      for (const f of dev) assert.match(readFileSync(join(prompts, f), "utf8"), /CONTRACT-MARKER/);
+    } finally {
+      for (const d of [dir, prompts]) rmSync(d, { recursive: true, force: true });
+      rmSync(ctxFile, { force: true });
+    }
+  });
+
+  test("a plain run has no add-dir and no deny rules in agent-settings.json", () => {
+    const dir = tmp();
+    try {
+      git(dir, "init", "-q", "-b", "main");
+      git(dir, "config", "user.name", "test");
+      git(dir, "config", "user.email", "test@localhost");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "init");
+      const log = `${dir}.fake.log`;
+      const r = spawnSync(process.execPath, [TSX, ORCH, "run", "x", "--max-rounds", "1", "--no-fast"], {
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 120_000,
+        env: { ...process.env, ORCH_NO_MAIN: "", CLAUDE_BIN: FAKE, FAKE_QA: "pass", FAKE_LOG: log, FORCE_COLOR: "0" },
+      });
+      assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+      assert.doesNotMatch(readFileSync(log, "utf8"), /adddirs=/);
+      const settings = JSON.parse(readFileSync(join(dir, ".orchestrator", "agent-settings.json"), "utf8"));
+      assert.equal(settings.permissions.deny, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(`${dir}.fake.log`, { force: true });
+    }
+  });
+
+  test("--read-dir must be an existing directory other than the repo", () => {
+    const dir = tmp();
+    try {
+      git(dir, "init", "-q", "-b", "main");
+      const run = (...a) =>
+        spawnSync(process.execPath, [TSX, ORCH, "run", "x", ...a], {
+          cwd: dir,
+          encoding: "utf8",
+          timeout: 60_000,
+          env: { ...process.env, ORCH_NO_MAIN: "", CLAUDE_BIN: FAKE, FORCE_COLOR: "0" },
+        });
+      const missing = run("--read-dir", join(dir, "nope"));
+      assert.notEqual(missing.status, 0);
+      assert.match(missing.stderr, /--read-dir: .* does not exist/);
+      const self = run("--read-dir", dir);
+      assert.notEqual(self.status, 0);
+      assert.match(self.stderr, /--read-dir: .* is this repo itself/);
+      const parent = run("--read-dir", dirname(dir));
+      assert.notEqual(parent.status, 0);
+      assert.match(parent.stderr, /--read-dir: .* contains this repo/);
+      mkdirSync(join(dir, "sub"));
+      const sub = run("--read-dir", join(dir, "sub"));
+      assert.notEqual(sub.status, 0);
+      assert.match(sub.stderr, /--read-dir: .* inside it/);
+      const noCtx = run("--group-context", join(dir, "nope.md"));
+      assert.notEqual(noCtx.status, 0);
+      assert.match(noCtx.stderr, /--group-context: cannot read/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
