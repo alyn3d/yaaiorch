@@ -655,6 +655,20 @@ describe("orch group-member coordinate", () => {
     }
   });
 
+  test("stdout is exactly one {reply, cost} line even with ORCH_EVENTS=1 and a usage reading", () => {
+    const s = setup();
+    try {
+      const r = coordinate(s, "plan", { goal: "g", briefs: {} }, { ORCH_EVENTS: "1", FAKE_USAGE: "0.5,0.2" });
+      assert.equal(r.code, 0, r.out);
+      const lines = r.stdout.trim().split(String.fromCharCode(10));
+      assert.equal(lines.length, 1, r.stdout);
+      assert.deepEqual(Object.keys(JSON.parse(lines[0])).sort(), ["cost", "reply"]);
+      assert.doesNotMatch(r.stdout, /@@ORCH@@/);
+    } finally {
+      rmSync(s.home, { recursive: true, force: true });
+    }
+  });
+
   test("needs the group lock, a known group and a mode", () => {
     const s = setup();
     try {

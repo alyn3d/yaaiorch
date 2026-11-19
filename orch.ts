@@ -2772,8 +2772,19 @@ ${dirty}`);
     case "drop":
       git("branch", "-D", checkpoint(a));
       return out({});
-    case "coordinate":
-      return out(await coordinate(a, values));
+    case "coordinate": {
+      // stdout carries exactly one JSON line: events (ORCH_EVENTS) are off and any other log line goes to stderr.
+      delete process.env.ORCH_EVENTS;
+      const log = console.log;
+      console.log = console.error;
+      let result;
+      try {
+        result = await coordinate(a, values);
+      } finally {
+        console.log = log;
+      }
+      return out(result);
+    }
     default:
       throw new Error(
         "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint> | drop <checkpoint> | coordinate <plan|fault> --group <name>",
