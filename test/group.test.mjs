@@ -190,6 +190,36 @@ describe("run lock held by a group", () => {
       assert.equal(existsSync(lockFile(dir)), false);
     }));
 
+  test("releaseRunLock drops the heartbeat and exit listener of that lock", () => {
+    const dir = repo();
+    try {
+      const before = process.listenerCount("exit");
+      for (let i = 0; i < 12; i++) {
+        const id = o.acquireRunLock("group", dir);
+        assert.equal(process.listenerCount("exit"), before + 1);
+        o.releaseRunLock(id, dir);
+        assert.equal(process.listenerCount("exit"), before, "release must remove the lock's exit listener");
+        assert.equal(existsSync(lockFile(dir)), false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a refused inherited start creates no .orchestrator dir", () => {
+    const dir = repo();
+    const prev = process.env.ORCH_GROUP_LOCK;
+    process.env.ORCH_GROUP_LOCK = "nothing-held";
+    try {
+      assert.throws(() => o.acquireRunLock("group", dir), /group lock mismatch/);
+      assert.equal(existsSync(join(dir, ".orchestrator")), false);
+    } finally {
+      if (prev === undefined) delete process.env.ORCH_GROUP_LOCK;
+      else process.env.ORCH_GROUP_LOCK = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("plain run refused while group holds the lock", () =>
     withLock((dir) => {
       const r = orchRun(dir);

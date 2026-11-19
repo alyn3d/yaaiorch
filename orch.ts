@@ -413,7 +413,6 @@ const LOCK_STALE_MS = 2 * 60_000;
 function acquireRunLock(cmd: string, root = process.cwd()): string {
   const atCwd = resolve(root) === resolve(process.cwd());
   const lockFile = atCwd ? RUN_LOCK : join(root, DIR, "run.lock");
-  mkdirSync(dirname(lockFile), { recursive: true });
   const inherited = process.env.ORCH_GROUP_LOCK;
   if (inherited) {
     let held: Partial<LockInfo> = {};
@@ -429,6 +428,7 @@ function acquireRunLock(cmd: string, root = process.cwd()): string {
     }
     return inherited;
   }
+  mkdirSync(dirname(lockFile), { recursive: true });
   const me: LockInfo = {
     pid: process.pid,
     host: hostname(),
@@ -473,22 +473,31 @@ function acquireRunLock(cmd: string, root = process.cwd()): string {
   if (atCwd) clearRunLeftovers();
   const beat = setInterval(() => {
     try {
-      utimesSync(lockFile, new Date(), new Date());
+      // Never keep someone else's lock fresh (ours was removed by hand and taken by another run).
+      if ((JSON.parse(readFileSync(lockFile, "utf8")) as LockInfo).id === me.id) utimesSync(lockFile, new Date(), new Date());
     } catch {
       /* lock removed by hand: nothing to touch */
     }
   }, 30_000);
   beat.unref();
-  process.on("exit", () => {
-    clearInterval(beat);
-    releaseRunLock(me.id, root);
-  });
+  const onExit = () => releaseRunLock(me.id, root);
+  heldLocks.set(me.id, { beat, onExit });
+  process.on("exit", onExit);
   if (atCwd) exitOnSignals(cmd);
   return me.id;
 }
 
-/** Delete the run lock at root, but only if it is still the one with this id. */
+/** Locks this process holds: their heartbeat and exit listener, dropped by releaseRunLock. */
+const heldLocks = new Map<string, { beat: NodeJS.Timeout; onExit: () => void }>();
+
+/** Delete the run lock at root, but only if it is still the one with this id; stop its heartbeat either way. */
 function releaseRunLock(id: string, root: string) {
+  const held = heldLocks.get(id);
+  if (held) {
+    heldLocks.delete(id);
+    clearInterval(held.beat);
+    process.off("exit", held.onExit);
+  }
   const lockFile = join(root, DIR, "run.lock");
   try {
     if ((JSON.parse(readFileSync(lockFile, "utf8")) as LockInfo).id === id) unlinkSync(lockFile);
