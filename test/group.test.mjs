@@ -863,7 +863,7 @@ describe("orch group run", { timeout: 600_000 }, () => {
   const group = (s, args, env = {}) => {
     const r = spawnSync(process.execPath, [TSX, ORCH, "group", ...args], { cwd: s.home, encoding: "utf8", timeout: 240_000, env: envFor(s, env) });
     const events = parse(r.stdout ?? "");
-    return { code: r.status, out: `${r.stdout}${r.stderr}`, events, ev: (t) => events.filter((e) => e.type === t) };
+    return { code: r.status, out: `${r.stdout}${r.stderr}`, stdout: r.stdout ?? "", events, ev: (t) => events.filter((e) => e.type === t) };
   };
   const groupAsync = (s, args, env = {}) => {
     const child = spawn(process.execPath, [TSX, ORCH, "group", ...args], { cwd: s.home, env: envFor(s, env) });
@@ -983,6 +983,45 @@ describe("orch group run", { timeout: 600_000 }, () => {
       assert.deepEqual(locks(s), []);
       assert.equal(JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8")).ok, false);
     } finally {
+      clean(s);
+    }
+  });
+
+  test("a park that fails keeps the group checkpoint, says so in group_end and last-run.json, and rollback recovers it", () => {
+    const s = setup();
+    const lock = join(s.fe, ".git", "index.lock");
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--no-fast", "--max-rounds", "1"], { FAKE_FAIL_AGENT: "be", FAKE_LOCK_REPO: s.fe });
+      assert.equal(r.code, 1, r.out);
+      assert.ok(existsSync(lock), "the fake left the lock");
+      const end = r.ev("group_end").at(-1);
+      assert.equal(end.ok, false);
+      assert.match(end.kept.frontend, /^orchestrator\/group-checkpoint-/, JSON.stringify(end));
+      assert.equal(end.kept.backend, undefined);
+      assert.equal(end.parked.frontend, undefined, "a failed park is not 'nothing to park'");
+      assert.match(end.parked.backend, /^orchestrator\/failed-group-/);
+      assert.match(r.stdout, /orch group rollback shop/, "the recovery command is on stdout");
+      const last = JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8"));
+      assert.deepEqual(last.kept, end.kept);
+      assert.ok(branches(s.fe).includes(end.kept.frontend));
+
+      rmSync(lock);
+      const back = group(s, ["rollback", "shop"]);
+      assert.equal(back.code, 0, back.out);
+      assert.equal(head(s.fe), s.heads.fe);
+      assert.equal(head(s.be), s.heads.be, "the parked backend stays as it was");
+      assert.deepEqual(
+        branches(s.fe).filter((b) => /checkpoint/.test(b)),
+        [],
+      );
+      assert.ok(
+        branches(s.fe).some((b) => b.startsWith("orchestrator/discarded-group-")),
+        branches(s.fe).join(", "),
+      );
+      assert.equal(JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8")).rolledBack, true);
+      assert.deepEqual(locks(s), []);
+    } finally {
+      rmSync(lock, { force: true });
       clean(s);
     }
   });
@@ -1518,6 +1557,39 @@ describe("orch group rollback", { timeout: 600_000 }, () => {
       assert.match(r.out, /frontend: .*2 commit\(s\)/);
       assert.match(r.out, /made after the group run/i);
       assert.equal(git(s.fe, "rev-parse", "HEAD"), s.heads.fe);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("a run that never finished (hard kill): rollback resets each repo to its group checkpoint, dirty or not", () => {
+    const s = setup();
+    try {
+      const stamp = "20261119-000000-abcd";
+      mkdirSync(s.gdir, { recursive: true });
+      const started = { goal: "g", stamp, checkpoints: { backend: s.heads.be, frontend: s.heads.fe }, started: 1 };
+      writeFileSync(join(s.gdir, "last-run.json"), JSON.stringify(started));
+      // Without its checkpoint branches there is nothing to go back to.
+      const nothing = group(s, ["rollback", "shop"]);
+      assert.equal(nothing.code, 1, nothing.out);
+      assert.match(nothing.out, /nothing to roll back/);
+      for (const dir of [s.be, s.fe]) git(dir, "branch", `orchestrator/group-checkpoint-${stamp}`);
+      writeFileSync(join(s.be, "half.txt"), "committed half way");
+      git(s.be, "add", "half.txt");
+      git(s.be, "commit", "-q", "-m", "half");
+      writeFileSync(join(s.fe, "stray.txt"), "uncommitted when the run died");
+      const r = group(s, ["rollback", "shop"]);
+      assert.equal(r.code, 0, r.out);
+      for (const [dir, start] of [
+        [s.be, s.heads.be],
+        [s.fe, s.heads.fe],
+      ]) {
+        assert.equal(git(dir, "rev-parse", "HEAD"), start);
+        assert.equal(git(dir, "status", "--porcelain"), "");
+        assert.deepEqual(discarded(dir), [`orchestrator/discarded-group-${stamp}`]);
+        assert.equal(git(dir, "branch", "--list", "orchestrator/group-checkpoint-*"), "");
+      }
+      assert.equal(lastRun(s).rolledBack, true);
     } finally {
       clean(s);
     }

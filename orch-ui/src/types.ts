@@ -185,12 +185,16 @@ export type GroupView = {
   round?: number;
   skipped?: string;
   failed?: string;
+  /** Integration ran against a backend the group did not start (no serve command). */
+  external?: boolean;
   /** The latest `group_fault`: who the coordinator blamed for a failed integration and their fix goals. */
   fault?: { side: GroupRole | "both"; goals: Partial<Record<GroupRole, string>> };
   /** `group_end`: ok, why it failed, and where each member's work was parked (null: nothing to park). */
   ok?: boolean;
   reason?: string;
   parked?: Partial<Record<GroupRole, string | null>>;
+  /** `group_end`: members whose park failed; their group checkpoint is kept and `orch group rollback` resets them to it. */
+  kept?: Partial<Record<GroupRole, string>>;
   /** `group_rollback`: the members were reset to the run's start; their later work is on these branches. */
   rolledBack?: boolean;
   rolledBackParked?: Partial<Record<GroupRole, string | null>>;

@@ -921,7 +921,10 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     // A wrapped child goal_start must not drop the group (fallback: no session for that repo).
     run = reduce(run, { type: "group_child", repo: "/r/api", role: "backend", t: 5, event: { type: "goal_start", goal: "b", maxRounds: 2, t: 5 } });
     assert.equal(run.group.name, "shop");
+    run = reduce(run, { type: "group_step", step: "integration", repo: "frontend", round: 1, external: true, t: 6 });
+    assert.equal(run.group.external, true);
     run = reduce(run, { type: "group_step", step: "integration", round: 1, failed: "the backend did not come up", t: 6 });
+    assert.equal(run.group.external, undefined, "external does not linger from the step before");
     assert.equal(run.group.step, "integration");
     assert.equal(run.group.stepRepo, undefined);
     assert.equal(run.group.failed, "the backend did not come up");
@@ -930,7 +933,15 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     assert.deepEqual(run.group.fault, { side: "frontend", goals: { frontend: "fix" } });
     assert.equal(run.group.contract, "POST /orders v2");
     assert.deepEqual(run.group.goals, { backend: "b", frontend: "f" }, "a revised contract keeps the plan's goals");
-    run = reduce(run, { type: "group_end", ok: false, reason: "integration failed", parked: { backend: "orchestrator/failed-1", frontend: null }, t: 9 });
+    run = reduce(run, {
+      type: "group_end",
+      ok: false,
+      reason: "integration failed",
+      parked: { backend: "orchestrator/failed-1", frontend: null },
+      kept: { frontend: "orchestrator/group-checkpoint-1" },
+      t: 9,
+    });
+    assert.deepEqual(run.group.kept, { frontend: "orchestrator/group-checkpoint-1" });
     assert.equal(run.status, "failed");
     assert.equal(run.endedAt, 9);
     assert.equal(run.error, "integration failed");

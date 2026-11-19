@@ -54,6 +54,8 @@ type Checkpoint = { branch: string; head: string };
 type GroupDecision = { round: number; action: "approve" | "reject"; note?: string; plan?: GroupPlan };
 
 const ROLES: GroupRole[] = ["backend", "frontend"];
+/** The branch `group-member checkpoint` creates (orch.ts GROUP_CHECKPOINT). */
+const GROUP_CHECKPOINT = "orchestrator/group-checkpoint-";
 
 export const groupDir = (name: string) => join(groupsDir(), checkGroupName(name));
 const STOP_FILE = "stop";
@@ -606,11 +608,14 @@ async function coordinateFault(s: Run, report: string): Promise<FaultCall> {
  */
 async function endStep(s: Run, ok: boolean, kind: "failed" | "interrupted", reason?: string): Promise<void> {
   const parked: Partial<Record<GroupRole, string | null>> = {};
+  /** Repos whose park failed: their group checkpoint stays, and `orch group rollback` resets them to it. */
+  const kept: Partial<Record<GroupRole, string>> = {};
   const heads: Partial<Record<GroupRole, string>> = {};
   for (const role of ROLES) {
     const cp = s.checkpoints[role];
     if (!cp) continue;
     const repo = repoOf(s, role);
+    let step = ok ? "drop" : "park";
     try {
       if (ok) {
         await member(repo, s.locks.get(role)!, ["drop", cp.branch]);
@@ -619,16 +624,24 @@ async function endStep(s: Run, ok: boolean, kind: "failed" | "interrupted", reas
       } else {
         const r = await member(repo, s.locks.get(role)!, ["park", cp.branch, kind]);
         parked[role] = (r.parked as string | null) ?? null;
+        step = "drop";
         await member(repo, s.locks.get(role)!, ["drop", cp.branch]);
         console.log(`${role}: ${parked[role] ? `work parked on ${parked[role]}` : "nothing to park"}; reset to ${cp.branch.replace(/^.*\//, "")}`);
       }
     } catch (e) {
-      if (!ok) parked[role] = null;
-      console.warn(`warning: ${role}: could not ${ok ? "drop" : "park"} (${cp.branch} kept): ${msg(e)}`);
+      // A park that failed leaves the repo as the run left it; a failed drop after a park leaves only the branch.
+      if (!ok && step === "park") kept[role] = cp.branch;
+      console.warn(`warning: ${role}: could not ${step} (${cp.branch} kept): ${msg(e)}`);
     }
   }
-  writeLast(s, { ok, ...(reason ? { reason } : {}), ...(ok ? { heads } : { parked }), ended: Date.now() });
-  emit("group_end", { ok, ...(reason ? { reason } : {}), ...(ok ? {} : { parked }) });
+  const failedPark = Object.keys(kept).length > 0;
+  if (failedPark)
+    console.log(
+      `${Object.keys(kept).join(" and ")}: the work could not be parked, so the repo is as the run left it. ` +
+        `Fix the cause above, then reset it to where the group run started with: orch group rollback ${s.g.name}`,
+    );
+  writeLast(s, { ok, ...(reason ? { reason } : {}), ...(ok ? { heads } : { parked, ...(failedPark ? { kept } : {}) }), ended: Date.now() });
+  emit("group_end", { ok, ...(reason ? { reason } : {}), ...(ok ? {} : { parked, ...(failedPark ? { kept } : {}) }) });
 }
 
 async function steps(s: Run): Promise<GroupOutcome> {
@@ -700,15 +713,44 @@ function lockGroup(g: GroupConfig, dir: string, deps: GroupDeps) {
   return { locks, release };
 }
 
+/** Run `fn` under both repos' locks and the group's; children it started are killed and awaited before release. */
+async function withGroupLock(g: GroupConfig, dir: string, deps: GroupDeps, fn: (locks: Map<GroupRole, string>) => Promise<void>): Promise<void> {
+  const { locks, release } = lockGroup(g, dir, deps);
+  process.on("exit", killAll);
+  try {
+    await fn(locks);
+  } finally {
+    await settleChildren();
+    release();
+    process.off("exit", killAll);
+  }
+}
+
+/** Record a rollback in last-run.json, say how to undo it, and emit group_rollback. */
+function finishRollback(g: GroupConfig, deps: GroupDeps, file: string, last: Record<string, unknown>, parked: Partial<Record<GroupRole, string | null>>) {
+  deps.writeFileAtomic(file, JSON.stringify({ ...last, rolledBack: true, rolledBackAt: Date.now(), rolledBackParked: parked }, null, 2) + "\n");
+  for (const role of ROLES) if (parked[role]) console.log(`to undo: git -C "${memberOf(g, role).path}" reset --hard ${parked[role]}`);
+  emit("group_rollback", { group: g.name, parked });
+}
+
 /**
  * `orch group rollback NAME`: undo the last passed group goal in both repos. Each repo goes back to the commit the run
  * started on; everything after it (also commits the person made since) is parked on orchestrator/discarded-group-<stamp>.
+ * After a failed run whose park failed in a repo, or a run that never finished, it resets each repo whose group
+ * checkpoint is still there to that checkpoint instead (parked the same way).
  */
 export async function rollbackGroup(g: GroupConfig, deps: GroupDeps): Promise<void> {
   if (process.env.ORCH_GROUP_LOCK) throw new Error("orch group rollback cannot run inside a group run (ORCH_GROUP_LOCK is set)");
   const dir = groupDir(g.name);
   const file = join(dir, "last-run.json");
-  type Last = { ok?: boolean; stamp?: string; checkpoints?: Record<string, string>; heads?: Record<string, string>; rolledBack?: boolean };
+  type Last = {
+    ok?: boolean;
+    stamp?: string;
+    checkpoints?: Record<string, string>;
+    heads?: Record<string, string>;
+    kept?: Record<string, string>;
+    rolledBack?: boolean;
+  };
   let last: Last & Record<string, unknown>;
   try {
     last = JSON.parse(readFileSync(file, "utf8"));
@@ -716,17 +758,47 @@ export async function rollbackGroup(g: GroupConfig, deps: GroupDeps): Promise<vo
     throw new Error(`group "${g.name}" has no last run to roll back`);
   }
   if (last.rolledBack) throw new Error(`the last run of group "${g.name}" is already rolled back`);
-  if (last.ok !== true)
-    throw new Error(`the last run of group "${g.name}" failed, so there is nothing to roll back: its repos were already reset to where the run started`);
+  const stamp = last.stamp;
+  if (last.ok !== true) {
+    // A failed run whose park failed somewhere (`kept`), or one that never finished (killed hard): reset each repo
+    // whose group checkpoint is still there to it. A failed run that parked both repos has nothing left to undo.
+    const finished = last.ok === false;
+    const kept = finished ? ROLES.filter((role) => typeof last.kept?.[role] === "string") : ROLES;
+    const nothing = finished
+      ? `the last run of group "${g.name}" failed, so there is nothing to roll back: its repos were already reset to where the run started`
+      : `the last run of group "${g.name}" did not finish, and no group checkpoint is left in its repos: nothing to roll back`;
+    if (!kept.length) throw new Error(nothing);
+    if (!finished && (!stamp || !/^[A-Za-z0-9-]+$/.test(stamp))) throw new Error("last-run.json has no valid stamp");
+    const targets = kept.map((role) => ({ role, repo: memberOf(g, role), cp: finished ? last.kept![role] : `${GROUP_CHECKPOINT}${stamp}` }));
+    for (const r of g.repos) checkMember(r);
+    return withGroupLock(g, dir, deps, async (locks) => {
+      const found: typeof targets = [];
+      for (const x of targets) {
+        try {
+          if ((await member(x.repo, locks.get(x.role)!, ["has", x.cp])).exists) found.push(x);
+        } catch (e) {
+          throw new Error(`${x.role}: ${msg(e)}`, { cause: e });
+        }
+      }
+      if (!found.length) throw new Error(nothing);
+      const parked: Partial<Record<GroupRole, string | null>> = {};
+      for (const x of found) {
+        const r = await member(x.repo, locks.get(x.role)!, ["reset", x.cp]);
+        parked[x.role] = (r.parked as string | null) ?? null;
+        await member(x.repo, locks.get(x.role)!, ["drop", x.cp]);
+        console.log(
+          `${x.role}: reset to where the group run started; ${parked[x.role] ? `its work and any uncommitted changes parked on ${parked[x.role]}` : "nothing to park"}`,
+        );
+      }
+      finishRollback(g, deps, file, last, parked);
+    });
+  }
   const sha = /^[0-9a-f]{7,40}$/i;
   const starts = ROLES.map((role) => ({ role, repo: memberOf(g, role), start: last.checkpoints?.[role], end: last.heads?.[role] }));
   for (const x of starts) if (!x.start || !sha.test(x.start)) throw new Error(`last-run.json has no start commit for the ${x.role} repo`);
-  const stamp = last.stamp;
   if (!stamp || !/^[A-Za-z0-9-]+$/.test(stamp)) throw new Error("last-run.json has no valid stamp");
   for (const r of g.repos) checkMember(r);
-  const { locks, release } = lockGroup(g, dir, deps);
-  process.on("exit", killAll);
-  try {
+  return withGroupLock(g, dir, deps, async (locks) => {
     // Check both repos before resetting either: one refusal leaves both as they are.
     const ahead: Partial<Record<GroupRole, { all: number; own?: number }>> = {};
     for (const x of starts) {
@@ -748,14 +820,8 @@ export async function rollbackGroup(g: GroupConfig, deps: GroupDeps): Promise<vo
       const own = ahead[x.role]?.own;
       if (own) console.log(`  note: that includes ${own} commit(s) made after the group run, not only the run's own`);
     }
-    deps.writeFileAtomic(file, JSON.stringify({ ...last, rolledBack: true, rolledBackAt: Date.now(), rolledBackParked: parked }, null, 2) + "\n");
-    for (const x of starts) if (parked[x.role]) console.log(`to undo: git -C "${x.repo.path}" reset --hard ${parked[x.role]}`);
-    emit("group_rollback", { group: g.name, parked });
-  } finally {
-    await settleChildren();
-    release();
-    process.off("exit", killAll);
-  }
+    finishRollback(g, deps, file, last, parked);
+  });
 }
 
 /** `orch group run NAME "<goal>"`. Throws only before anything is locked; afterwards every path ends with group_end. */

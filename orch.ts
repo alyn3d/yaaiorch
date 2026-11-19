@@ -2750,8 +2750,10 @@ function finishGit(cp: string, goal: string, passed: boolean, park: boolean, int
 
 const checkpoints = () => git("branch", "--list", `${BRANCH_PREFIX}checkpoint-*`, "--format=%(refname:short)").split("\n").filter(Boolean).sort();
 
-/** Undo a goal: reset the current branch to its checkpoint, keeping the discarded work on a branch. */
-/** `orch group-member checkpoint|park|reset|drop`: the repo-level git steps of a group run (hidden; the group process holds the run lock). */
+/**
+ * `orch group-member checkpoint|park|reset|verify|has|head|drop|coordinate`: the repo-level steps of a group run (hidden;
+ * the group process holds the run lock).
+ */
 async function groupMember(args: string[], values: Record<string, string | boolean | string[] | undefined> = {}) {
   const [action, a, b] = args;
   if (!process.env.ORCH_GROUP_LOCK) throw new Error("orch group-member is only for a group run: ORCH_GROUP_LOCK is not set");
@@ -2807,7 +2809,14 @@ ${dirty}`);
       return out({ parked });
     }
     case "head":
-      return out({ head: git("rev-parse", "HEAD") });
+      // `dirty`: uncommitted changes outside .orchestrator; after a group step, a sign something wrote here unasked.
+      return out({ head: git("rev-parse", "HEAD"), dirty: changedFiles() });
+    case "has": {
+      // For a rollback after a failed park or a run that never finished: is the group checkpoint still there (and behind HEAD)?
+      if (!branchExists(checkpoint(a))) return out({ exists: false });
+      anchor(a);
+      return out({ exists: true });
+    }
     case "verify": {
       // For a rollback, before anything is reset: a clean tree and a start commit behind HEAD. `ahead`: the commits after it;
       // `after`: those after the commit the group run ended on (b), the person's own.
@@ -2843,7 +2852,7 @@ ${dirty}`);
     }
     default:
       throw new Error(
-        "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint|sha stamp> | verify <sha> [end] | head | drop <checkpoint> | coordinate <plan|fault> --group <name>",
+        "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint|sha stamp> | verify <sha> [end] | has <checkpoint> | head | drop <checkpoint> | coordinate <plan|fault> --group <name>",
       );
   }
 }
@@ -2913,6 +2922,7 @@ async function coordinate(mode: string | undefined, values: Record<string, strin
   return { reply: mode === "plan" ? parseGroupPlan(r.text) : parseFaultCall(r.text), cost: round4(ctx.budget.spent) };
 }
 
+/** Undo a goal: reset the current branch to its checkpoint, keeping the discarded work on a branch. */
 function rollback(branch?: string) {
   if (!isGitRepo()) throw new Error("not a git repo; nothing to roll back");
   const cp = branch ?? checkpoints().at(-1);

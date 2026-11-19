@@ -20,7 +20,8 @@
 //   FAKE_QA_NOTE=<text>      a passing QA verdict carries this in "notes"
 //   FAKE_CRITIC=approve|reject|reject-once   the plan critic's answer (default approve)
 //   FAKE_COST=<usd>          total_cost_usd per call (default 0.05)
-//   FAKE_FAIL_AGENT=<name>   that implementer exits 1
+//   FAKE_FAIL_AGENT=<name>   that implementer exits 1; FAKE_LOCK_REPO=<dir> then also leaves <dir>/.git/index.lock
+//                            behind, so git cannot commit or reset there (a park that fails)
 //   FAKE_HANG_AGENT=<name>   that implementer never returns
 //   FAKE_SLOW=<seconds>      implementers sleep first
 //   FAKE_ACTIVITY=<agents>    stream tool requests for these agents; FAKE_ACTIVITY_WAIT holds each call open (ms)
@@ -453,6 +454,7 @@ if (prompt.startsWith("You are the group coordinator.")) {
 } else {
   if (env.FAKE_FAIL_AGENT === agent) {
     log(`${agent}: crashing`);
+    if (env.FAKE_LOCK_REPO) writeFileSync(`${env.FAKE_LOCK_REPO}/.git/index.lock`, "");
     process.exit(1);
   }
   if (env.FAKE_HANG_AGENT === agent) {
