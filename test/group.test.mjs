@@ -520,6 +520,73 @@ describe("orch group-member", () => {
       assert.equal(existsSync(join(dir, "a.txt")), false);
     }));
 
+  test("park and reset refuse a checkpoint that does not exist or is not an ancestor of HEAD, before any commit", () =>
+    withLock((dir, env) => {
+      const gone = "orchestrator/group-checkpoint-nope";
+      writeFileSync(join(dir, "a.txt"), "uncommitted");
+      for (const args of [
+        ["park", gone, "failed"],
+        ["reset", gone],
+      ]) {
+        const r = member(dir, env, ...args);
+        assert.notEqual(r.code, 0, args.join(" "));
+        assert.match(r.out, /does not exist/);
+      }
+      const bad = member(dir, env, "reset", "0123456789abcdef0123456789abcdef01234567", "s9");
+      assert.notEqual(bad.code, 0);
+      assert.match(bad.out, /does not exist/);
+      // A branch that is not behind HEAD: made on a side line, then back on main.
+      git(dir, "switch", "-q", "-c", "side");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "side");
+      git(dir, "branch", "orchestrator/group-checkpoint-side");
+      git(dir, "switch", "-q", "main");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "main moves");
+      for (const args of [
+        ["park", "orchestrator/group-checkpoint-side", "failed"],
+        ["reset", "orchestrator/group-checkpoint-side"],
+        ["reset", git(dir, "rev-parse", "side"), "s9"],
+      ]) {
+        const r = member(dir, env, ...args);
+        assert.notEqual(r.code, 0, args.join(" "));
+        assert.match(r.out, /not an ancestor/);
+      }
+      // Nothing was committed or reset by any refusal.
+      assert.equal(readFileSync(join(dir, "a.txt"), "utf8"), "uncommitted");
+      assert.match(git(dir, "status", "--porcelain"), /a\.txt/);
+      assert.equal(git(dir, "log", "--format=%s", "-1"), "main moves");
+    }));
+
+  test("reset accepts a sha (full or abbreviated) with the stamp and parks everything after it", () =>
+    withLock((dir, env) => {
+      const start = git(dir, "rev-parse", "HEAD");
+      writeFileSync(join(dir, "a.txt"), "x");
+      git(dir, "add", "a.txt");
+      git(dir, "commit", "-q", "-m", "work");
+      const r = member(dir, env, "reset", start.slice(0, 10), "s7");
+      assert.equal(r.code, 0, r.out);
+      assert.deepEqual(r.json, { parked: "orchestrator/discarded-group-s7" });
+      assert.equal(git(dir, "rev-parse", "HEAD"), start);
+      assert.equal(git(dir, "show", "orchestrator/discarded-group-s7:a.txt"), "x");
+      const noStamp = member(dir, env, "reset", start);
+      assert.notEqual(noStamp.code, 0);
+      assert.match(noStamp.out, /stamp/);
+      const badRef = member(dir, env, "reset", "main", "s8");
+      assert.notEqual(badRef.code, 0);
+    }));
+
+  test("verify reports the commits after a sha and refuses a dirty tree", () =>
+    withLock((dir, env) => {
+      const start = git(dir, "rev-parse", "HEAD");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "more");
+      const ok = member(dir, env, "verify", start);
+      assert.equal(ok.code, 0, ok.out);
+      assert.deepEqual(ok.json, { ahead: 1 });
+      writeFileSync(join(dir, "d.txt"), "x");
+      const dirty = member(dir, env, "verify", start);
+      assert.notEqual(dirty.code, 0);
+      assert.match(dirty.out, /uncommitted changes/);
+    }));
+
   test("drop deletes a group checkpoint and refuses other branches", () =>
     withLock((dir, env) => {
       const cp = member(dir, env, "checkpoint", "s5").json.checkpoint;
@@ -680,6 +747,22 @@ describe("orch group-member coordinate", () => {
       assert.equal(be.json.reply.contract, "REVISED");
       const both = coordinate(s, "fault", input, { FAKE_GROUP_FAULT: "both" });
       assert.deepEqual(Object.keys(both.json.reply.goals).sort(), ["backend", "frontend"]);
+    } finally {
+      rmSync(s.home, { recursive: true, force: true });
+    }
+  });
+
+  test("the fault report goes through redactOutput before it reaches the prompt", () => {
+    const s = setup();
+    const prompts = join(s.home, "prompts");
+    const key = "AKIA" + "ABCDEFGHIJKLMNOP";
+    try {
+      const r = coordinate(s, "fault", { goal: "g", contract: "C", report: `request failed, key ${key} leaked`, briefs: {} }, { FAKE_PROMPTS: prompts });
+      assert.equal(r.code, 0, r.out);
+      const sent = readdirSync(prompts).map((f) => readFileSync(join(prompts, f), "utf8"));
+      assert.equal(sent.length, 1);
+      assert.match(sent[0], /request failed/);
+      assert.doesNotMatch(sent[0], /AKIA/);
     } finally {
       rmSync(s.home, { recursive: true, force: true });
     }
@@ -1220,6 +1303,9 @@ describe("orch group run", { timeout: 600_000 }, () => {
           branches(dir).join(", "),
         );
       assert.equal(r.ev("group_end").at(-1).ok, false);
+      const reason = r.ev("group_end").at(-1).reason;
+      assert.match(reason, /^integration failed after 2 rounds: The frontend's integration run failed \(exit code \d+\)\.$/);
+      assert.equal(JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8")).reason, reason);
       assert.deepEqual(locks(s), []);
     } finally {
       clean(s);
@@ -1240,6 +1326,143 @@ describe("orch group run", { timeout: 600_000 }, () => {
       assert.doesNotMatch(faults[0], /API_URL/, "no env in the report");
       assert.equal(r.ev("group_end").at(-1).ok, false);
       assert.deepEqual(locks(s), []);
+    } finally {
+      clean(s);
+    }
+  });
+});
+
+describe("orch group rollback", { timeout: 600_000 }, () => {
+  const FAKE = join(root, "test", "fake-claude", process.platform === "win32" ? "claude.cmd" : "claude");
+  const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const initRepo = (dir) => {
+    mkdirSync(dir);
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "user.name", "test");
+    git(dir, "config", "user.email", "test@localhost");
+    git(dir, "config", "core.autocrlf", "false");
+    git(dir, "commit", "-q", "--allow-empty", "-m", "init");
+  };
+  const setup = () => {
+    const home = tmp();
+    const be = join(home, "be");
+    const fe = join(home, "fe");
+    initRepo(be);
+    initRepo(fe);
+    mkdirSync(join(home, "groups"));
+    writeFileSync(
+      join(home, "groups", "shop.json"),
+      JSON.stringify({
+        name: "shop",
+        repos: [
+          { path: be, role: "backend" },
+          { path: fe, role: "frontend" },
+        ],
+      }),
+    );
+    return { home, be, fe, gdir: join(home, "groups", "shop"), heads: { be: git(be, "rev-parse", "HEAD"), fe: git(fe, "rev-parse", "HEAD") } };
+  };
+  const group = (s, args, env = {}) => {
+    const r = spawnSync(process.execPath, [TSX, ORCH, "group", ...args], {
+      cwd: s.home,
+      encoding: "utf8",
+      timeout: 240_000,
+      env: { ...process.env, ORCH_NO_MAIN: "", YAAIORCH_HOME: s.home, CLAUDE_BIN: FAKE, FORCE_COLOR: "0", FAKE_QA: "pass", ...env },
+    });
+    return { code: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  const discarded = (dir) => git(dir, "branch", "--list", "orchestrator/discarded-group-*", "--format=%(refname:short)").split("\n").filter(Boolean);
+  const lastRun = (s) => JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8"));
+  const ran = (s) => {
+    const r = group(s, ["run", "shop", "list the items"]);
+    assert.equal(r.code, 0, r.out);
+  };
+  const clean = (s) => rmSync(s.home, { recursive: true, force: true });
+
+  test("rollback after pass", () => {
+    const s = setup();
+    try {
+      ran(s);
+      assert.notEqual(git(s.be, "rev-parse", "HEAD"), s.heads.be);
+      const r = group(s, ["rollback", "shop"]);
+      assert.equal(r.code, 0, r.out);
+      assert.equal(git(s.be, "rev-parse", "HEAD"), s.heads.be);
+      assert.equal(git(s.fe, "rev-parse", "HEAD"), s.heads.fe);
+      for (const dir of [s.be, s.fe]) {
+        const [parked] = discarded(dir);
+        assert.ok(parked, `${dir} has a discarded-group branch`);
+        assert.ok(r.out.includes(`reset --hard ${parked}`), r.out);
+      }
+      assert.equal(lastRun(s).rolledBack, true);
+      for (const f of [join(s.be, ".orchestrator", "run.lock"), join(s.fe, ".orchestrator", "run.lock"), join(s.gdir, "run.lock")])
+        assert.equal(existsSync(f), false, f);
+      const again = group(s, ["rollback", "shop"]);
+      assert.equal(again.code, 1, again.out);
+      assert.match(again.out, /already rolled back/);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("rollback says what else it parks after the user's own later commits", () => {
+    const s = setup();
+    try {
+      ran(s);
+      git(s.fe, "commit", "-q", "--allow-empty", "-m", "my own commit");
+      const r = group(s, ["rollback", "shop"]);
+      assert.equal(r.code, 0, r.out);
+      assert.match(r.out, /frontend: .*2 commit\(s\)/);
+      assert.match(r.out, /made after the group run/i);
+      assert.equal(git(s.fe, "rev-parse", "HEAD"), s.heads.fe);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("rollback refuses: no last run, a failed run, a dirty repo, a held lock, a start sha off the branch", () => {
+    const s = setup();
+    try {
+      const none = group(s, ["rollback", "shop"]);
+      assert.equal(none.code, 1);
+      assert.match(none.out, /no last run/);
+      mkdirSync(s.gdir, { recursive: true });
+      writeFileSync(join(s.gdir, "last-run.json"), JSON.stringify({ ok: false, checkpoints: { backend: s.heads.be, frontend: s.heads.fe } }));
+      const failed = group(s, ["rollback", "shop"]);
+      assert.equal(failed.code, 1);
+      assert.match(failed.out, /failed/);
+      rmSync(s.gdir, { recursive: true, force: true });
+
+      ran(s);
+      const after = { be: git(s.be, "rev-parse", "HEAD"), fe: git(s.fe, "rev-parse", "HEAD") };
+      writeFileSync(join(s.fe, "dirty.txt"), "x");
+      const dirty = group(s, ["rollback", "shop"]);
+      assert.equal(dirty.code, 1, dirty.out);
+      assert.match(dirty.out, /uncommitted changes/);
+      rmSync(join(s.fe, "dirty.txt"));
+      assert.equal(git(s.be, "rev-parse", "HEAD"), after.be, "the clean repo was not reset when the other refused");
+
+      const id = o.acquireRunLock("held", s.fe);
+      try {
+        const locked = group(s, ["rollback", "shop"]);
+        assert.equal(locked.code, 1, locked.out);
+      } finally {
+        o.releaseRunLock(id, s.fe);
+      }
+      assert.equal(git(s.be, "rev-parse", "HEAD"), after.be);
+
+      // A start sha that is not behind the frontend's HEAD (a commit on a side line).
+      git(s.fe, "switch", "-q", "-c", "side", s.heads.fe);
+      git(s.fe, "commit", "-q", "--allow-empty", "-m", "side");
+      const side = git(s.fe, "rev-parse", "HEAD");
+      git(s.fe, "switch", "-q", "main");
+      const lr = lastRun(s);
+      lr.checkpoints.frontend = side;
+      writeFileSync(join(s.gdir, "last-run.json"), JSON.stringify(lr));
+      const off = group(s, ["rollback", "shop"]);
+      assert.equal(off.code, 1, off.out);
+      assert.match(off.out, /not an ancestor/);
+      assert.equal(git(s.be, "rev-parse", "HEAD"), after.be, "nothing reset when one repo refuses");
+      assert.equal(lastRun(s).rolledBack, undefined);
     } finally {
       clean(s);
     }

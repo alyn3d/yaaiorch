@@ -47,7 +47,7 @@ import {
   type GroupConfig,
   type GroupRepo,
 } from "./orch-group";
-import { approveGroup, childShare, GROUP_EXIT, runGroup, stopGroup } from "./orch-group-run";
+import { approveGroup, childShare, GROUP_EXIT, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
@@ -2701,11 +2701,12 @@ function changedFiles(): string[] {
 const GROUP_CHECKPOINT = `${BRANCH_PREFIX}group-checkpoint-`;
 
 /** Commit what is left, keep HEAD on a side branch, and reset the current branch to `cp`. */
-function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string): string | null {
+function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string, savedAs?: string): string | null {
   commitAll(message, true); // throws if it cannot commit: never reset over uncommitted work
   if (dirtyFiles()) throw new Error("could not commit the changes; leaving the tree as is");
   if (git("rev-parse", "HEAD") === git("rev-parse", cp)) return null;
-  const saved = cp.startsWith(GROUP_CHECKPOINT) ? `${BRANCH_PREFIX}${kind}-group-${cp.slice(GROUP_CHECKPOINT.length)}` : cp.replace("checkpoint", kind);
+  const saved =
+    savedAs ?? (cp.startsWith(GROUP_CHECKPOINT) ? `${BRANCH_PREFIX}${kind}-group-${cp.slice(GROUP_CHECKPOINT.length)}` : cp.replace("checkpoint", kind));
   git("branch", saved);
   git("reset", "-q", "--hard", cp);
   return saved;
@@ -2761,6 +2762,23 @@ async function groupMember(args: string[], values: Record<string, string | boole
       throw new Error(`expected a ${GROUP_CHECKPOINT}<stamp> branch, got "${name ?? ""}"`);
     return name;
   };
+  // A branch (orchestrator/group-checkpoint-<stamp>) or a commit sha: it must exist and be behind HEAD, checked before anything is committed or reset.
+  const anchor = (name?: string) => {
+    const isSha = /^[0-9a-f]{7,40}$/i.test(name ?? "");
+    const ref = isSha ? name! : checkpoint(name);
+    let sha: string;
+    try {
+      sha = git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`);
+    } catch {
+      throw new Error(`${isSha ? "commit" : "checkpoint"} ${ref} does not exist in this repo`);
+    }
+    try {
+      git("merge-base", "--is-ancestor", sha, "HEAD");
+    } catch {
+      throw new Error(`${ref} is not an ancestor of the current HEAD; switch to the branch the group goal ran on first`);
+    }
+    return { ref, isSha };
+  };
   switch (action) {
     case "checkpoint": {
       if (!a || !/^[A-Za-z0-9-]+$/.test(a)) throw new Error("usage: orch group-member checkpoint <stamp> (the stamp is letters, digits and dashes)");
@@ -2774,16 +2792,38 @@ ${dirty}`);
     }
     case "park": {
       if (b !== "failed" && b !== "interrupted") throw new Error("usage: orch group-member park <checkpoint> <failed|interrupted>");
-      const leftovers = childCheckpoints(checkpoint(a));
+      anchor(a);
+      const leftovers = childCheckpoints(a!);
       const parked = moveWorkAside(a!, b, `orch: group ${b} (unfinished)`);
       for (const cp of leftovers) git("branch", "-D", cp);
       return out({ parked });
     }
     case "reset": {
-      const leftovers = childCheckpoints(checkpoint(a));
-      const parked = moveWorkAside(a!, "discarded", "orch: group reset (discarded)");
+      const { ref, isSha } = anchor(a);
+      if (isSha && !(b && /^[A-Za-z0-9-]+$/.test(b))) throw new Error("usage: orch group-member reset <sha> <stamp> (the stamp is letters, digits and dashes)");
+      const leftovers = childCheckpoints(ref);
+      const parked = moveWorkAside(ref, "discarded", "orch: group reset (discarded)", isSha ? `${BRANCH_PREFIX}discarded-group-${b}` : undefined);
       for (const cp of leftovers) git("branch", "-D", cp);
       return out({ parked });
+    }
+    case "head":
+      return out({ head: git("rev-parse", "HEAD") });
+    case "verify": {
+      // For a rollback, before anything is reset: a clean tree and a start commit behind HEAD. `ahead`: the commits after it;
+      // `after`: those after the commit the group run ended on (b), the person's own.
+      const { ref } = anchor(a);
+      const dirty = dirtyFiles();
+      if (dirty) throw new Error(`working tree has uncommitted changes; commit or stash them first:\n${dirty}`);
+      let after: number | undefined;
+      if (b && /^[0-9a-f]{7,40}$/i.test(b)) {
+        try {
+          git("merge-base", "--is-ancestor", b, "HEAD");
+          after = Number(git("rev-list", "--count", `${b}..HEAD`));
+        } catch {
+          /* the end commit is gone from this branch: no count */
+        }
+      }
+      return out({ ahead: Number(git("rev-list", "--count", `${ref}..HEAD`)), ...(after === undefined ? {} : { after }) });
     }
     case "drop":
       git("branch", "-D", checkpoint(a));
@@ -2803,7 +2843,7 @@ ${dirty}`);
     }
     default:
       throw new Error(
-        "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint> | drop <checkpoint> | coordinate <plan|fault> --group <name>",
+        "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint|sha stamp> | verify <sha> [end] | head | drop <checkpoint> | coordinate <plan|fault> --group <name>",
       );
   }
 }
@@ -2855,7 +2895,7 @@ async function coordinate(mode: string | undefined, values: Record<string, strin
   const prompt =
     mode === "plan"
       ? coordinatorPlanPrompt(g, input.goal, briefs, typeof input.contract === "string" ? input.contract : g.contract)
-      : coordinatorFaultPrompt(g, input.goal, input.contract as string, input.report as string);
+      : coordinatorFaultPrompt(g, input.goal, input.contract as string, redactOutput(input.report as string));
   const o = parseOpts(values);
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   const roster = configuredRoster(cfg);
@@ -5620,6 +5660,10 @@ async function groupRun(name: string | undefined, goal: string, values: GroupFla
 async function groupCommand(args: string[], values: GroupFlags) {
   const [sub, name] = args;
   if (sub === "run") return groupRun(name, args.slice(2).join(" "), values);
+  if (sub === "rollback") {
+    if (!name) throw new Error("usage: orch group rollback NAME");
+    return rollbackGroup(readGroup(name), { acquireRunLock, releaseRunLock, writeFileAtomic });
+  }
   if (sub === "stop") {
     if (!name) throw new Error("usage: orch group stop NAME");
     return stopGroup(name);
