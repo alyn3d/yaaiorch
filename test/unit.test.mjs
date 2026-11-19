@@ -885,6 +885,68 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     assert.equal(reduce(null, { type: "plan", round: 1, tasks: [], t: 1 }), null, "nothing to fold into before goal_start");
     assert.equal(reduce(run, { type: "something_new", t: 1 }), run, "unknown events change nothing");
   });
+
+  test("group_child folds its inner event like a bare one", () => {
+    const bare = fold([...start, { type: "task_start", round: 1, id: 0 }]);
+    const wrapped = fold([...start, { type: "group_child", repo: "/r/api", role: "backend", event: { type: "task_start", round: 1, id: 0, t: 1003 } }]);
+    assert.equal(wrapped.rounds[0].tasks[0].status, "running");
+    assert.deepEqual(wrapped, bare);
+    assert.equal(reduce(null, { type: "group_child", repo: "/r/api", t: 1, event: { type: "plan", round: 1, tasks: [], t: 1 } }), null);
+    assert.equal(reduce(bare, { type: "group_child", t: 1 }), bare, "a group_child without an event changes nothing");
+  });
+
+  test("group events fill run.group: start, plan, steps, fault, end and rollback", () => {
+    const repos = [
+      { path: "/r/api", role: "backend" },
+      { path: "/r/web", role: "frontend" },
+    ];
+    let run = fold([
+      { type: "group_start", group: "shop", goal: "checkout", repos },
+      { type: "group_plan", contract: "POST /orders", goals: { backend: "b", frontend: "f" }, cost: 0.25 },
+      { type: "group_step", step: "build", repo: "backend", round: 1 },
+    ]);
+    assert.equal(run.goal, "checkout");
+    assert.equal(run.status, "running");
+    assert.equal(run.cost, 0.25);
+    assert.deepEqual(run.group, {
+      name: "shop",
+      goal: "checkout",
+      repos,
+      contract: "POST /orders",
+      goals: { backend: "b", frontend: "f" },
+      step: "build",
+      stepRepo: "backend",
+      round: 1,
+    });
+    // A wrapped child goal_start must not drop the group (fallback: no session for that repo).
+    run = reduce(run, { type: "group_child", repo: "/r/api", role: "backend", t: 5, event: { type: "goal_start", goal: "b", maxRounds: 2, t: 5 } });
+    assert.equal(run.group.name, "shop");
+    run = reduce(run, { type: "group_step", step: "integration", round: 1, failed: "the backend did not come up", t: 6 });
+    assert.equal(run.group.step, "integration");
+    assert.equal(run.group.stepRepo, undefined);
+    assert.equal(run.group.failed, "the backend did not come up");
+    run = reduce(run, { type: "group_fault", fault: "frontend", goals: { frontend: "fix" }, cost: 0.1, revised: true, t: 7 });
+    run = reduce(run, { type: "group_plan", contract: "POST /orders v2", goals: { frontend: "fix" }, cost: 0, revised: true, t: 8 });
+    assert.deepEqual(run.group.fault, { side: "frontend", goals: { frontend: "fix" } });
+    assert.equal(run.group.contract, "POST /orders v2");
+    assert.deepEqual(run.group.goals, { backend: "b", frontend: "f" }, "a revised contract keeps the plan's goals");
+    run = reduce(run, { type: "group_end", ok: false, reason: "integration failed", parked: { backend: "orchestrator/failed-1", frontend: null }, t: 9 });
+    assert.equal(run.status, "failed");
+    assert.equal(run.endedAt, 9);
+    assert.equal(run.error, "integration failed");
+    assert.equal(run.group.ok, false);
+    assert.deepEqual(run.group.parked, { backend: "orchestrator/failed-1", frontend: null });
+    run = reduce(run, { type: "group_rollback", group: "shop", parked: { backend: "orchestrator/discarded-1" }, t: 10 });
+    assert.equal(run.group.rolledBack, true);
+    assert.deepEqual(run.group.rolledBackParked, { backend: "orchestrator/discarded-1" });
+    const passed = reduce(fold([{ type: "group_start", group: "shop", goal: "g", repos }]), { type: "group_end", ok: true, t: 20 });
+    assert.equal(passed.status, "passed");
+    assert.equal(passed.group.ok, true);
+    assert.equal(reduce(null, { type: "group_plan", contract: "c", goals: {}, t: 1 }), null);
+    const plain = fold(start);
+    for (const type of ["group_plan", "group_fault", "group_end", "group_step", "group_rollback"])
+      assert.equal(reduce(plain, { type, cost: 1, ok: true, t: 1 }), plain, `${type} leaves a run without a group alone`);
+  });
 });
 
 describe("protected paths and secret formats", () => {

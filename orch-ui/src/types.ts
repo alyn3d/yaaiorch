@@ -166,6 +166,34 @@ export type RunView = {
   tokens?: TokenUsage;
   startedAt: number;
   rounds: RoundView[];
+  /** `orch group run`: the group's own events (`group_start` … `group_end`, `group_rollback`). */
+  group?: GroupView;
+};
+
+export type GroupRole = "backend" | "frontend";
+/** A repo group's run, folded from its `group_*` events; the members' own events go to their repos' sessions. */
+export type GroupView = {
+  name: string;
+  goal: string;
+  repos: { path: string; role: GroupRole }[];
+  /** The coordinator's API contract (`group_plan`; a revised one replaces it) and one goal per repo. */
+  contract?: string;
+  goals?: Partial<Record<GroupRole, string>>;
+  /** The latest `group_step`: build, integration or fix, the member it started (a role) and the round. */
+  step?: "build" | "integration" | "fix";
+  stepRepo?: GroupRole;
+  round?: number;
+  skipped?: string;
+  failed?: string;
+  /** The latest `group_fault`: who the coordinator blamed for a failed integration and their fix goals. */
+  fault?: { side: GroupRole | "both"; goals: Partial<Record<GroupRole, string>> };
+  /** `group_end`: ok, why it failed, and where each member's work was parked (null: nothing to park). */
+  ok?: boolean;
+  reason?: string;
+  parked?: Partial<Record<GroupRole, string | null>>;
+  /** `group_rollback`: the members were reset to the run's start; their later work is on these branches. */
+  rolledBack?: boolean;
+  rolledBackParked?: Partial<Record<GroupRole, string | null>>;
 };
 
 /** Agent M: a shell command an agent asked to run (--commands). `decision` once answered: allow, always, deny, timeout or cancelled. */

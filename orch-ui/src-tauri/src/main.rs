@@ -132,11 +132,11 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// One session per folder; Windows paths are case-insensitive.
+/// One session per folder; Windows paths are case-insensitive and take either slash.
 fn key_of(p: &Path) -> String {
     let s = p.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
     if cfg!(windows) {
-        s.to_lowercase()
+        s.replace('/', "\\").to_lowercase()
     } else {
         s
     }
@@ -205,15 +205,26 @@ fn add_spent<R: Runtime>(app: &AppHandle<R>, cost: f64) {
     emit_global(app);
 }
 
+/// `orch group run` wraps each member's own event in `group_child {repo, role, event}`: the member repo's path and that
+/// event, unchanged. Any other event comes back as it is, without a repo.
+fn unwrap_group_event(v: &Value) -> (Option<String>, &Value) {
+    let inner = &v["event"];
+    if v["type"] != "group_child" || !inner["type"].is_string() {
+        return (None, v);
+    }
+    (v["repo"].as_str().filter(|r| !r.is_empty()).map(str::to_string), inner)
+}
+
 /// Count agent-call costs, hold new starts on a usage limit, stop a loop at its next goal when the
-/// day's budget is used up.
+/// day's budget is used up. A group member's event whose repo has no session of its own counts here, unwrapped.
 fn on_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: &Value) {
+    let (_, ev) = unwrap_group_event(ev);
     let kind = ev["type"].as_str().unwrap_or("");
     let cost = ev["cost"].as_f64().filter(|c| *c > 0.0);
     if let Some(cost) = cost.filter(|_| {
         matches!(
             kind,
-            "plan" | "task_end" | "review" | "learn_end" | "notes_tidy" | "share_end" | "split_proposal" | "coverage"
+            "plan" | "task_end" | "review" | "learn_end" | "notes_tidy" | "share_end" | "split_proposal" | "coverage" | "group_plan" | "group_fault"
         )
     }) {
         add_spent(app, cost);
@@ -291,25 +302,45 @@ fn emit_session<R: Runtime>(app: &AppHandle<R>, key: &str) {
     }
 }
 
-fn push_line<R: Runtime>(app: &AppHandle<R>, key: &str, line: String) {
+/// One structured event from the process of session `key`. A group member's wrapped event goes to the session of that
+/// member's repo as if its own process had printed it; without such a session it stays here (the group's), still wrapped.
+fn push_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: Value) {
+    if let (Some(member), inner) = unwrap_group_event(&ev) {
+        let member = key_of(Path::new(&member));
+        let found = {
+            let st = app.state::<AppState>();
+            let g = st.0.lock().unwrap();
+            g.find(&member).is_some()
+        };
+        if found && member != key {
+            let inner = inner.clone();
+            return push_event(app, &member, inner);
+        }
+    }
     let repo = {
         let st = app.state::<AppState>();
         let mut g = st.0.lock().unwrap();
         let Some(i) = g.find(key) else { return };
         let s = &mut g.sessions[i];
-        if let Some(rest) = line.strip_prefix(MARK) {
-            if let Ok(ev) = serde_json::from_str::<Value>(rest) {
-                if ev["type"] == "goal_start" {
-                    s.events.clear();
-                }
-                s.events.push(ev.clone());
-                let repo = s.repo.to_string_lossy().to_string();
-                drop(g);
-                let _ = app.emit("orch-ev", json!({ "repo": repo, "ev": ev }));
-                on_event(app, key, &ev);
-                return;
-            }
+        if ev["type"] == "goal_start" || ev["type"] == "group_start" {
+            s.events.clear();
         }
+        s.events.push(ev.clone());
+        s.repo.to_string_lossy().to_string()
+    };
+    let _ = app.emit("orch-ev", json!({ "repo": repo, "ev": ev }));
+    on_event(app, key, &ev);
+}
+
+fn push_line<R: Runtime>(app: &AppHandle<R>, key: &str, line: String) {
+    if let Some(ev) = line.strip_prefix(MARK).and_then(|rest| serde_json::from_str::<Value>(rest).ok()) {
+        return push_event(app, key, ev);
+    }
+    let repo = {
+        let st = app.state::<AppState>();
+        let mut g = st.0.lock().unwrap();
+        let Some(i) = g.find(key) else { return };
+        let s = &mut g.sessions[i];
         s.log.push(line.clone());
         let len = s.log.len();
         if len > MAX_LOG {
@@ -1787,6 +1818,29 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unwraps_group_child_events() {
+        let wrapped = json!({ "type": "group_child", "repo": "C:/Work/Api", "role": "backend", "event": { "type": "task_end", "cost": 0.5 } });
+        let (repo, inner) = unwrap_group_event(&wrapped);
+        assert_eq!(repo.as_deref(), Some("C:/Work/Api"));
+        assert_eq!(inner, &json!({ "type": "task_end", "cost": 0.5 }));
+        let bare = json!({ "type": "task_end", "cost": 0.5 });
+        let (repo, same) = unwrap_group_event(&bare);
+        assert_eq!(repo, None);
+        assert_eq!(same, &bare);
+        // Without an event (or one without a type) it stays as it is.
+        let broken = json!({ "type": "group_child", "repo": "C:/Work/Api" });
+        assert_eq!(unwrap_group_event(&broken), (None, &broken));
+        let untyped = json!({ "type": "group_child", "repo": "C:/Work/Api", "event": { "cost": 1 } });
+        assert_eq!(unwrap_group_event(&untyped), (None, &untyped));
+        // The member's key matches the session's whatever the slashes, and the case on Windows.
+        if cfg!(windows) {
+            assert_eq!(key_of(Path::new("c:/work/API/")), key_of(Path::new(r"C:\Work\Api")));
+        } else {
+            assert_eq!(key_of(Path::new("/work/Api/")), key_of(Path::new("/work/Api")));
+        }
+    }
 
     #[test]
     fn budget_caps_max_cost() {

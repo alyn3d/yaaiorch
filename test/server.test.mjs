@@ -237,3 +237,70 @@ describe("browser-mode server guard", { timeout: 60_000 }, () => {
     );
   });
 });
+
+// A group process (`orch group run`) prints its own events and wraps each member's in group_child: the member's
+// events land in that repo's session, and every cost is counted once toward the daily budget.
+describe("browser-mode server: group events", { timeout: 60_000 }, () => {
+  let group, member;
+  before(async () => {
+    port = await freePort();
+    home = mkdtempSync(join(tmpdir(), "yaaiorch-server-group-"));
+    group = join(home, "group-repo");
+    member = join(home, "member-repo");
+    mkdirSync(group);
+    mkdirSync(member);
+    // The fake orch writes its events and exits; on Windows the member's path comes back in another case and with forward slashes.
+    const fakeOrch = join(home, "fake-orch.mjs");
+    const named = process.platform === "win32" ? member.toUpperCase().replaceAll("\\", "/") : member;
+    const events = [
+      { type: "group_start", group: "shop", goal: "checkout", repos: [{ path: named, role: "backend" }] },
+      { type: "group_plan", contract: "POST /orders", goals: { backend: "b" }, cost: 0.25 },
+      { type: "group_child", repo: named, role: "backend", event: { type: "goal_start", goal: "b", maxRounds: 1, t: 1 } },
+      { type: "group_child", repo: named, role: "backend", event: { type: "task_end", round: 1, id: 0, status: "COMPLETE", cost: 0.5, t: 2 } },
+      {
+        type: "group_child",
+        repo: join(home, "not-open"),
+        role: "frontend",
+        event: { type: "task_end", round: 1, id: 0, status: "COMPLETE", cost: 0.125, t: 3 },
+      },
+      { type: "group_fault", fault: "backend", goals: { backend: "fix" }, cost: 0.0625 },
+      { type: "group_end", ok: true },
+    ];
+    writeFileSync(fakeOrch, events.map((e) => `console.log(${JSON.stringify("@@ORCH@@ " + JSON.stringify({ t: 1, ...e }))});`).join("\n") + "\n");
+    child = spawn(process.execPath, [TSX, "server.ts"], {
+      cwd: ui,
+      env: { ...process.env, PORT: String(port), HOME: home, USERPROFILE: home, ORCH_REPO: "", ORCH_REPOS: "", ORCH_PATH: fakeOrch },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await new Promise((ok, fail) => {
+      const t = setTimeout(() => fail(new Error("server did not start")), 30_000);
+      child.stdout.on("data", (d) => String(d).includes(`localhost:${port}`) && (clearTimeout(t), ok()));
+      child.on("exit", (c) => fail(new Error(`server exited ${c}`)));
+    });
+  });
+  after(() => {
+    child?.kill();
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
+
+  test("a wrapped child's cost counts once and its events go to the member repo's session", async () => {
+    const t = (await request("/api/token")).json().token;
+    const headers = { "x-orch-token": t, "content-type": "application/json" };
+    for (const path of [group, member]) assert.equal((await request("/api/add-repo", { method: "POST", headers, body: { path } })).status, 200);
+    const started = await request("/api/run", { method: "POST", headers, body: { repo: group, goal: "checkout" } });
+    assert.equal(started.status, 200, started.text);
+    let state;
+    for (let i = 0; i < 200; i++) {
+      state = (await request("/api/state", { headers })).json();
+      const g = state.sessions.find((s) => s.state.repo === group);
+      if (!g.state.running && g.log.some((l) => l.startsWith("-- exited"))) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.equal(state.global.budget.spent, 0.9375, "plan 0.25 + child task 0.5 + unmatched child task 0.125 + fault 0.0625");
+    const types = (repo) => state.sessions.find((s) => s.state.repo === repo).events.map((e) => e.type);
+    assert.deepEqual(types(member), ["goal_start", "task_end"]);
+    assert.deepEqual(types(group), ["group_start", "group_plan", "group_child", "group_fault", "group_end"]);
+    const unmatched = state.sessions.find((s) => s.state.repo === group).events.find((e) => e.type === "group_child");
+    assert.equal(unmatched.event.cost, 0.125, "a child of a repo that is not open stays with the group's session");
+  });
+});

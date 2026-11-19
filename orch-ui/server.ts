@@ -169,9 +169,26 @@ const sendGlobal = () => {
   for (const s of sessions.values()) if (s.pending) sendSession(s); // their wait reason may have changed
 };
 
-/** Every agent call reports its cost once: the plan (architect, critic), each task_end, diff reviews, learn, notes tidy, share. */
-const COST_EVENTS = new Set(["plan", "task_end", "review", "learn_end", "notes_tidy", "share_end", "split_proposal", "coverage"]);
-function onEvent(s: Session, ev: { type: string; cost?: number; resetAt?: number; until?: number; reason?: string } & Partial<Record<Window, Reading>>) {
+/**
+ * Every agent call reports its cost once: the plan (architect, critic), each task_end, diff reviews, learn, notes tidy, share;
+ * a repo group's coordinator in group_plan and group_fault. A group member's own events arrive wrapped (unwrapGroupEvent).
+ */
+const COST_EVENTS = new Set(["plan", "task_end", "review", "learn_end", "notes_tidy", "share_end", "split_proposal", "coverage", "group_plan", "group_fault"]);
+type OrchEvent = { type: string; [k: string]: unknown };
+/**
+ * `orch group run` wraps each member's own event in `group_child {repo, role, event}`: the member repo's path and that event,
+ * unchanged. Any other event comes back as it is, without a repo.
+ */
+export function unwrapGroupEvent(ev: OrchEvent): { repo?: string; ev: OrchEvent } {
+  const inner = ev.type === "group_child" ? (ev.event as OrchEvent | undefined) : undefined;
+  if (!inner || typeof inner !== "object" || typeof inner.type !== "string") return { ev };
+  return { repo: typeof ev.repo === "string" && ev.repo ? ev.repo : undefined, ev: inner };
+}
+function onEvent(s: Session, wrapped: OrchEvent) {
+  // A group member's event whose repo has no session of its own: handled as the group session's.
+  const ev = unwrapGroupEvent(wrapped).ev as { type: string; cost?: number; resetAt?: number; until?: number; reason?: string } & Partial<
+    Record<Window, Reading>
+  >;
   if (ev.type === "usage") {
     // The windows are per account, so the latest reading from any repo holds for all of them.
     const next: Partial<Record<Window, Reading>> = {};
@@ -202,11 +219,7 @@ function pushLine(s: Session, line: string) {
   if (line.startsWith(MARK)) {
     try {
       const ev = JSON.parse(line.slice(MARK.length));
-      if (ev.type === "goal_start") s.events = [];
-      s.events.push(ev);
-      send("ev", { repo: s.repo, ev });
-      onEvent(s, ev);
-      return;
+      if (ev && typeof ev === "object" && typeof ev.type === "string") return pushEvent(s, ev);
     } catch {
       /* fall through to plain log */
     }
@@ -214,6 +227,20 @@ function pushLine(s: Session, line: string) {
   s.log.push(line);
   if (s.log.length > MAX_LOG) s.log.splice(0, s.log.length - MAX_LOG);
   send("log", { repo: s.repo, line });
+}
+
+/**
+ * One structured event from `s`'s process. A group member's wrapped event goes to the session of that member's repo
+ * as if its own process had printed it; without such a session it stays with `s` (the group's), still wrapped.
+ */
+function pushEvent(s: Session, ev: OrchEvent) {
+  const { repo, ev: inner } = unwrapGroupEvent(ev);
+  const member = repo === undefined ? undefined : sessions.get(keyOf(repo));
+  if (member && member !== s) return pushEvent(member, inner);
+  if (ev.type === "goal_start" || ev.type === "group_start") s.events = [];
+  s.events.push(ev);
+  send("ev", { repo: s.repo, ev });
+  onEvent(s, ev);
 }
 
 function addRepo(path: string): Session {
