@@ -27,6 +27,19 @@ import { join, basename, dirname, resolve, relative, isAbsolute } from "node:pat
 import { parseArgs } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { BUILTIN_AGENTS } from "./orch-agents";
+import {
+  backendBaseUrl,
+  groupEnv,
+  groupsDir,
+  listGroups,
+  memberOf,
+  readGroup,
+  removeGroup,
+  validateGroup,
+  writeGroup,
+  type GroupConfig,
+  type GroupRepo,
+} from "./orch-group";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
@@ -82,6 +95,10 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work is kept
                         on an orchestrator/discarded-* branch
   orch prune [--older-than DAYS]  delete orchestrator/* branches older than DAYS (14)
+  orch group add NAME --repo PATH:backend --repo PATH:frontend [--serve-command CMD] [--serve-url URL]
+                  [--base-url URL] [--env NAME=VALUE]   define a repo group (one backend, one frontend; the serve
+                  options belong to the backend, --env to the frontend, "{backend}" = the backend's URL)
+  orch group list [--json] | remove NAME   show or delete groups (~/.yaaiorch/groups)
   orch browser [status | login [URL] | install]   the browser the checks use (status); log in to the app once in
                         a window on this repo's own browser profile, which the checks reuse (login); download
                         Chrome for Testing into ~/.yaaiorch/browser when no Chrome, Edge, Chromium or Brave is installed
@@ -5300,6 +5317,56 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   };
 }
 
+type GroupFlags = { repo?: string[]; env?: string[]; json?: boolean; "serve-command"?: string; "serve-url"?: string; "base-url"?: string };
+
+function groupCommand(args: string[], values: GroupFlags) {
+  const [sub, name] = args;
+  if (sub === "add") {
+    if (!name) throw new Error("usage: orch group add NAME --repo PATH:backend --repo PATH:frontend [options]");
+    const repos: GroupRepo[] = (values.repo ?? []).map((spec) => {
+      const i = spec.lastIndexOf(":"); // a Windows path has a colon too: the role follows the last one
+      if (i <= 0) throw new Error(`--repo wants PATH:ROLE (backend or frontend), got "${spec}"`);
+      return { path: spec.slice(0, i), role: spec.slice(i + 1) } as GroupRepo;
+    });
+    const be = repos.find((r) => r.role === "backend");
+    const fe = repos.find((r) => r.role === "frontend");
+    const url = values["serve-url"];
+    if (url) {
+      if (!be) throw new Error("--serve-url needs a backend repo");
+      be.serve = {
+        url,
+        ...(values["serve-command"] ? { command: values["serve-command"] } : {}),
+        ...(values["base-url"] ? { baseUrl: values["base-url"] } : {}),
+      };
+    } else if (values["serve-command"] || values["base-url"]) throw new Error("--serve-command and --base-url need --serve-url");
+    if (values.env?.length) {
+      if (!fe) throw new Error("--env needs a frontend repo");
+      fe.env = {};
+      for (const e of values.env) {
+        const i = e.indexOf("=");
+        if (i <= 0) throw new Error(`--env wants NAME=VALUE, got "${e}"`);
+        fe.env[e.slice(0, i)] = e.slice(i + 1);
+      }
+    }
+    const g = validateGroup({ name, repos });
+    writeGroup(g, writeFileAtomic);
+    return console.log(`group "${g.name}" saved`);
+  }
+  if (sub === "list") {
+    const groups: GroupConfig[] = listGroups();
+    if (values.json) return console.log(JSON.stringify(groups));
+    if (!groups.length) return console.log("no groups");
+    for (const g of groups) console.log(`${g.name}: ${g.repos.map((r) => `${r.role} ${r.path}`).join(", ")}`);
+    return;
+  }
+  if (sub === "remove") {
+    if (!name) throw new Error("usage: orch group remove NAME");
+    removeGroup(name);
+    return console.log(`group "${name}" removed`);
+  }
+  throw new Error("usage: orch group add NAME --repo PATH:ROLE ... | list [--json] | remove NAME");
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -5365,6 +5432,11 @@ async function main() {
       details: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
       warm: { type: "boolean", default: false },
+      repo: { type: "string", multiple: true },
+      "serve-command": { type: "string" },
+      "serve-url": { type: "string" },
+      "base-url": { type: "string" },
+      env: { type: "string", multiple: true },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -5578,6 +5650,8 @@ async function main() {
       console.log(b ? `browser: ${b.path} (${b.via})` : 'browser: none found; run "orch browser install" or set YAAIORCH_BROWSER');
       return console.log(`profile for this repo: ${profileDir()}`);
     }
+    case "group":
+      return groupCommand(rest, values);
     case "rollback":
       acquireRunLock("rollback");
       return rollback(rest[0]);
@@ -5610,6 +5684,15 @@ export {
   TRANSIENT_RE,
   saveAgent,
   activityReader,
+  validateGroup,
+  readGroup,
+  writeGroup,
+  listGroups,
+  removeGroup,
+  memberOf,
+  backendBaseUrl,
+  groupEnv,
+  groupsDir,
 };
 
 if (!process.env.ORCH_NO_MAIN)
