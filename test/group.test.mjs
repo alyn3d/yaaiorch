@@ -3,7 +3,7 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -680,6 +680,284 @@ describe("orch group-member coordinate", () => {
       assert.match(bad.out, /usage: orch group-member coordinate/);
     } finally {
       rmSync(s.home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("orch group run", { timeout: 600_000 }, () => {
+  const FAKE = join(root, "test", "fake-claude", process.platform === "win32" ? "claude.cmd" : "claude");
+  const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const initRepo = (dir) => {
+    mkdirSync(dir);
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "user.name", "test");
+    git(dir, "config", "user.email", "test@localhost");
+    git(dir, "config", "core.autocrlf", "false");
+    git(dir, "commit", "-q", "--allow-empty", "-m", "init");
+  };
+  /** Two member repos and a group "shop" without serve (so integration is skipped), in a temp YAAIORCH_HOME. */
+  const setup = () => {
+    const home = tmp();
+    const be = join(home, "be");
+    const fe = join(home, "fe");
+    initRepo(be);
+    initRepo(fe);
+    mkdirSync(join(home, "groups"));
+    writeFileSync(
+      join(home, "groups", "shop.json"),
+      JSON.stringify({
+        name: "shop",
+        repos: [
+          { path: be, role: "backend" },
+          { path: fe, role: "frontend" },
+        ],
+      }),
+    );
+    return { home, be, fe, gdir: join(home, "groups", "shop"), heads: { be: git(be, "rev-parse", "HEAD"), fe: git(fe, "rev-parse", "HEAD") } };
+  };
+  const envFor = (s, env) => ({
+    ...process.env,
+    ORCH_NO_MAIN: "",
+    YAAIORCH_HOME: s.home,
+    CLAUDE_BIN: FAKE,
+    ORCH_EVENTS: "1",
+    FORCE_COLOR: "0",
+    FAKE_LOG: join(s.home, "fake.log"),
+    FAKE_QA: "pass",
+    ...env,
+  });
+  const parse = (out) =>
+    out
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith("@@ORCH@@ "))
+      .map((l) => JSON.parse(l.slice(9)));
+  const group = (s, args, env = {}) => {
+    const r = spawnSync(process.execPath, [TSX, ORCH, "group", ...args], { cwd: s.home, encoding: "utf8", timeout: 240_000, env: envFor(s, env) });
+    const events = parse(r.stdout ?? "");
+    return { code: r.status, out: `${r.stdout}${r.stderr}`, events, ev: (t) => events.filter((e) => e.type === t) };
+  };
+  const groupAsync = (s, args, env = {}) => {
+    const child = spawn(process.execPath, [TSX, ORCH, "group", ...args], { cwd: s.home, env: envFor(s, env) });
+    let out = "";
+    let stdout = "";
+    child.stdout.on("data", (d) => {
+      out += d;
+      stdout += d;
+    });
+    child.stderr.on("data", (d) => (out += d));
+    const done = new Promise((ok) => child.on("close", (code) => ok({ code, out })));
+    return { child, done, events: () => parse(stdout) };
+  };
+  const until = async (cond, ms = 60_000) => {
+    const end = Date.now() + ms;
+    while (!cond()) {
+      if (Date.now() > end) throw new Error("timed out waiting");
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  };
+  const branches = (dir) => git(dir, "branch", "--list", "orchestrator/*", "--format=%(refname:short)").split("\n").filter(Boolean);
+  const head = (dir) => git(dir, "rev-parse", "HEAD");
+  const locks = (s) =>
+    [join(s.be, ".orchestrator", "run.lock"), join(s.fe, ".orchestrator", "run.lock"), join(s.gdir, "run.lock")].filter((f) => existsSync(f));
+  const clean = (s) => rmSync(s.home, { recursive: true, force: true });
+
+  test("happy path builds both repos", () => {
+    const s = setup();
+    try {
+      const r = group(s, ["run", "shop", "list the items"]);
+      assert.equal(r.code, 0, r.out);
+      assert.equal(r.ev("group_start")[0].group, "shop");
+      assert.equal(r.ev("group_plan")[0].contract, "GET /api/items → Item[]");
+      assert.equal(r.ev("group_end").at(-1).ok, true, r.out);
+      for (const [dir, start] of [
+        [s.be, s.heads.be],
+        [s.fe, s.heads.fe],
+      ]) {
+        assert.notEqual(head(dir), start, `${dir} has a new commit`);
+        assert.deepEqual(
+          branches(dir).filter((b) => b.startsWith("orchestrator/group-checkpoint-")),
+          [],
+        );
+        assert.match(readFileSync(join(dir, ".orchestrator", "contract.md"), "utf8"), /GET \/api\/items/);
+      }
+      const paths = new Set(r.ev("group_child").map((e) => e.repo));
+      assert.ok(paths.has(s.be) && paths.has(s.fe), [...paths].join(", "));
+      assert.ok(r.ev("group_child").some((e) => e.event.type === "goal_end" && e.event.passed));
+      assert.deepEqual(
+        r
+          .ev("group_step")
+          .map((e) => e.repo)
+          .sort(),
+        ["backend", "frontend"],
+      );
+      assert.match(r.out, /integration skipped/);
+      assert.deepEqual(locks(s), []);
+      const last = JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8"));
+      assert.equal(last.ok, true);
+      assert.equal(last.goal, "list the items");
+      assert.deepEqual(last.checkpoints, { backend: s.heads.be, frontend: s.heads.fe });
+      // The build children read the other repo (--read-dir reaches the agents as --add-dir).
+      assert.match(readFileSync(join(s.home, "fake.log"), "utf8"), /agent=dev .*adddirs=/);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("build failure parks both", () => {
+    const s = setup();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--no-fast", "--max-rounds", "1"], { FAKE_FAIL_AGENT: "be" });
+      assert.equal(r.code, 1, r.out);
+      const end = r.ev("group_end").at(-1);
+      assert.equal(end.ok, false);
+      assert.equal(head(s.be), s.heads.be);
+      assert.equal(head(s.fe), s.heads.fe);
+      for (const dir of [s.be, s.fe]) {
+        assert.ok(
+          branches(dir).some((b) => b.startsWith("orchestrator/failed-group-")),
+          branches(dir).join(", "),
+        );
+        assert.deepEqual(
+          branches(dir).filter((b) => /checkpoint/.test(b)),
+          [],
+          "no checkpoint left behind",
+        );
+      }
+      assert.match(end.parked.backend, /^orchestrator\/failed-group-/);
+      assert.deepEqual(locks(s), []);
+      assert.equal(JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8")).ok, false);
+    } finally {
+      clean(s);
+    }
+  });
+
+  const refused = (what, prepare, re) =>
+    test(`refuses ${what}`, () => {
+      const s = setup();
+      const held = prepare(s);
+      try {
+        const r = group(s, ["run", "shop", "list the items"]);
+        assert.equal(r.code, 1, r.out);
+        assert.match(r.out, re);
+        for (const dir of [s.be, s.fe]) if (existsSync(dir)) assert.deepEqual(branches(dir), [], dir);
+        assert.deepEqual(
+          locks(s).filter((f) => f !== held?.keep),
+          [],
+        );
+      } finally {
+        held?.release?.();
+        clean(s);
+      }
+    });
+  refused("a dirty member repo", (s) => writeFileSync(join(s.fe, "stray.txt"), "x"), /uncommitted changes/);
+  refused(
+    "a locked member repo",
+    (s) => {
+      const id = o.acquireRunLock("run", s.fe);
+      return { keep: join(s.fe, ".orchestrator", "run.lock"), release: () => o.releaseRunLock(id, s.fe) };
+    },
+    /already running/,
+  );
+  refused("a missing member repo", (s) => rmSync(s.fe, { recursive: true, force: true }), /does not exist/);
+
+  test("approve-plan waits for orch approve --group", async () => {
+    const s = setup();
+    const prompts = join(s.home, "prompts");
+    const run = groupAsync(s, ["run", "shop", "list the items", "--approve-plan"], { FAKE_PROMPTS: prompts });
+    const approve = (...args) =>
+      spawnSync(process.execPath, [TSX, ORCH, "approve", "--group", "shop", ...args], { cwd: s.home, encoding: "utf8", env: envFor(s, {}) });
+    const pending = join(s.gdir, "plan-pending.json");
+    const round = () => {
+      try {
+        return JSON.parse(readFileSync(pending, "utf8")).round;
+      } catch {
+        return 0;
+      }
+    };
+    try {
+      await until(() => round() === 1);
+      assert.equal(JSON.parse(readFileSync(pending, "utf8")).contract, "GET /api/items → Item[]");
+      const rej = approve("--reject", "ADD PAGING");
+      assert.equal(rej.status, 0, rej.stderr);
+      await until(() => round() === 2);
+      const sent = readdirSync(prompts)
+        .filter((f) => f.endsWith("-coordinator.txt"))
+        .map((f) => readFileSync(join(prompts, f), "utf8"));
+      assert.equal(sent.length, 2);
+      assert.ok(
+        sent.some((p) => p.includes("ADD PAGING")),
+        "the reason reaches the coordinator",
+      );
+      const ok = approve();
+      assert.equal(ok.status, 0, ok.stderr);
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.equal(existsSync(pending), false);
+      assert.equal(run.events().filter((e) => e.type === "group_plan").length, 2);
+      assert.equal(run.events().at(-1).type, "group_end");
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+      clean(s);
+    }
+  });
+
+  test("approve --group without a waiting plan fails", () => {
+    const s = setup();
+    try {
+      const r = spawnSync(process.execPath, [TSX, ORCH, "approve", "--group", "shop"], { cwd: s.home, encoding: "utf8", env: envFor(s, {}) });
+      assert.notEqual(r.status, 0);
+      assert.match(r.stderr, /no group plan is waiting/);
+    } finally {
+      clean(s);
+    }
+  });
+
+  // Windows cannot deliver SIGTERM (kill() terminates the process), so there `orch group stop` asks; elsewhere a real signal.
+  test("stop mid-build parks both repos and releases locks", async () => {
+    const s = setup();
+    const run = groupAsync(s, ["run", "shop", "list the items", "--no-fast", "--max-rounds", "1"], { FAKE_SLOW: "3" });
+    try {
+      // Stop once each repo's foundation task wrote its file, so both have work to park.
+      const ended = (path) => run.events().some((e) => e.type === "group_child" && e.repo === path && e.event.type === "task_end");
+      await until(() => ended(s.be) && ended(s.fe), 120_000);
+      if (process.platform === "win32") {
+        const stop = spawnSync(process.execPath, [TSX, ORCH, "group", "stop", "shop"], { cwd: s.home, encoding: "utf8", env: envFor(s, {}) });
+        assert.equal(stop.status, 0, stop.stderr);
+      } else run.child.kill("SIGTERM");
+      const { code, out } = await run.done;
+      assert.equal(code, 130, out);
+      assert.equal(head(s.be), s.heads.be);
+      assert.equal(head(s.fe), s.heads.fe);
+      for (const dir of [s.be, s.fe])
+        assert.ok(
+          branches(dir).some((b) => b.startsWith("orchestrator/interrupted-group-")),
+          branches(dir).join(", "),
+        );
+      assert.deepEqual(locks(s), []);
+      const end = run.events().at(-1);
+      assert.equal(end.type, "group_end");
+      assert.equal(end.reason, "Stopped");
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+      clean(s);
+    }
+  });
+
+  test("a usage limit in a child stops the group with exit 3", () => {
+    const s = setup();
+    try {
+      const r = group(s, ["run", "shop", "list the items"], { FAKE_LIMIT_AFTER: "1" });
+      assert.equal(r.code, 3, r.out);
+      const end = r.ev("group_end").at(-1);
+      assert.equal(end.ok, false);
+      assert.equal(end.reason, "UsageLimit");
+      assert.equal(head(s.be), s.heads.be);
+      assert.equal(head(s.fe), s.heads.fe);
+      assert.deepEqual(locks(s), []);
+    } finally {
+      clean(s);
     }
   });
 });

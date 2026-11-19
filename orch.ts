@@ -46,6 +46,7 @@ import {
   type GroupConfig,
   type GroupRepo,
 } from "./orch-group";
+import { approveGroup, GROUP_EXIT, runGroup, stopGroup } from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
@@ -88,8 +89,9 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch intake [--github LABEL] [--backlog FILE]   queue open GitHub issues with that label (via gh) and the
                         unchecked "- [ ]" items of a backlog file, each once; anyone who can label issues
                         can direct the agents, so use a label only people you trust can set
-  orch approve [--reject "WHY"] [--plan-stdin]   answer a run waiting with --approve-plan: build the plan (edited:
-                        a plan as JSON on stdin), or send it back to the architect with your reason
+  orch approve [--reject "WHY"] [--plan-stdin] [--group NAME]   answer a run waiting with --approve-plan: build the
+                        plan (edited: a plan as JSON on stdin), or send it back to the architect with your reason;
+                        --group: the group plan of "orch group run NAME --approve-plan" (edited: {contract, goals})
   orch answer ID        answer an agent's question with text from stdin
   orch decide ID allow|deny|always   answer a shell command an agent wants to run (--commands)
   orch chat             ask Agent M (Haiku, read-only) about your setup and repos: {"question", "session"?, "repos"?, "running"?}
@@ -105,6 +107,11 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
                   [--base-url URL] [--env NAME=VALUE]   define a repo group (one backend, one frontend; the serve
                   options belong to the backend, --env to the frontend, "{backend}" = the backend's URL)
   orch group list [--json] | remove NAME   show or delete groups (~/.yaaiorch/groups)
+  orch group run NAME "<goal>" [--max-cost USD] [--power P] [--model SPEC] [--approve-plan] [--fast|--no-fast]
+                  one goal across the group: the coordinator writes the API contract and a goal per repo, both
+                  repos build in parallel; on failure or stop each repo's work is parked on a branch and the repo
+                  reset (exit 1, 3 on a usage limit, 130 when stopped). --approve-plan: orch approve --group NAME
+  orch group stop NAME   stop a running group goal (its work is parked as interrupted)
   orch browser [status | login [URL] | install]   the browser the checks use (status); log in to the app once in
                         a window on this repo's own browser profile, which the checks reuse (login); download
                         Chrome for Testing into ~/.yaaiorch/browser when no Chrome, Edge, Chromium or Brave is installed
@@ -416,9 +423,10 @@ const LOCK_STALE_MS = 2 * 60_000;
  * starts gets the lock id in ORCH_GROUP_LOCK and runs under the held lock without writing, touching or
  * releasing it; any other value, or no lock at all, is refused. Returns the lock id.
  */
-function acquireRunLock(cmd: string, root = process.cwd()): string {
-  const atCwd = resolve(root) === resolve(process.cwd());
-  const lockFile = atCwd ? RUN_LOCK : join(root, DIR, "run.lock");
+function acquireRunLock(cmd: string, root = process.cwd(), file?: string): string {
+  // An explicit lock file (a group's own lock, or a member repo that is also the cwd) is always held as a foreign lock.
+  const atCwd = !file && resolve(root) === resolve(process.cwd());
+  const lockFile = file ?? (atCwd ? RUN_LOCK : join(root, DIR, "run.lock"));
   const inherited = process.env.ORCH_GROUP_LOCK;
   if (inherited) {
     let held: Partial<LockInfo> = {};
@@ -486,7 +494,7 @@ function acquireRunLock(cmd: string, root = process.cwd()): string {
     }
   }, 30_000);
   beat.unref();
-  const onExit = () => releaseRunLock(me.id, root);
+  const onExit = () => releaseRunLock(me.id, root, file);
   heldLocks.set(me.id, { beat, onExit });
   process.on("exit", onExit);
   if (atCwd) exitOnSignals(cmd);
@@ -496,15 +504,15 @@ function acquireRunLock(cmd: string, root = process.cwd()): string {
 /** Locks this process holds: their heartbeat and exit listener, dropped by releaseRunLock. */
 const heldLocks = new Map<string, { beat: NodeJS.Timeout; onExit: () => void }>();
 
-/** Delete the run lock at root, but only if it is still the one with this id; stop its heartbeat either way. */
-function releaseRunLock(id: string, root: string) {
+/** Delete the run lock at root (or `file`), but only if it is still the one with this id; stop its heartbeat either way. */
+function releaseRunLock(id: string, root: string, file?: string) {
   const held = heldLocks.get(id);
   if (held) {
     heldLocks.delete(id);
     clearInterval(held.beat);
     process.off("exit", held.onExit);
   }
-  const lockFile = join(root, DIR, "run.lock");
+  const lockFile = file ?? join(root, DIR, "run.lock");
   try {
     if ((JSON.parse(readFileSync(lockFile, "utf8")) as LockInfo).id === id) unlinkSync(lockFile);
   } catch {
@@ -2765,10 +2773,17 @@ ${dirty}`);
     }
     case "park": {
       if (b !== "failed" && b !== "interrupted") throw new Error("usage: orch group-member park <checkpoint> <failed|interrupted>");
-      return out({ parked: moveWorkAside(checkpoint(a), b, `orch: group ${b} (unfinished)`) });
+      const leftovers = childCheckpoints(checkpoint(a));
+      const parked = moveWorkAside(a!, b, `orch: group ${b} (unfinished)`);
+      for (const cp of leftovers) git("branch", "-D", cp);
+      return out({ parked });
     }
-    case "reset":
-      return out({ parked: moveWorkAside(checkpoint(a), "discarded", "orch: group reset (discarded)") });
+    case "reset": {
+      const leftovers = childCheckpoints(checkpoint(a));
+      const parked = moveWorkAside(a!, "discarded", "orch: group reset (discarded)");
+      for (const cp of leftovers) git("branch", "-D", cp);
+      return out({ parked });
+    }
     case "drop":
       git("branch", "-D", checkpoint(a));
       return out({});
@@ -2790,6 +2805,21 @@ ${dirty}`);
         "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint> | drop <checkpoint> | coordinate <plan|fault> --group <name>",
       );
   }
+}
+
+/**
+ * The run checkpoints a group's children left behind (a failed or stopped `orch run` keeps its own): every
+ * orchestrator/checkpoint-* at or after the group checkpoint. The group checkpoint is the way back, so they go.
+ */
+function childCheckpoints(groupCp: string): string[] {
+  return checkpoints().filter((cp) => {
+    try {
+      git("merge-base", "--is-ancestor", groupCp, cp);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -5526,10 +5556,61 @@ function memberFlags(values: Record<string, string | boolean | string[] | undefi
   return { ...(groupContext ? { groupContext } : {}), readDirs };
 }
 
-type GroupFlags = { repo?: string[]; env?: string[]; json?: boolean; "serve-command"?: string; "serve-url"?: string; "base-url"?: string };
+type GroupFlags = {
+  repo?: string[];
+  env?: string[];
+  json?: boolean;
+  "serve-command"?: string;
+  "serve-url"?: string;
+  "base-url"?: string;
+  power?: string;
+  model?: string;
+  "max-cost"?: string;
+  "max-rounds"?: string;
+  "agent-timeout"?: string;
+  "approve-plan"?: boolean;
+  fast?: boolean;
+  "no-fast"?: boolean;
+};
 
-function groupCommand(args: string[], values: GroupFlags) {
+/** `orch group run NAME "<goal>"`: exits 0 pass, 1 fail, 3 usage limit, 130 stopped. */
+async function groupRun(name: string | undefined, goal: string, values: GroupFlags): Promise<never> {
+  if (!name || !goal.trim()) throw new Error('usage: orch group run NAME "<goal>"');
+  const power = String(values.power ?? "heavy");
+  if (!Object.hasOwn(POWER, power)) throw new Error(`--power must be one of ${Object.keys(POWER).join(", ")}, got "${power}"`);
+  const agentTimeout = Number(values["agent-timeout"] ?? 30);
+  if (!(agentTimeout > 0)) throw new Error(`--agent-timeout must be a positive number of minutes, got "${values["agent-timeout"]}"`);
+  const maxRounds = Number(values["max-rounds"] ?? 5);
+  if (!Number.isInteger(maxRounds) || maxRounds < 1) throw new Error(`--max-rounds must be a whole number of at least 1, got "${values["max-rounds"]}"`);
+  let maxCost: number | undefined;
+  if (values["max-cost"] !== undefined) {
+    maxCost = Number(values["max-cost"]);
+    if (!(maxCost > 0)) throw new Error(`--max-cost must be a positive amount in USD, got "${values["max-cost"]}"`);
+  }
+  const outcome = await runGroup(
+    readGroup(name),
+    goal.trim(),
+    {
+      power,
+      agentTimeout,
+      maxRounds,
+      approvePlan: !!values["approve-plan"],
+      ...(maxCost !== undefined ? { maxCost } : {}),
+      ...(values.model ? { model: values.model } : {}),
+      ...(values["no-fast"] ? { fast: false } : values.fast ? { fast: true } : {}),
+    },
+    { acquireRunLock, releaseRunLock, writeFileAtomic },
+  );
+  return process.exit(GROUP_EXIT[outcome]);
+}
+
+async function groupCommand(args: string[], values: GroupFlags) {
   const [sub, name] = args;
+  if (sub === "run") return groupRun(name, args.slice(2).join(" "), values);
+  if (sub === "stop") {
+    if (!name) throw new Error("usage: orch group stop NAME");
+    return stopGroup(name);
+  }
   if (sub === "add") {
     if (!name) throw new Error("usage: orch group add NAME --repo PATH:backend --repo PATH:frontend [options]");
     const repos: GroupRepo[] = (values.repo ?? []).map((spec) => {
@@ -5573,7 +5654,7 @@ function groupCommand(args: string[], values: GroupFlags) {
     removeGroup(name);
     return console.log(`group "${name}" removed`);
   }
-  throw new Error("usage: orch group add NAME --repo PATH:ROLE ... | list [--json] | remove NAME");
+  throw new Error('usage: orch group add NAME --repo PATH:ROLE ... | list [--json] | remove NAME | run NAME "<goal>" | stop NAME');
 }
 
 async function main() {
@@ -5738,6 +5819,8 @@ async function main() {
       return learn(o);
     }
     case "approve":
+      if (typeof values.group === "string")
+        return approveGroup(values.group, values.reject, values["plan-stdin"] ? readFileSync(0, "utf8") : undefined, writeFileAtomic);
       return approve(values);
     case "answer":
       if (rest.length !== 1) throw new Error("usage: orch answer ID (answer on stdin)");
