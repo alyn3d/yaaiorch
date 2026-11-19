@@ -421,9 +421,9 @@ async function runChildren(
     const others = s.g.repos.filter((x) => x.role !== role);
     emit("group_step", { step, repo: role, round });
     let cost = 0;
+    // The goal goes last, after "--": a goal that starts with "-" (a markdown list) is never read as an option.
     const args = [
       "run",
-      goals[role]!,
       "--group-context",
       join(s.dir, `context-${role}.md`),
       ...others.flatMap((x) => ["--read-dir", x.path]),
@@ -433,6 +433,8 @@ async function runChildren(
       ...costArgs(share),
       ...(s.o.maxRounds ? ["--max-rounds", String(s.o.maxRounds)] : []),
       ...extra,
+      "--",
+      goals[role]!,
     ];
     // The frontend's env reaches everything its child starts (checks, dev server, browser checks); the lock id wins.
     const env = { ...(role === "frontend" ? frontendEnv(s) : {}), ORCH_GROUP_LOCK: s.locks.get(role)! };

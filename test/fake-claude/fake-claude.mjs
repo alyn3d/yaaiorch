@@ -44,6 +44,7 @@
 //                            (counter in .orchestrator/fake-integration)
 //   FAKE_GROUP_FAULT=backend|frontend|both   the group coordinator's fault call (default frontend); FAKE_GROUP_REVISE=1
 //                            adds contract "REVISED". Without "Integration failed" in the prompt it answers a plan.
+//                            FAKE_GROUP_BULLETS=1: every goal it gives starts with "- " (a markdown bullet list)
 //   FAKE_SECRET_ONCE=<agent> that agent's first call writes an AWS-style access key into its files
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
@@ -305,6 +306,7 @@ if (prompt.startsWith("The user answered your question:") && existsSync(question
 
 if (prompt.startsWith("You are the group coordinator.")) {
   // Repo groups: a plan (contract and both goals), or after "Integration failed" a fault call.
+  const bullet = env.FAKE_GROUP_BULLETS ? "- " : "";
   if (prompt.includes("Integration failed")) {
     const fault = env.FAKE_GROUP_FAULT ?? "frontend";
     const sides = fault === "both" ? ["backend", "frontend"] : [fault];
@@ -313,7 +315,7 @@ if (prompt.startsWith("You are the group coordinator.")) {
       "```json\n" +
         JSON.stringify({
           fault,
-          goals: Object.fromEntries(sides.map((s) => [s, `fix the ${s} so it matches the contract`])),
+          goals: Object.fromEntries(sides.map((s) => [s, `${bullet}fix the ${s} so it matches the contract`])),
           ...(env.FAKE_GROUP_REVISE ? { contract: "REVISED" } : {}),
         }) +
         "\n```",
@@ -324,7 +326,7 @@ if (prompt.startsWith("You are the group coordinator.")) {
       "```json\n" +
         JSON.stringify({
           contract: "GET /api/items → Item[]",
-          goals: { backend: "serve GET /api/items", frontend: "show the items from GET /api/items against the running backend" },
+          goals: { backend: `${bullet}serve GET /api/items`, frontend: `${bullet}show the items from GET /api/items` },
         }) +
         "\n```",
     );

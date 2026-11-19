@@ -1261,6 +1261,26 @@ describe("orch group run", { timeout: 600_000 }, () => {
     }
   });
 
+  test("goals that start with a dash reach the build and fix children as goals, not flags", async () => {
+    const s = await setupServe();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"], {
+        FAKE_GROUP_BULLETS: "1",
+        FAKE_QA_FAIL_INTEGRATION: "1",
+        FAKE_GROUP_FAULT: "backend",
+      });
+      assert.equal(r.code, 0, r.out);
+      const starts = r.ev("group_child").filter((e) => e.event.type === "goal_start");
+      const goals = starts.map((e) => `${e.role}: ${e.event.goal}`);
+      assert.ok(goals.includes("backend: - serve GET /api/items"), goals.join("\n"));
+      assert.ok(goals.includes("frontend: - show the items from GET /api/items"), goals.join("\n"));
+      assert.ok(goals.includes("backend: - fix the backend so it matches the contract"), goals.join("\n"));
+      assert.equal(r.ev("group_end").at(-1).ok, true);
+    } finally {
+      clean(s);
+    }
+  });
+
   test("revised contract rewritten", async () => {
     const s = await setupServe();
     try {
