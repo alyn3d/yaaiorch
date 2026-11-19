@@ -310,7 +310,11 @@ export class DevServer {
   private out = "";
   private discoveredUrl?: string;
   private startError?: string;
-  constructor(readonly cfg: ServeConfig) {}
+  /** `cwd`: where the command runs (default: this process's cwd, the repo of a plain run). */
+  constructor(
+    readonly cfg: ServeConfig,
+    private readonly opts: { cwd?: string } = {},
+  ) {}
 
   get url(): string {
     return this.discoveredUrl ?? this.cfg.url;
@@ -371,7 +375,7 @@ export class DevServer {
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, BROWSER: "none", FORCE_COLOR: "0" },
-      cwd: this.cfg.auto ? join(process.cwd(), this.cfg.auto.directory) : process.cwd(),
+      cwd: this.cfg.auto ? join(this.opts.cwd ?? process.cwd(), this.cfg.auto.directory) : (this.opts.cwd ?? process.cwd()),
     });
     const keep = (d: Buffer) => (this.out = (this.out + d.toString()).slice(-8000));
     p.stdout?.on("data", keep);
@@ -380,7 +384,8 @@ export class DevServer {
     this.proc = p;
   }
 
-  private tail() {
+  /** The server's last output, for a failure report. */
+  tail() {
     return this.out.trim().slice(-1500) || "(no output)";
   }
 }

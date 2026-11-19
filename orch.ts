@@ -35,6 +35,7 @@ import {
   parseFaultCall,
   parseGroupPlan,
   groupEnv,
+  groupServe,
   groupSection,
   groupsDir,
   listGroups,
@@ -46,7 +47,7 @@ import {
   type GroupConfig,
   type GroupRepo,
 } from "./orch-group";
-import { approveGroup, GROUP_EXIT, runGroup, stopGroup } from "./orch-group-run";
+import { approveGroup, childShare, GROUP_EXIT, runGroup, stopGroup } from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
@@ -6001,12 +6002,14 @@ export {
   memberOf,
   backendBaseUrl,
   groupEnv,
+  groupServe,
   groupsDir,
   groupSection,
   coordinatorPlanPrompt,
   coordinatorFaultPrompt,
   parseGroupPlan,
   parseFaultCall,
+  childShare,
   readDenyRules,
   acquireRunLock,
   releaseRunLock,

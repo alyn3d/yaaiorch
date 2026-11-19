@@ -3,8 +3,9 @@
 
 // `orch group run`: one goal across a group's backend and frontend repo. The group process holds the group lock and
 // both repos' run locks, checkpoints both repos, asks the coordinator for the contract and one goal per repo, builds
-// both repos in parallel (each an `orch run` child under the held lock), and ends by dropping the checkpoints (pass)
-// or parking each repo's work and resetting it (fail, usage limit, stop). Bundled into orch.mjs.
+// both repos in parallel (each an `orch run` child under the held lock), then checks the frontend against the running
+// backend (integration, with coordinator fault calls and fix rounds), and ends by dropping the checkpoints (pass) or
+// parking each repo's work and resetting it (fail, usage limit, stop). Bundled into orch.mjs.
 //
 // It must not import orch.ts (orch.ts imports it): the lock and atomic-write helpers come in as `GroupDeps`. Every
 // repo-level git step runs as `orch group-member ...` in that repo, so this file never touches a repo itself.
@@ -12,7 +13,21 @@ import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_pr
 import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { groupSection, groupsDir, memberOf, parseGroupPlan, type GroupConfig, type GroupPlan, type GroupRepo, type GroupRole } from "./orch-group";
+import { DevServer, type ServeConfig } from "./orch-browser";
+import {
+  checkGroupName,
+  groupEnv,
+  groupSection,
+  groupServe,
+  groupsDir,
+  memberOf,
+  parseGroupPlan,
+  type FaultCall,
+  type GroupConfig,
+  type GroupPlan,
+  type GroupRepo,
+  type GroupRole,
+} from "./orch-group";
 
 export type GroupOpts = {
   maxCost?: number;
@@ -40,7 +55,7 @@ type GroupDecision = { round: number; action: "approve" | "reject"; note?: strin
 
 const ROLES: GroupRole[] = ["backend", "frontend"];
 
-export const groupDir = (name: string) => join(groupsDir(), name);
+export const groupDir = (name: string) => join(groupsDir(), checkGroupName(name));
 const STOP_FILE = "stop";
 const PENDING = "plan-pending.json";
 const DECISION = "plan-decision.json";
@@ -57,6 +72,8 @@ function emit(type: string, data: Record<string, unknown> = {}) {
 
 // ---------- children: every process the group starts, so it can kill or await them all ----------
 const live = new Set<{ p: ChildProcess; done: Promise<number> }>();
+/** The backend's server during the integration step: killed with the children, on every exit path. */
+let backendServer: DevServer | undefined;
 
 /** Kill a child and everything it started: taskkill /T on Windows, the child's process group elsewhere (it runs detached). */
 function killChildTree(p: ChildProcess) {
@@ -74,6 +91,7 @@ function killChildTree(p: ChildProcess) {
 }
 const killAll = () => {
   for (const c of live) killChildTree(c.p);
+  backendServer?.stop();
 };
 /** Kill every child and wait until each has exited, so nothing runs in a repo once its lock is released. */
 async function settleChildren() {
@@ -205,6 +223,10 @@ type Run = {
   checkpoints: Partial<Record<GroupRole, Checkpoint>>;
   spent: number;
   stopped: boolean;
+  /** Parking or dropping the checkpoints: a stop then is only recorded, so it never kills a park half way. */
+  ending: boolean;
+  /** How to start the backend for integration (`groupServe`); undefined skips integration. */
+  serve?: ServeConfig & { baseUrl?: string };
   plan?: GroupPlan;
 };
 
@@ -248,6 +270,22 @@ function budgetLeft(s: Run): number | undefined {
   return left;
 }
 const costArgs = (amount: number | undefined) => (amount === undefined ? [] : ["--max-cost", amount.toFixed(4)]);
+
+/**
+ * Budget policy with --max-cost (`left` is what is left of it when the step starts). The build gets 60% of it,
+ * split equally over the repos that build; the other 40% is kept for integration and fix rounds (with no
+ * integration, `rounds` 0, the build gets all of it). Integration round r of `rounds` gets what is left divided by
+ * the child steps still possible (itself, then a fix and an integration for each later round: 2(rounds-r)+1); a fix
+ * in round r gets what is left divided by 2(rounds-r) (itself and the steps after it), split over the repos it fixes.
+ */
+export function childShare(left: number, step: "build" | "integration" | "fix", children: number, round: number, rounds: number): number {
+  const n = Math.max(1, children);
+  const later = Math.max(0, rounds - round);
+  if (step === "build") return (rounds > 0 ? (left * 3) / 5 : left) / n;
+  return left / (step === "integration" ? 2 * later + 1 : Math.max(1, 2 * later)) / n;
+}
+/** Integration rounds of this run: none without a backend serve. */
+const roundsOf = (s: Run) => (s.serve ? (s.g.integrationRounds ?? 2) : 0);
 const modelArgs = (o: GroupOpts) => [
   "--power",
   o.power,
@@ -259,18 +297,15 @@ const modelArgs = (o: GroupOpts) => [
 ];
 
 /** The coordinator, run in the backend repo with the frontend readable. Exit 3 is a usage limit. */
-async function coordinatePlan(s: Run, note?: string): Promise<GroupPlan> {
-  const be = repoOf(s, "backend");
-  const goal = note ? `${s.goal}\n\nThe person reviewing your previous plan rejected it:\n${note}\nWrite a new contract and goals that answer this.` : s.goal;
+async function coordinator(s: Run, mode: "plan" | "fault", input: Record<string, unknown>): Promise<{ reply: unknown; cost: number }> {
   const briefs = Object.fromEntries(ROLES.map((r) => [r, readBrief(repoOf(s, r))]).filter(([, b]) => b));
-  const input = JSON.stringify({ goal, briefs });
   let r;
   try {
     r = await member(
-      be,
+      repoOf(s, "backend"),
       s.locks.get("backend")!,
-      ["coordinate", "plan", "--group", s.g.name, ...modelArgs(s.o), ...costArgs(budgetLeft(s))],
-      input,
+      ["coordinate", mode, "--group", s.g.name, ...modelArgs(s.o), ...costArgs(budgetLeft(s))],
+      JSON.stringify({ ...input, briefs }),
       "coordinator",
     );
   } catch (e) {
@@ -280,7 +315,13 @@ async function coordinatePlan(s: Run, note?: string): Promise<GroupPlan> {
   }
   const cost = Number(r.cost) || 0;
   s.spent += cost;
-  const plan = r.reply as GroupPlan;
+  return { reply: r.reply, cost };
+}
+
+async function coordinatePlan(s: Run, note?: string): Promise<GroupPlan> {
+  const goal = note ? `${s.goal}\n\nThe person reviewing your previous plan rejected it:\n${note}\nWrite a new contract and goals that answer this.` : s.goal;
+  const { reply, cost } = await coordinator(s, "plan", { goal });
+  const plan = reply as GroupPlan;
   emit("group_plan", { contract: plan.contract, goals: plan.goals, cost });
   return plan;
 }
@@ -354,6 +395,15 @@ async function planStep(s: Run): Promise<GroupPlan> {
 /** `stopped`: the group killed it after the other child failed, so its exit code says nothing about its own work. */
 type ChildEnd = { role: GroupRole; code: number; cost: number; stopped: boolean };
 
+/**
+ * The frontend children's env: the group's frontend `env` with "{backend}" replaced by the backend's base URL. Without
+ * one (no serve), an entry that still says "{backend}" is left out rather than passed on unreplaced.
+ */
+function frontendEnv(s: Run): Record<string, string> {
+  const base = s.serve ? (s.serve.baseUrl ?? new URL(s.serve.url).origin) : undefined;
+  return Object.fromEntries(Object.entries(groupEnv(s.g, base)).filter(([, v]) => !v.includes("{backend}")));
+}
+
 /** Run `orch run` children in parallel; the first failure stops the others (their work is parked either way). */
 async function runChildren(
   s: Run,
@@ -361,9 +411,11 @@ async function runChildren(
   round: number,
   goals: Partial<Record<GroupRole, string>>,
   extra: string[],
+  watch?: (role: GroupRole, e: Event) => void,
 ): Promise<ChildEnd[]> {
   const roles = ROLES.filter((r) => goals[r]);
   const left = budgetLeft(s);
+  const share = left === undefined ? undefined : childShare(left, step, roles.length, round, roundsOf(s));
   const started = roles.map((role) => {
     const repo = repoOf(s, role);
     const others = s.g.repos.filter((x) => x.role !== role);
@@ -378,12 +430,15 @@ async function runChildren(
       "--strict-files",
       "--no-commands",
       ...modelArgs(s.o),
-      ...costArgs(left === undefined ? undefined : left / 2),
+      ...costArgs(share),
       ...(s.o.maxRounds ? ["--max-rounds", String(s.o.maxRounds)] : []),
       ...extra,
     ];
-    const c = runChild(repo, args, { ORCH_GROUP_LOCK: s.locks.get(role)! }, (event) => {
+    // The frontend's env reaches everything its child starts (checks, dev server, browser checks); the lock id wins.
+    const env = { ...(role === "frontend" ? frontendEnv(s) : {}), ORCH_GROUP_LOCK: s.locks.get(role)! };
+    const c = runChild(repo, args, env, (event) => {
       if (event.type === "goal_end" && typeof event.cost === "number") cost = event.cost;
+      watch?.(role, event);
       emit("group_child", { repo: repo.path, role, event });
     });
     return { role, c, cost: () => cost, stopped: false };
@@ -404,18 +459,109 @@ async function runChildren(
   return ends;
 }
 
+/** The last `n` characters: a failure report part stays bounded however much a child printed. */
+const clip = (t: string, n = 4000) => (t.length > n ? `…${t.slice(-n)}` : t);
+const bullets = (xs: string[]) => xs.map((x) => `- ${x}`).join("\n");
+
+/** What an integration child found: from its round_end, checks, visual and goal_end events (never its env). */
+type Findings = { failures: string[]; checks: string[]; problems: string[]; error?: string };
+function noteFinding(f: Findings, e: Event) {
+  if (e.type === "round_end" && Array.isArray(e.failures)) f.failures = e.failures.map(String);
+  else if (e.type === "checks" && Array.isArray(e.results))
+    f.checks = (e.results as { name?: unknown; command?: unknown; ok?: unknown; code?: unknown }[])
+      .filter((x) => !x.ok)
+      .map((x) => `${String(x.name)} (\`${String(x.command)}\`) exited ${String(x.code)}`);
+  else if (e.type === "visual" && Array.isArray(e.problems)) f.problems = e.problems.map(String);
+  else if (e.type === "goal_end" && typeof e.error === "string") f.error = e.error;
+}
+
+/** The failure report for the coordinator's fault call, each part bounded. */
+function integrationReport(f: Findings, code: number, serverTail: string): string {
+  const parts = [`The frontend's integration run failed (exit code ${code}).`];
+  if (f.failures.length) parts.push(`QA and check failures:\n${clip(bullets(f.failures))}`);
+  if (f.checks.length) parts.push(`Failing checks:\n${clip(bullets(f.checks))}`);
+  if (f.problems.length) parts.push(`Browser check problems:\n${clip(bullets(f.problems))}`);
+  if (f.error) parts.push(`Run error: ${clip(f.error)}`);
+  parts.push(`Backend server output (last lines):\n${clip(serverTail)}`);
+  return parts.join("\n\n");
+}
+
+/** Throws Stopped, Limit or a failure for children that did not all pass. */
+function childrenPassed(s: Run, ends: ChildEnd[], what: string) {
+  if (s.stopped) throw new Stopped();
+  if (ends.some((e) => e.code === 3)) throw new Limit("a member run hit the Claude usage limit");
+  const failed = ends.filter((e) => e.code !== 0 && !e.stopped);
+  if (failed.length) throw new Error(`${what} failed in ${failed.map((e) => e.role).join(" and ")}`);
+}
+
 /**
- * Step 4 (Task 7): integration of the built repos against the running backend, with coordinator fault calls and
- * fix rounds. Until it lands, a passed build is the group's pass.
+ * Step 4: start the backend (in the backend repo) and run the frontend against it. On a failure the coordinator says
+ * who is at fault (and may revise the contract), the fix goals run, and integration runs again, at most
+ * `integrationRounds` times. Returns on a pass; throws on a failure, a usage limit or a stop.
  */
-async function integrationStep(s: Run): Promise<"pass" | "fail" | "limit"> {
-  const serve = repoOf(s, "backend").serve;
-  console.warn(
-    serve
-      ? "warning: integration against the running backend is not available yet: integration skipped"
-      : "warning: no serve configured for the backend repo: integration skipped",
-  );
-  return "pass";
+async function integrationStep(s: Run): Promise<void> {
+  if (!s.serve) {
+    console.warn("warning: no serve configured for the backend (in the group or the backend repo's config): integration skipped");
+    emit("group_step", { step: "integration", round: 1, skipped: "no serve" });
+    return;
+  }
+  const rounds = roundsOf(s);
+  const be = repoOf(s, "backend");
+  const server = new DevServer(s.serve, { cwd: be.path });
+  backendServer = server;
+  const up = (p: Promise<string | null>) => p.catch((e: unknown) => `could not start the backend: ${msg(e)}`);
+  try {
+    let down: string | null | undefined;
+    for (let round = 1; ; round++) {
+      if (down === undefined) down = await up(server.ensure());
+      if (s.stopped) throw new Stopped();
+      let report: string;
+      if (down) {
+        console.warn(`integration round ${round}: the backend is not up: ${down.split("\n")[0]}`);
+        emit("group_step", { step: "integration", round, failed: "the backend did not come up" });
+        report = `The backend did not come up, so the frontend was not checked against it:\n${clip(down)}`;
+      } else {
+        const base = s.serve.baseUrl ?? new URL(server.url).origin;
+        const goal = `Verify the frontend works against the running backend at ${base} for this contract; fix the frontend if it does not.`;
+        const findings: Findings = { failures: [], checks: [], problems: [] };
+        const ends = await runChildren(s, "integration", round, { frontend: goal }, ["--no-fast"], (_, e) => noteFinding(findings, e));
+        if (s.stopped) throw new Stopped();
+        const [end] = ends;
+        if (end.code === 3) throw new Limit("a member run hit the Claude usage limit");
+        if (end.code === 0) {
+          console.log(`integration round ${round}: the frontend works against the running backend`);
+          return;
+        }
+        report = integrationReport(findings, end.code, server.tail());
+      }
+      if (round >= rounds) throw new Error(`integration failed after ${rounds} round${rounds === 1 ? "" : "s"}`);
+      const call = await coordinateFault(s, report);
+      const ends = await runChildren(s, "fix", round, call.goals, ["--no-fast"]);
+      childrenPassed(s, ends, "fix");
+      // A fixed backend is restarted (a dev server may not reload); otherwise the next round checks the one running.
+      down = call.goals.backend ? await up(server.restart()) : undefined;
+    }
+  } finally {
+    server.stop();
+    backendServer = undefined;
+  }
+}
+
+/** After a failed integration: who is at fault and the fix goal for each; a revised contract is rewritten everywhere. */
+async function coordinateFault(s: Run, report: string): Promise<FaultCall> {
+  const { reply, cost } = await coordinator(s, "fault", { goal: s.goal, contract: s.plan!.contract, report });
+  const call = reply as FaultCall;
+  const sides: GroupRole[] = call.fault === "both" ? ROLES : [call.fault];
+  // parseFaultCall keeps only the goals of the side(s) at fault; this holds even for a reply that did not go through it.
+  const goals = Object.fromEntries(sides.filter((r) => call.goals[r]).map((r) => [r, call.goals[r]!])) as Partial<Record<GroupRole, string>>;
+  console.log(`coordinator: integration fault is the ${call.fault === "both" ? "backend's and the frontend's" : `${call.fault}'s`}`);
+  emit("group_fault", { fault: call.fault, goals, cost, ...(call.contract ? { revised: true } : {}) });
+  if (call.contract) {
+    s.plan = { contract: call.contract, goals: s.plan!.goals };
+    writeContract(s, s.plan);
+    emit("group_plan", { contract: call.contract, goals, cost: 0, revised: true });
+  }
+  return { fault: call.fault, goals, ...(call.contract ? { contract: call.contract } : {}) };
 }
 
 /**
@@ -452,13 +598,10 @@ async function steps(s: Run): Promise<GroupOutcome> {
   s.plan = plan;
   for (const role of ROLES) if (!plan.goals[role]) console.log(`${role}: nothing to build for this goal`);
   const ends = await runChildren(s, "build", 1, plan.goals, s.o.fast === true ? ["--fast"] : s.o.fast === false ? ["--no-fast"] : []);
+  childrenPassed(s, ends, "build");
+  await integrationStep(s);
   if (s.stopped) throw new Stopped();
-  if (ends.some((e) => e.code === 3)) throw new Limit("a member run hit the Claude usage limit");
-  const failed = ends.filter((e) => e.code !== 0 && !e.stopped);
-  if (failed.length) throw new Error(`build failed in ${failed.map((e) => e.role).join(" and ")}`);
-  const integration = await integrationStep(s);
-  if (integration === "limit") throw new Limit("a member run hit the Claude usage limit");
-  if (integration === "fail") throw new Error("integration failed");
+  s.ending = true;
   await endStep(s, true, "failed");
   console.log(`group goal done: ${ROLES.filter((r) => plan.goals[r]).join(" and ")} built against the contract`);
   return "pass";
@@ -471,6 +614,12 @@ function watchStop(s: Run): () => void {
     if (++signals > 1) {
       // A second signal: no more parking, just get out (exit listeners kill children first, then release locks).
       process.exit(GROUP_EXIT.stopped);
+    }
+    if (s.ending) {
+      // Parking or dropping the checkpoints already: killing that would leave a repo half reset. Let it finish.
+      if (!s.stopped) console.log("stop noted: the group is already ending; its repos are being parked or released");
+      s.stopped = true;
+      return;
     }
     if (!s.stopped) console.log("stopping the group run: the members' work is parked as interrupted");
     s.stopped = true;
@@ -496,8 +645,9 @@ function watchStop(s: Run): () => void {
 export async function runGroup(g: GroupConfig, goal: string, o: GroupOpts, deps: GroupDeps): Promise<GroupOutcome> {
   if (process.env.ORCH_GROUP_LOCK) throw new Error("orch group run cannot run inside another group run (ORCH_GROUP_LOCK is set)");
   for (const r of g.repos) checkMember(r);
+  const serve = groupServe(g);
   const dir = groupDir(g.name);
-  const s: Run = { g, goal, o, deps, dir, stamp: stampNow(), locks: new Map(), checkpoints: {}, spent: 0, stopped: false };
+  const s: Run = { g, goal, o, deps, dir, stamp: stampNow(), locks: new Map(), checkpoints: {}, spent: 0, stopped: false, ending: false, serve };
   // Registered before any lock, so on exit children die before the locks' own exit listeners release them.
   process.on("exit", killAll);
   const groupLockFile = join(dir, "run.lock");
@@ -524,6 +674,7 @@ export async function runGroup(g: GroupConfig, goal: string, o: GroupOpts, deps:
     outcome = stopped ? "stopped" : limit ? "limit" : "fail";
     const reason = stopped ? "Stopped" : limit ? "UsageLimit" : msg(e);
     console.error(stopped ? "group run stopped" : limit ? `Stopped: ${msg(e)}` : `group run failed: ${reason}`);
+    s.ending = true;
     if (s.checkpoints.backend || s.checkpoints.frontend) await endStep(s, false, stopped || limit ? "interrupted" : "failed", reason);
     else emit("group_end", { ok: false, reason });
   } finally {

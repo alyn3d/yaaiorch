@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { isLocalUrl } from "./orch-browser";
+import { isLocalUrl, parseServe, type ServeConfig } from "./orch-browser";
 
 export type GroupRole = "backend" | "frontend";
 export type GroupRepo = {
@@ -93,10 +93,13 @@ export function validateGroup(v: unknown): GroupConfig {
   return g;
 }
 
-const groupFile = (name: string) => {
+/** A group name is a plain file name: never a path (`../x` would reach outside the groups dir). */
+export function checkGroupName(name: string): string {
   if (!NAME_RE.test(name)) throw new Error(`group name must match ${NAME_RE}, got "${name}"`);
-  return join(groupsDir(), `${name}.json`);
-};
+  return name;
+}
+
+const groupFile = (name: string) => join(groupsDir(), `${checkGroupName(name)}.json`);
 
 export function readGroup(name: string): GroupConfig {
   const file = groupFile(name);
@@ -148,12 +151,43 @@ export function backendBaseUrl(g: GroupConfig): string | undefined {
   return s.baseUrl ?? new URL(s.url).origin;
 }
 
-/** The frontend's env with "{backend}" replaced by the backend's base URL. */
-export function groupEnv(g: GroupConfig): Record<string, string> {
-  const base = backendBaseUrl(g);
+/** The frontend's env with "{backend}" replaced by the backend's base URL (by default the group serve's). */
+export function groupEnv(g: GroupConfig, base: string | undefined = backendBaseUrl(g)): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(memberOf(g, "frontend").env ?? {})) out[k] = base === undefined ? v : v.split("{backend}").join(base);
   return out;
+}
+
+/**
+ * How the group starts the backend for the integration step: the group's `serve`, else the backend repo's own
+ * `.orchestrator/config.json` `serve`, else undefined (integration is skipped). Throws on a config `serve` that
+ * does not parse.
+ */
+export function groupServe(g: GroupConfig): (ServeConfig & { baseUrl?: string }) | undefined {
+  const be = memberOf(g, "backend");
+  if (be.serve) {
+    const { command, url, baseUrl, timeout } = be.serve;
+    return { url, ...(command ? { command } : {}), ...(timeout ? { timeout } : {}), ...(baseUrl ? { baseUrl } : {}) };
+  }
+  const file = join(be.path, ".orchestrator", "config.json");
+  if (!existsSync(file)) return undefined;
+  let cfg: Record<string, unknown>;
+  try {
+    cfg = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  } catch (e) {
+    throw new Error(`the backend repo's .orchestrator/config.json: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+  }
+  if (!isObj(cfg) || cfg.serve === undefined) return undefined;
+  // "auto" is detected from the repo the run is in; the group process is not in the backend repo.
+  if (isObj(cfg.serve) && cfg.serve.url === "auto")
+    throw new Error(
+      `the backend repo's config "serve" detects its URL ("auto"); give the group a serve instead (orch group add --serve-command C --serve-url U)`,
+    );
+  try {
+    return parseServe(cfg.serve);
+  } catch (e) {
+    throw new Error(`the backend repo's ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+  }
 }
 
 /**
@@ -267,8 +301,10 @@ export function parseFaultCall(text: string): FaultCall {
   const r = extractJson<Record<string, unknown>>(text);
   if (r.fault !== "backend" && r.fault !== "frontend" && r.fault !== "both") throw new Error(`coordinator fault call: unknown fault "${String(r.fault)}"`);
   const goals = goalsOf(r.goals, "coordinator fault call");
-  for (const side of r.fault === "both" ? ROLE_LIST : [r.fault]) if (!goals[side]) throw new Error(`coordinator fault call: no goal for the ${side}`);
-  const call: FaultCall = { fault: r.fault, goals };
+  const sides: GroupRole[] = r.fault === "both" ? ROLE_LIST : [r.fault];
+  for (const side of sides) if (!goals[side]) throw new Error(`coordinator fault call: no goal for the ${side}`);
+  // Only the side(s) at fault get a fix goal: a goal for a side not named in "fault" is dropped.
+  const call: FaultCall = { fault: r.fault, goals: Object.fromEntries(sides.map((side) => [side, goals[side]!])) };
   if (r.contract !== undefined) {
     if (typeof r.contract !== "string" || !r.contract.trim()) throw new Error("coordinator fault call: contract must be a non-empty string");
     call.contract = r.contract.trim();

@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -84,6 +85,30 @@ describe("groupEnv", () => {
       ],
     });
     assert.deepEqual(o.groupEnv(g), { VITE_API_URL: "http://localhost:3000/api" });
+  });
+  test("groupServe: the group's serve, else the backend repo's config serve, else none", () => {
+    const home = tmp();
+    try {
+      const bePath = join(home, "be");
+      mkdirSync(join(bePath, ".orchestrator"), { recursive: true });
+      const repos = (serve) => [
+        { path: bePath, role: "backend", ...(serve ? { serve } : {}) },
+        { path: fe, role: "frontend" },
+      ];
+      const own = o.validateGroup({
+        name: "a",
+        repos: repos({ command: "node s.js", url: "http://localhost:3000/health", baseUrl: "http://localhost:3000/api" }),
+      });
+      assert.deepEqual(o.groupServe(own), { command: "node s.js", url: "http://localhost:3000/health", baseUrl: "http://localhost:3000/api" });
+      const plain = o.validateGroup({ name: "a", repos: repos() });
+      assert.equal(o.groupServe(plain), undefined);
+      writeFileSync(join(bePath, ".orchestrator", "config.json"), JSON.stringify({ serve: { command: "npm run dev", url: "http://localhost:4000" } }));
+      assert.deepEqual(o.groupServe(plain), { command: "npm run dev", url: "http://localhost:4000" });
+      writeFileSync(join(bePath, ".orchestrator", "config.json"), JSON.stringify({ serve: { command: "npm run dev", url: "https://example.com" } }));
+      assert.throws(() => o.groupServe(plain), /backend repo's config "serve"/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -559,6 +584,11 @@ describe("coordinator replies and prompts", () => {
     assert.equal(both.fault, "both");
     assert.equal(both.contract, "NEW");
   });
+  test("parseFaultCall keeps only the goals of the side(s) at fault", () => {
+    assert.deepEqual(o.parseFaultCall(fence({ fault: "backend", goals: { backend: "b", frontend: "f" } })), { fault: "backend", goals: { backend: "b" } });
+    assert.deepEqual(o.parseFaultCall(fence({ fault: "frontend", goals: { backend: "b", frontend: "f" } })).goals, { frontend: "f" });
+    assert.deepEqual(o.parseFaultCall(fence({ fault: "both", goals: { backend: "b", frontend: "f" } })).goals, { backend: "b", frontend: "f" });
+  });
   test("parseFaultCall throws on a fault side without its goal and on unknown roles", () => {
     assert.throws(() => o.parseFaultCall(fence({ fault: "both", goals: { backend: "b" } })), /frontend/);
     assert.throws(() => o.parseFaultCall(fence({ fault: "backend", goals: { frontend: "f" } })), /backend/);
@@ -684,6 +714,22 @@ describe("orch group-member coordinate", () => {
   });
 });
 
+describe("group budget shares", () => {
+  test("the build gets 60% of what is left, split over the repos that build", () => {
+    assert.equal(o.childShare(10, "build", 2, 1, 2), 3);
+    assert.equal(o.childShare(10, "build", 1, 1, 2), 6);
+  });
+  test("integration and fix split what is left over the child steps still possible", () => {
+    // Round 1 of 2: integration 1, fix 1, integration 2.
+    assert.equal(o.childShare(9, "integration", 1, 1, 2), 3);
+    // A fix in round 1 of 2: itself and integration 2, split over the repos it fixes.
+    assert.equal(o.childShare(6, "fix", 2, 1, 2), 1.5);
+    assert.equal(o.childShare(6, "fix", 1, 1, 2), 3);
+    // The last integration gets all of it.
+    assert.equal(o.childShare(5, "integration", 1, 2, 2), 5);
+  });
+});
+
 describe("orch group run", { timeout: 600_000 }, () => {
   const FAKE = join(root, "test", "fake-claude", process.platform === "win32" ? "claude.cmd" : "claude");
   const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -746,7 +792,7 @@ describe("orch group run", { timeout: 600_000 }, () => {
     });
     child.stderr.on("data", (d) => (out += d));
     const done = new Promise((ok) => child.on("close", (code) => ok({ code, out })));
-    return { child, done, events: () => parse(stdout) };
+    return { child, done, events: () => parse(stdout), out: () => out };
   };
   const until = async (cond, ms = 60_000) => {
     const end = Date.now() + ms;
@@ -786,11 +832,17 @@ describe("orch group run", { timeout: 600_000 }, () => {
       assert.deepEqual(
         r
           .ev("group_step")
+          .filter((e) => e.step === "build")
           .map((e) => e.repo)
           .sort(),
         ["backend", "frontend"],
       );
       assert.match(r.out, /integration skipped/);
+      assert.deepEqual(
+        r.ev("group_step").filter((e) => e.step === "integration"),
+        [r.ev("group_step").find((e) => e.step === "integration" && e.skipped === "no serve")],
+        "integration skipped without a serve",
+      );
       assert.deepEqual(locks(s), []);
       const last = JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8"));
       assert.equal(last.ok, true);
@@ -966,6 +1018,58 @@ describe("orch group run", { timeout: 600_000 }, () => {
     }
   });
 
+  test("stop and approve refuse a group name outside the groups dir and write nothing", () => {
+    const s = setup();
+    try {
+      // ../x resolves to <home>/x: make it look like a running group waiting for approval.
+      const outside = join(s.home, "x");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "run.lock"), "{}");
+      writeFileSync(join(outside, "plan-pending.json"), JSON.stringify({ round: 1 }));
+      const cli = (...args) => spawnSync(process.execPath, [TSX, ORCH, ...args], { cwd: s.home, encoding: "utf8", env: envFor(s, {}) });
+      const stop = cli("group", "stop", "../x");
+      assert.notEqual(stop.status, 0, stop.stdout);
+      assert.match(stop.stderr, /group name must match/);
+      const approve = cli("approve", "--group", "../x");
+      assert.notEqual(approve.status, 0, approve.stdout);
+      assert.match(approve.stderr, /group name must match/);
+      assert.deepEqual(readdirSync(outside).sort(), ["plan-pending.json", "run.lock"]);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("a stop while parking does not kill the park", async () => {
+    const s = setup();
+    const run = groupAsync(s, ["run", "shop", "list the items", "--no-fast", "--max-rounds", "1"], { FAKE_FAIL_AGENT: "be" });
+    try {
+      // "group run failed" is printed right before the repos are parked: stop then, so the stop lands mid-park.
+      await until(() => /group run failed/.test(run.out()), 180_000);
+      writeFileSync(join(s.gdir, "stop"), "now");
+      const { code, out } = await run.done;
+      assert.equal(code, 1, out);
+      assert.match(out, /stop noted/, "the stop landed while parking");
+      assert.doesNotMatch(out, /could not park/);
+      for (const [dir, start] of [
+        [s.be, s.heads.be],
+        [s.fe, s.heads.fe],
+      ]) {
+        assert.equal(head(dir), start, out);
+        assert.deepEqual(
+          branches(dir).filter((b) => /checkpoint/.test(b)),
+          [],
+          out,
+        );
+      }
+      assert.ok(branches(s.be).some((b) => b.startsWith("orchestrator/failed-group-")));
+      assert.deepEqual(locks(s), []);
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+      clean(s);
+    }
+  });
+
   test("a usage limit in a child stops the group with exit 3", () => {
     const s = setup();
     try {
@@ -976,6 +1080,165 @@ describe("orch group run", { timeout: 600_000 }, () => {
       assert.equal(end.reason, "UsageLimit");
       assert.equal(head(s.be), s.heads.be);
       assert.equal(head(s.fe), s.heads.fe);
+      assert.deepEqual(locks(s), []);
+    } finally {
+      clean(s);
+    }
+  });
+
+  // ---------- integration against the running backend ----------
+  const freePort = () =>
+    new Promise((ok, fail) => {
+      const srv = createServer();
+      srv.once("error", fail);
+      srv.listen(0, () => {
+        const { port } = srv.address();
+        srv.close(() => ok(port));
+      });
+    });
+  const answers = async (url) => {
+    try {
+      await fetch(url, { signal: AbortSignal.timeout(2000) });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const BACKEND = join(root, "test", "fixtures", "group-backend.mjs");
+  /** setup() plus a backend serve (the fixture on a free port, unless `command` is given) and a frontend whose check needs API_URL. */
+  const setupServe = async ({ command, timeout } = {}) => {
+    const s = setup();
+    const port = await freePort();
+    const url = `http://localhost:${port}`;
+    writeFileSync(
+      join(s.home, "groups", "shop.json"),
+      JSON.stringify({
+        name: "shop",
+        repos: [
+          { path: s.be, role: "backend", serve: { command: command ?? `node "${BACKEND}" ${port}`, url, ...(timeout ? { timeout } : {}) } },
+          { path: s.fe, role: "frontend", env: { API_URL: "{backend}" } },
+        ],
+      }),
+    );
+    mkdirSync(join(s.fe, ".orchestrator"), { recursive: true });
+    writeFileSync(
+      join(s.fe, ".orchestrator", "config.json"),
+      JSON.stringify({ checks: { env: `node -e "process.exit(process.env.API_URL==='${url}'?0:1)"` } }),
+    );
+    return { ...s, port, url };
+  };
+  const steps = (r, step) => r.ev("group_step").filter((e) => e.step === step);
+
+  test("env reaches the frontend checks", async () => {
+    const s = await setupServe();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"]);
+      assert.equal(r.code, 0, r.out);
+      assert.equal(r.ev("group_end").at(-1).ok, true);
+      const integ = steps(r, "integration");
+      assert.equal(integ.length, 1, r.out);
+      assert.equal(integ[0].repo, "frontend");
+      assert.equal(integ[0].round, 1);
+      // The integration child's checks ran with API_URL set to the backend's base URL.
+      const at = r.events.indexOf(integ[0]);
+      const checks = r.events.slice(at).filter((e) => e.type === "group_child" && e.repo === s.fe && e.event.type === "checks");
+      assert.ok(checks.length, r.out);
+      for (const c of checks)
+        assert.ok(
+          c.event.results.every((x) => x.ok),
+          JSON.stringify(c.event),
+        );
+      assert.equal(await answers(s.url), false, "the backend server is stopped when the group ends");
+      assert.deepEqual(locks(s), []);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("backend fault then pass", async () => {
+    const s = await setupServe();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"], { FAKE_QA_FAIL_INTEGRATION: "1", FAKE_GROUP_FAULT: "backend" });
+      assert.equal(r.code, 0, r.out);
+      const fix = steps(r, "fix");
+      assert.deepEqual(
+        fix.map((e) => [e.repo, e.round]),
+        [["backend", 1]],
+      );
+      const integ = steps(r, "integration");
+      assert.deepEqual(
+        integ.map((e) => e.round),
+        [1, 2],
+      );
+      assert.ok(r.events.indexOf(fix[0]) < r.events.indexOf(integ[1]));
+      assert.equal(r.ev("group_end").at(-1).ok, true);
+      assert.equal(await answers(s.url), false, "the backend server is stopped when the group ends");
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("revised contract rewritten", async () => {
+    const s = await setupServe();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"], {
+        FAKE_QA_FAIL_INTEGRATION: "1",
+        FAKE_GROUP_FAULT: "backend",
+        FAKE_GROUP_REVISE: "1",
+      });
+      assert.equal(r.code, 0, r.out);
+      for (const dir of [s.be, s.fe]) assert.match(readFileSync(join(dir, ".orchestrator", "contract.md"), "utf8"), /REVISED/);
+      assert.match(readFileSync(join(s.gdir, "contract.md"), "utf8"), /REVISED/);
+      assert.match(readFileSync(join(s.gdir, "context-backend.md"), "utf8"), /REVISED/);
+      const revised = r.ev("group_plan").filter((e) => e.revised);
+      assert.equal(revised.length, 1);
+      assert.equal(revised[0].contract, "REVISED");
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("rounds exhausted parks both", async () => {
+    const s = await setupServe();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"], { FAKE_QA_FAIL_INTEGRATION: "9" });
+      assert.equal(r.code, 1, r.out);
+      assert.deepEqual(
+        steps(r, "integration").map((e) => e.round),
+        [1, 2],
+      );
+      // The fake's default fault is the frontend's; no fix after the last round.
+      assert.deepEqual(
+        steps(r, "fix").map((e) => [e.repo, e.round]),
+        [["frontend", 1]],
+      );
+      assert.equal(head(s.be), s.heads.be);
+      assert.equal(head(s.fe), s.heads.fe);
+      for (const dir of [s.be, s.fe])
+        assert.ok(
+          branches(dir).some((b) => b.startsWith("orchestrator/failed-group-")),
+          branches(dir).join(", "),
+        );
+      assert.equal(r.ev("group_end").at(-1).ok, false);
+      assert.deepEqual(locks(s), []);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("backend that never answers fails integration", async () => {
+    const s = await setupServe({ command: 'node -e "setTimeout(()=>{},1e9)"', timeout: 2 });
+    const prompts = join(s.home, "prompts");
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"], { FAKE_PROMPTS: prompts });
+      assert.equal(r.code, 1, r.out);
+      const faults = readdirSync(prompts)
+        .map((f) => readFileSync(join(prompts, f), "utf8"))
+        .filter((p) => p.startsWith("You are the group coordinator.") && p.includes("Integration failed"));
+      assert.equal(faults.length, 1, r.out);
+      assert.match(faults[0], /did not answer/);
+      assert.doesNotMatch(faults[0], /API_URL/, "no env in the report");
+      assert.equal(r.ev("group_end").at(-1).ok, false);
       assert.deepEqual(locks(s), []);
     } finally {
       clean(s);
