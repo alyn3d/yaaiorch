@@ -40,6 +40,10 @@
 //   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
 //   FAKE_SPLIT=deps          orch split returns A, B (needs A) and C (needs nothing)
 //   FAKE_QA_FAIL_GOAL=<text> QA fails every round of a goal whose text contains this
+//   FAKE_QA_FAIL_INTEGRATION=<n>  QA fails a goal containing "against the running backend" the first n times
+//                            (counter in .orchestrator/fake-integration)
+//   FAKE_GROUP_FAULT=backend|frontend|both   the group coordinator's fault call (default frontend); FAKE_GROUP_REVISE=1
+//                            adds contract "REVISED". Without "Integration failed" in the prompt it answers a plan.
 //   FAKE_SECRET_ONCE=<agent> that agent's first call writes an AWS-style access key into its files
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
@@ -299,7 +303,33 @@ if (prompt.startsWith("The user answered your question:") && existsSync(question
   prompt = readFileSync(questionFlag, "utf8");
 }
 
-if (prompt.includes("Review this change")) {
+if (prompt.startsWith("You are the group coordinator.")) {
+  // Repo groups: a plan (contract and both goals), or after "Integration failed" a fault call.
+  if (prompt.includes("Integration failed")) {
+    const fault = env.FAKE_GROUP_FAULT ?? "frontend";
+    const sides = fault === "both" ? ["backend", "frontend"] : [fault];
+    log(`coordinator: fault=${fault}`);
+    reply(
+      "```json\n" +
+        JSON.stringify({
+          fault,
+          goals: Object.fromEntries(sides.map((s) => [s, `fix the ${s} so it matches the contract`])),
+          ...(env.FAKE_GROUP_REVISE ? { contract: "REVISED" } : {}),
+        }) +
+        "\n```",
+    );
+  } else {
+    log("coordinator: plan");
+    reply(
+      "```json\n" +
+        JSON.stringify({
+          contract: "GET /api/items → Item[]",
+          goals: { backend: "serve GET /api/items", frontend: "show the items from GET /api/items against the running backend" },
+        }) +
+        "\n```",
+    );
+  }
+} else if (prompt.includes("Review this change")) {
   // Diff review (critic against the goal, or a reviewer for bugs): FAKE_REVIEW_REJECT=<agent,agent> reject.
   const lens = prompt.includes("against the goal") ? "goal" : "bugs";
   const reject = (env.FAKE_REVIEW_REJECT ?? "").split(",").includes(agent);
@@ -401,6 +431,17 @@ if (prompt.includes("Review this change")) {
     log(`qa: failing goal ${goalLine}`);
     reply('{"passed": false, "failures": ["fake failure for this goal"]}');
     process.exit(0);
+  }
+  // FAKE_QA_FAIL_INTEGRATION=<n>: a goal containing "against the running backend" fails its first n verdicts.
+  if (env.FAKE_QA_FAIL_INTEGRATION && goalLine.includes("against the running backend")) {
+    const f = ".orchestrator/fake-integration";
+    const seen = existsSync(f) ? Number(readFileSync(f, "utf8")) : 0;
+    if (seen < Number(env.FAKE_QA_FAIL_INTEGRATION)) {
+      writeFileSync(f, String(seen + 1));
+      log(`qa: failing integration goal (${seen + 1}/${env.FAKE_QA_FAIL_INTEGRATION})`);
+      reply('{"passed": false, "failures": ["fake integration failure"]}');
+      process.exit(0);
+    }
   }
   const failOnce = mode === "fail-once" && !existsSync(".orchestrator/fake-qa-failed");
   if (failOnce) writeFileSync(".orchestrator/fake-qa-failed", "1");

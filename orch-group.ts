@@ -168,3 +168,110 @@ export function groupSection(contract: string, others: { role: string; path: str
     `\n\n## API contract\n${contract.trim()}\n`
   );
 }
+
+/** Parse the JSON object in a reply: a fenced json block if present, else the outermost {...}. */
+export function extractJson<T>(text: string): T {
+  const fenced = /```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/.exec(text)?.[1];
+  for (const c of [fenced, text]) {
+    if (!c) continue;
+    const s = c.indexOf("{"),
+      e = c.lastIndexOf("}");
+    if (s < 0 || e < s) continue;
+    try {
+      return JSON.parse(c.slice(s, e + 1)) as T;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  throw new Error(`no valid JSON in reply: ${text.slice(0, 200)}`);
+}
+
+// ---------- the coordinator: the API contract, one goal per repo, and who is at fault when integration fails ----------
+export type GroupPlan = { contract: string; goals: Partial<Record<GroupRole, string>> };
+export type FaultCall = { fault: GroupRole | "both"; goals: Partial<Record<GroupRole, string>>; contract?: string };
+
+const ROLE_LIST: GroupRole[] = ["backend", "frontend"];
+
+const repoLines = (g: GroupConfig) => g.repos.map((r) => `- ${r.role}: ${r.path}`).join("\n");
+
+const COORDINATOR_PREAMBLE =
+  `You are the group coordinator. One goal is built across two repos at once, a backend and a frontend, each by its own loop of ` +
+  `agents. You never edit files: you read both repos (this one and the other, read-only) and reply with JSON.\n\nRepos:\n`;
+
+const GOALS_NOTE =
+  `Each goal is a complete, self-contained instruction for that repo's own planner: what to build there, against the contract, ` +
+  `and how it is tested. A goal names no file in the other repo.`;
+
+const PLAN_FORMAT = `
+
+## Reply format
+Do not edit any file. Reply with exactly one JSON object and nothing else:
+{"contract": "<the API contract, in plain text: endpoints, methods, request and response shapes, status and error codes, auth>", "goals": {"backend": "<the backend repo's goal>", "frontend": "<the frontend repo's goal>"}}
+Leave a repo out of "goals" only when the goal needs no change there.`;
+
+const FAULT_FORMAT = `
+
+## Reply format
+Do not edit any file. Reply with exactly one JSON object and nothing else:
+{"fault": "backend" | "frontend" | "both", "goals": {"<each repo at fault>": "<its fix goal>"}, "contract": "<the corrected contract; only when the contract itself was wrong>"}
+"goals" has exactly one entry per repo named in "fault" ("both" means both). Leave "contract" out when it stands.`;
+
+/** First call of a group goal: the contract and one sub-goal per repo. `existingContract` is the group's standing contract, if any. */
+export function coordinatorPlanPrompt(g: GroupConfig, goal: string, briefs: Partial<Record<GroupRole, string>>, existingContract?: string): string {
+  const brief = ROLE_LIST.filter((r) => briefs[r]?.trim())
+    .map((r) => `### ${r} repo brief\n${briefs[r]!.trim()}`)
+    .join("\n\n");
+  return (
+    COORDINATOR_PREAMBLE +
+    repoLines(g) +
+    `\n\nGoal for the whole group:\n${goal}\n\n` +
+    (existingContract?.trim() ? `Existing API contract (keep what still holds, extend it for this goal):\n${existingContract.trim()}\n\n` : "") +
+    (brief ? `Project briefs:\n${brief}\n\n` : "") +
+    `Write the API contract both sides will build against, then one goal per repo. ${GOALS_NOTE}` +
+    PLAN_FORMAT
+  );
+}
+
+/** After a failed integration check: which side is at fault, and the fix goal for each. */
+export function coordinatorFaultPrompt(g: GroupConfig, goal: string, contract: string, report: string): string {
+  return (
+    COORDINATOR_PREAMBLE +
+    repoLines(g) +
+    `\n\nGoal for the whole group:\n${goal}\n\nAPI contract both sides build against:\n${contract.trim()}\n\n` +
+    `Integration failed: the frontend was checked in a browser against the running backend, and this is what was found:\n${report.trim()}\n\n` +
+    `Read both repos and decide which side deviates from the contract (or whether the contract itself is wrong), then give the fix goal for each side at fault. ${GOALS_NOTE}` +
+    FAULT_FORMAT
+  );
+}
+
+function goalsOf(v: unknown, what: string): Partial<Record<GroupRole, string>> {
+  if (!isObj(v)) throw new Error(`${what}: "goals" must be an object`);
+  const goals: Partial<Record<GroupRole, string>> = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (!ROLE_LIST.includes(k as GroupRole)) throw new Error(`${what}: unknown role "${k}" in goals (use backend or frontend)`);
+    if (typeof val !== "string" || !val.trim()) throw new Error(`${what}: the ${k} goal must be a non-empty string`);
+    goals[k as GroupRole] = val.trim();
+  }
+  return goals;
+}
+
+export function parseGroupPlan(text: string): GroupPlan {
+  const r = extractJson<Record<string, unknown>>(text);
+  if (typeof r.contract !== "string" || !r.contract.trim()) throw new Error("coordinator plan: no contract");
+  const goals = goalsOf(r.goals, "coordinator plan");
+  if (!Object.keys(goals).length) throw new Error("coordinator plan: no goals");
+  return { contract: r.contract.trim(), goals };
+}
+
+export function parseFaultCall(text: string): FaultCall {
+  const r = extractJson<Record<string, unknown>>(text);
+  if (r.fault !== "backend" && r.fault !== "frontend" && r.fault !== "both") throw new Error(`coordinator fault call: unknown fault "${String(r.fault)}"`);
+  const goals = goalsOf(r.goals, "coordinator fault call");
+  for (const side of r.fault === "both" ? ROLE_LIST : [r.fault]) if (!goals[side]) throw new Error(`coordinator fault call: no goal for the ${side}`);
+  const call: FaultCall = { fault: r.fault, goals };
+  if (r.contract !== undefined) {
+    if (typeof r.contract !== "string" || !r.contract.trim()) throw new Error("coordinator fault call: contract must be a non-empty string");
+    call.contract = r.contract.trim();
+  }
+  return call;
+}

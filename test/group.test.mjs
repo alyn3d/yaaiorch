@@ -534,3 +534,138 @@ describe("orch group-member", () => {
     }
   });
 });
+
+describe("coordinator replies and prompts", () => {
+  const g = example("/x/be", "/x/fe");
+  const fence = (v) => "Here you go.\n```json\n" + JSON.stringify(v) + "\n```";
+
+  test("parseGroupPlan: a fenced reply with a contract and goals", () => {
+    const p = o.parseGroupPlan(fence({ contract: "GET /a", goals: { backend: "do be", frontend: "do fe" } }));
+    assert.deepEqual(p, { contract: "GET /a", goals: { backend: "do be", frontend: "do fe" } });
+  });
+  test("parseGroupPlan: a bare JSON reply, one goal only", () => {
+    assert.deepEqual(o.parseGroupPlan(JSON.stringify({ contract: "c", goals: { backend: "b" } })).goals, { backend: "b" });
+  });
+  test("parseGroupPlan throws on a missing contract, no goals, an unknown role", () => {
+    assert.throws(() => o.parseGroupPlan(fence({ goals: { backend: "b" } })), /contract/);
+    assert.throws(() => o.parseGroupPlan(fence({ contract: " ", goals: { backend: "b" } })), /contract/);
+    assert.throws(() => o.parseGroupPlan(fence({ contract: "c", goals: {} })), /goal/);
+    assert.throws(() => o.parseGroupPlan(fence({ contract: "c", goals: { backend: "b", mobile: "m" } })), /mobile/);
+    assert.throws(() => o.parseGroupPlan("no json here"), /JSON/);
+  });
+  test("parseFaultCall: one side, both, and a revised contract", () => {
+    assert.deepEqual(o.parseFaultCall(fence({ fault: "frontend", goals: { frontend: "fix fe" } })), { fault: "frontend", goals: { frontend: "fix fe" } });
+    const both = o.parseFaultCall(fence({ fault: "both", goals: { backend: "b", frontend: "f" }, contract: "NEW" }));
+    assert.equal(both.fault, "both");
+    assert.equal(both.contract, "NEW");
+  });
+  test("parseFaultCall throws on a fault side without its goal and on unknown roles", () => {
+    assert.throws(() => o.parseFaultCall(fence({ fault: "both", goals: { backend: "b" } })), /frontend/);
+    assert.throws(() => o.parseFaultCall(fence({ fault: "backend", goals: { frontend: "f" } })), /backend/);
+    assert.throws(() => o.parseFaultCall(fence({ fault: "mobile", goals: { mobile: "m" } })), /mobile/);
+    assert.throws(() => o.parseFaultCall(fence({ fault: "backend", goals: { backend: "b", mobile: "m" } })), /mobile/);
+  });
+  test("both prompts name each repo's role and path", () => {
+    const plan = o.coordinatorPlanPrompt(g, "add items", { backend: "BE-BRIEF" });
+    const fault = o.coordinatorFaultPrompt(g, "add items", "THE-CONTRACT", "it broke");
+    for (const p of [plan, fault]) {
+      assert.ok(p.startsWith("You are the group coordinator."), p.slice(0, 60));
+      assert.match(p, /backend: \/x\/be/);
+      assert.match(p, /frontend: \/x\/fe/);
+      assert.match(p, /add items/);
+    }
+    assert.match(plan, /BE-BRIEF/);
+    assert.match(o.coordinatorPlanPrompt(g, "g", {}, "OLD-CONTRACT"), /OLD-CONTRACT/);
+    assert.match(fault, /Integration failed/);
+    assert.match(fault, /THE-CONTRACT/);
+    assert.match(fault, /it broke/);
+  });
+});
+
+describe("orch group-member coordinate", () => {
+  const FAKE = join(root, "test", "fake-claude", process.platform === "win32" ? "claude.cmd" : "claude");
+  const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const setup = () => {
+    const home = tmp();
+    const be = join(home, "be");
+    const fe = join(home, "fe");
+    for (const d of [be, fe]) {
+      mkdirSync(d);
+      git(d, "init", "-q", "-b", "main");
+    }
+    mkdirSync(join(home, "groups"));
+    writeFileSync(join(home, "groups", "shop.json"), JSON.stringify(example(be, fe)));
+    return { home, be, fe };
+  };
+  const coordinate = (s, mode, input, env = {}, extra = []) => {
+    const id = o.acquireRunLock("group", s.be);
+    try {
+      const r = spawnSync(process.execPath, [TSX, ORCH, "group-member", "coordinate", mode, "--group", "shop", ...extra], {
+        cwd: s.be,
+        input: JSON.stringify(input),
+        encoding: "utf8",
+        timeout: 120_000,
+        env: { ...process.env, ORCH_NO_MAIN: "", YAAIORCH_HOME: s.home, ORCH_GROUP_LOCK: id, CLAUDE_BIN: FAKE, FORCE_COLOR: "0", ...env },
+      });
+      return { code: r.status, out: `${r.stdout}${r.stderr}`, stdout: r.stdout, json: r.status === 0 ? JSON.parse(r.stdout.trim().split("\n").pop()) : null };
+    } finally {
+      o.releaseRunLock(id, s.be);
+    }
+  };
+
+  test("plan: prints one JSON line with the reply and cost; the coordinator runs read-only with the other repo", () => {
+    const s = setup();
+    const log = join(s.home, "fake.log");
+    const prompts = join(s.home, "prompts");
+    try {
+      const r = coordinate(s, "plan", { goal: "add items", briefs: { frontend: "FE-BRIEF-TEXT" } }, { FAKE_LOG: log, FAKE_PROMPTS: prompts });
+      assert.equal(r.code, 0, r.out);
+      assert.equal(r.stdout.trim().split("\n").length, 1, r.stdout);
+      assert.equal(r.json.reply.contract, "GET /api/items → Item[]");
+      assert.deepEqual(Object.keys(r.json.reply.goals).sort(), ["backend", "frontend"]);
+      assert.equal(typeof r.json.cost, "number");
+      assert.ok(r.json.cost > 0);
+      const call = readFileSync(log, "utf8")
+        .split("\n")
+        .find((l) => l.startsWith("call "));
+      assert.match(call, /agent=coordinator mode=default /);
+      assert.ok(call.endsWith(` adddirs=${realpathSync.native(s.fe)}`), call);
+      const sent = readFileSync(join(prompts, readdirSync(prompts)[0]), "utf8");
+      assert.match(sent, /FE-BRIEF-TEXT/);
+    } finally {
+      rmSync(s.home, { recursive: true, force: true });
+    }
+  });
+
+  test("fault: FAKE_GROUP_FAULT picks the side, FAKE_GROUP_REVISE adds a contract; --max-cost is accepted", () => {
+    const s = setup();
+    try {
+      const input = { goal: "g", contract: "C", report: "request failed", briefs: {} };
+      const def = coordinate(s, "fault", input);
+      assert.equal(def.code, 0, def.out);
+      assert.equal(def.json.reply.fault, "frontend");
+      assert.deepEqual(Object.keys(def.json.reply.goals), ["frontend"]);
+      const be = coordinate(s, "fault", input, { FAKE_GROUP_FAULT: "backend", FAKE_GROUP_REVISE: "1" }, ["--max-cost", "5"]);
+      assert.equal(be.json.reply.fault, "backend");
+      assert.equal(be.json.reply.contract, "REVISED");
+      const both = coordinate(s, "fault", input, { FAKE_GROUP_FAULT: "both" });
+      assert.deepEqual(Object.keys(both.json.reply.goals).sort(), ["backend", "frontend"]);
+    } finally {
+      rmSync(s.home, { recursive: true, force: true });
+    }
+  });
+
+  test("needs the group lock, a known group and a mode", () => {
+    const s = setup();
+    try {
+      const noLock = coordinate(s, "plan", { goal: "g", briefs: {} }, { ORCH_GROUP_LOCK: "" });
+      assert.notEqual(noLock.code, 0);
+      assert.match(noLock.out, /ORCH_GROUP_LOCK/);
+      const bad = coordinate(s, "nope", { goal: "g", briefs: {} });
+      assert.notEqual(bad.code, 0);
+      assert.match(bad.out, /usage: orch group-member coordinate/);
+    } finally {
+      rmSync(s.home, { recursive: true, force: true });
+    }
+  });
+});

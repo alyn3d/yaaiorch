@@ -29,6 +29,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { BUILTIN_AGENTS } from "./orch-agents";
 import {
   backendBaseUrl,
+  coordinatorFaultPrompt,
+  coordinatorPlanPrompt,
+  extractJson,
+  parseFaultCall,
+  parseGroupPlan,
   groupEnv,
   groupSection,
   groupsDir,
@@ -2219,23 +2224,6 @@ async function runOnce(
   });
 }
 
-/** Parse the JSON object in a reply: a fenced json block if present, else the outermost {...}. */
-function extractJson<T>(text: string): T {
-  const fenced = /```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/.exec(text)?.[1];
-  for (const c of [fenced, text]) {
-    if (!c) continue;
-    const s = c.indexOf("{"),
-      e = c.lastIndexOf("}");
-    if (s < 0 || e < s) continue;
-    try {
-      return JSON.parse(c.slice(s, e + 1)) as T;
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  throw new Error(`no valid JSON in reply: ${text.slice(0, 200)}`);
-}
-
 /** Compare paths the way the file system does: ./a, a\b and A/B (on Windows) are the same file. */
 const normPath = (f: string) => {
   const p = f
@@ -2754,7 +2742,7 @@ const checkpoints = () => git("branch", "--list", `${BRANCH_PREFIX}checkpoint-*`
 
 /** Undo a goal: reset the current branch to its checkpoint, keeping the discarded work on a branch. */
 /** `orch group-member checkpoint|park|reset|drop`: the repo-level git steps of a group run (hidden; the group process holds the run lock). */
-function groupMember(args: string[]) {
+async function groupMember(args: string[], values: Record<string, string | boolean | string[] | undefined> = {}) {
   const [action, a, b] = args;
   if (!process.env.ORCH_GROUP_LOCK) throw new Error("orch group-member is only for a group run: ORCH_GROUP_LOCK is not set");
   acquireRunLock("group-member");
@@ -2784,9 +2772,63 @@ ${dirty}`);
     case "drop":
       git("branch", "-D", checkpoint(a));
       return out({});
+    case "coordinate":
+      return out(await coordinate(a, values));
     default:
-      throw new Error("usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint> | drop <checkpoint>");
+      throw new Error(
+        "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint> | drop <checkpoint> | coordinate <plan|fault> --group <name>",
+      );
   }
+}
+
+/**
+ * `orch group-member coordinate plan|fault --group NAME`: the read-only coordinator, run in this repo with the other
+ * member readable. Stdin: {goal, contract?, report?, briefs}; stdout: one JSON line {reply, cost} (the caller parses it).
+ */
+async function coordinate(mode: string | undefined, values: Record<string, string | boolean | string[] | undefined>): Promise<{ reply: object; cost: number }> {
+  const usage = "usage: orch group-member coordinate <plan|fault> --group <name> (JSON {goal, contract?, report?, briefs} on stdin)";
+  if (mode !== "plan" && mode !== "fault") throw new Error(usage);
+  if (typeof values.group !== "string") throw new Error(usage);
+  const g = readGroup(values.group);
+  let input: { goal?: unknown; contract?: unknown; report?: unknown; briefs?: unknown };
+  try {
+    input = JSON.parse(readFileSync(0, "utf8"));
+  } catch (e) {
+    throw new Error(`coordinate: stdin must be JSON {goal, contract?, report?, briefs} (${msg(e)})`, { cause: e });
+  }
+  if (typeof input.goal !== "string" || !input.goal.trim()) throw new Error("coordinate: goal is required");
+  const briefs: Partial<Record<"backend" | "frontend", string>> = {};
+  for (const r of ["backend", "frontend"] as const) {
+    const b = (input.briefs as Record<string, unknown> | undefined)?.[r];
+    if (typeof b === "string" && b.trim()) briefs[r] = b;
+  }
+  const here = realpathSync.native(process.cwd());
+  const norm = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+  const isHere = (p: string) => norm(realpathSync.native(p)) === norm(here);
+  const other = g.repos.find((r) => !isHere(r.path));
+  if (!other || !g.repos.some((r) => isHere(r.path))) throw new Error(`coordinate: ${process.cwd()} is not a member of group "${g.name}"`);
+  const readDir = realpathSync.native(other.path);
+  if (mode === "fault" && (typeof input.contract !== "string" || typeof input.report !== "string"))
+    throw new Error("coordinate fault: contract and report are required");
+  const prompt =
+    mode === "plan"
+      ? coordinatorPlanPrompt(g, input.goal, briefs, typeof input.contract === "string" ? input.contract : g.contract)
+      : coordinatorFaultPrompt(g, input.goal, input.contract as string, input.report as string);
+  const o = parseOpts(values);
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const roster = configuredRoster(cfg);
+  const agent = roster.find((a) => a.name === "coordinator")!;
+  writeBuiltins(roster);
+  writeAgentSettings(cfg, loadChecks(cfg), o.plugins, [readDir]);
+  const ctx: RunCtx = {
+    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+    timeoutMs: o.agentTimeoutMs,
+    usageCap: o.usageCap,
+    onLimit: o.onLimit,
+    addDirs: [readDir],
+  };
+  const r = await run(agent, modelFor(o.power, o.models, "architect", "coordinator"), prompt, ctx, true);
+  return { reply: mode === "plan" ? parseGroupPlan(r.text) : parseFaultCall(r.text), cost: round4(ctx.budget.spent) };
 }
 
 function rollback(branch?: string) {
@@ -4110,7 +4152,8 @@ async function coverageCheck(o: Opts): Promise<{ queued: number; cost: number }>
 // ---------- --approve-plan: a human approves, edits or rejects each plan ----------
 type Decision = { round: number; action: "approve" | "reject"; plan?: Plan; note?: string };
 /** Agents that may get tasks, as `orch approve` sees them (it cannot know a run's --reviewers; the run checks again). */
-const taskAgents = (roster: Entry[], extra: string[] = []) => roster.filter((a) => !["architect", "critic", "reviewer", ...extra].includes(a.name));
+const taskAgents = (roster: Entry[], extra: string[] = []) =>
+  roster.filter((a) => !["architect", "critic", "reviewer", "coordinator", ...extra].includes(a.name));
 
 /** Show the plan and wait (without a time limit) for `orch approve`. `error`: why the previous answer was not usable. */
 async function awaitDecision(goal: string, round: number, plan: Plan, error?: string): Promise<Decision> {
@@ -4327,7 +4370,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const reviewerNames = o.review === null ? [] : o.review.length ? o.review : ["reviewer"];
   for (const n of reviewerNames) if (!byName.has(n)) throw new Error(`reviewer "${n}" is not an agent (known: ${[...byName.keys()].join(", ")})`);
   const swapTargets = new Set(Object.values(cfg.swap ?? {}));
-  const workers = roster.filter((a) => !["architect", "critic", "reviewer", ...reviewerNames].includes(a.name) && !swapTargets.has(a.name));
+  const workers = roster.filter((a) => !["architect", "critic", "reviewer", "coordinator", ...reviewerNames].includes(a.name) && !swapTargets.has(a.name));
   const critic = byName.get("critic");
   /** Diff reviews each round runs next to QA: the critic against the goal, the reviewers for bugs and security. */
   const diffReviewers: { agent: Entry; lens: Lens }[] = [
@@ -5548,6 +5591,7 @@ async function main() {
       "no-resume": { type: "boolean", default: false },
       critic: { type: "boolean", default: false },
       "diff-critic": { type: "boolean", default: false },
+      group: { type: "string" },
       branch: { type: "boolean", default: false },
       worktrees: { type: "boolean", default: false },
       "no-worktrees": { type: "boolean", default: false },
@@ -5810,7 +5854,7 @@ async function main() {
     case "group":
       return groupCommand(rest, values);
     case "group-member":
-      return groupMember(rest);
+      return groupMember(rest, values);
     case "rollback":
       acquireRunLock("rollback");
       return rollback(rest[0]);
@@ -5853,6 +5897,10 @@ export {
   groupEnv,
   groupsDir,
   groupSection,
+  coordinatorPlanPrompt,
+  coordinatorFaultPrompt,
+  parseGroupPlan,
+  parseFaultCall,
   readDenyRules,
   acquireRunLock,
   releaseRunLock,
