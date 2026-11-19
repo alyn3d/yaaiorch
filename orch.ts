@@ -5446,12 +5446,24 @@ function parseOpts(values: Record<string, string | boolean | string[] | undefine
   const fromCfg = Array.isArray(cfg.review) ? cfg.review.map(String) : [];
   const review = named.length ? named : values.review || cfg.review === true ? [] : fromCfg.length ? fromCfg : null;
   for (const a of review ?? []) if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(a)) throw new Error(`--reviewers: "${a}" is not an agent name`);
-  const pr = !!values.pr || cfg.pr === true;
+  // A group's member run commits on the repo's current branch, with no PR, plan approval, worktrees or questions: the
+  // group owns the checkpoint, the plan approval and the end. The repo's own config for those is ignored there.
+  const groupMember = !!process.env.ORCH_GROUP_LOCK || values["group-context"] !== undefined;
+  const asked = {
+    pr: !!values.pr || cfg.pr === true,
+    branch: !!values.branch || cfg.branch === true,
+    worktrees: !values["no-worktrees"] && (!!values.worktrees || cfg.worktrees === true),
+    approvePlan: !!values["approve-plan"] || cfg.approvePlan === true,
+    ask: !values["no-ask"] && (!!values.ask || cfg.ask === true),
+  };
+  const ignored = groupMember ? Object.keys(asked).filter((k) => asked[k as keyof typeof asked]) : [];
+  if (ignored.length) console.warn(`note: a group member run ignores ${ignored.join(", ")} (the group commits on the current branch)`);
+  const pr = !groupMember && asked.pr;
   // A pull request needs a branch of its own.
-  const branch = pr || !!values.branch || cfg.branch === true;
-  const worktrees = !values["no-worktrees"] && (!!values.worktrees || cfg.worktrees === true);
-  const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
-  const ask = !values["no-ask"] && (!!values.ask || cfg.ask === true);
+  const branch = !groupMember && (pr || asked.branch);
+  const worktrees = !groupMember && asked.worktrees;
+  const approvePlan = !groupMember && asked.approvePlan;
+  const ask = !groupMember && asked.ask;
   const commands = !values["no-commands"] && (!!values.commands || cfg.commands === "ask" || cfg.commands === true);
   const commandMinutes = Number(values["command-timeout"] ?? cfg.commandTimeout ?? 10);
   if (!(commandMinutes > 0 && commandMinutes <= 24 * 60))

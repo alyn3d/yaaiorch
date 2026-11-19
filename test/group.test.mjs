@@ -803,6 +803,27 @@ describe("orch group run", { timeout: 600_000 }, () => {
     }
   });
 
+  test("a member's branch, pr and approvePlan config is ignored inside the group", () => {
+    const s = setup();
+    const ghLog = join(s.home, "gh.log");
+    try {
+      mkdirSync(join(s.be, ".orchestrator"));
+      writeFileSync(join(s.be, ".orchestrator", "config.json"), JSON.stringify({ branch: true, pr: true, approvePlan: true }));
+      const gh = join(root, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+      const r = group(s, ["run", "shop", "list the items"], { GH_BIN: gh, FAKE_GH_LOG: ghLog });
+      assert.equal(r.code, 0, r.out);
+      assert.equal(r.ev("group_end").at(-1).ok, true);
+      assert.match(r.out, /ignores pr, branch, approvePlan/);
+      assert.equal(git(s.be, "symbolic-ref", "--short", "HEAD"), "main");
+      assert.notEqual(head(s.be), s.heads.be, "the commit lands on main");
+      assert.deepEqual(git(s.be, "branch", "--list", "orch/*", "--format=%(refname:short)"), "");
+      assert.equal(existsSync(ghLog), false, "no gh call");
+      assert.equal(existsSync(join(s.be, ".orchestrator", "plan-pending.json")), false);
+    } finally {
+      clean(s);
+    }
+  });
+
   test("build failure parks both", () => {
     const s = setup();
     try {
