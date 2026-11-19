@@ -231,12 +231,15 @@ function pushLine(s: Session, line: string) {
 
 /**
  * One structured event from `s`'s process. A group member's wrapped event goes to the session of that member's repo
- * as if its own process had printed it; without such a session it stays with `s` (the group's), still wrapped.
+ * as if its own process had printed it; without such a session, or while that session has its own run (live or waiting
+ * to start), it stays with `s` (the group's), still wrapped, so it never mixes into that run.
+ * Gap (TODO.md): nothing yet marks member sessions busy while a group runs; the UI plan that starts groups must refuse
+ * a member's own start during a group run, and a group start while a member runs or waits to start.
  */
 function pushEvent(s: Session, ev: OrchEvent) {
   const { repo, ev: inner } = unwrapGroupEvent(ev);
   const member = repo === undefined ? undefined : sessions.get(keyOf(repo));
-  if (member && member !== s) return pushEvent(member, inner);
+  if (member && member !== s && !member.child && !member.pending) return pushEvent(member, inner);
   if (ev.type === "goal_start" || ev.type === "group_start") s.events = [];
   s.events.push(ev);
   send("ev", { repo: s.repo, ev });

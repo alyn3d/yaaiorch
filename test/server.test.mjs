@@ -266,7 +266,9 @@ describe("browser-mode server: group events", { timeout: 60_000 }, () => {
       { type: "group_fault", fault: "backend", goals: { backend: "fix" }, cost: 0.0625 },
       { type: "group_end", ok: true },
     ];
-    writeFileSync(fakeOrch, events.map((e) => `console.log(${JSON.stringify("@@ORCH@@ " + JSON.stringify({ t: 1, ...e }))});`).join("\n") + "\n");
+    // A run whose goal is "hold" prints nothing and stays up until stopped: the member's own live run.
+    const prints = events.map((e) => `console.log(${JSON.stringify("@@ORCH@@ " + JSON.stringify({ t: 1, ...e }))});`).join("\n");
+    writeFileSync(fakeOrch, `if (process.argv.at(-1) === "hold") setInterval(() => {}, 1000);\nelse {\n${prints}\n}\n`);
     child = spawn(process.execPath, [TSX, "server.ts"], {
       cwd: ui,
       env: { ...process.env, PORT: String(port), HOME: home, USERPROFILE: home, ORCH_REPO: "", ORCH_REPOS: "", ORCH_PATH: fakeOrch },
@@ -278,29 +280,57 @@ describe("browser-mode server: group events", { timeout: 60_000 }, () => {
       child.on("exit", (c) => fail(new Error(`server exited ${c}`)));
     });
   });
-  after(() => {
+  after(async () => {
+    // A failed assertion must not leave the member's held run behind.
+    if (headers) await request("/api/stop", { method: "POST", headers, body: { repo: member } }).catch(() => {});
     child?.kill();
-    if (home) rmSync(home, { recursive: true, force: true });
+    if (home) rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
+  let headers;
+  const stateOf = async () => (await request("/api/state", { headers })).json();
+  /** Until `repo`'s session matches `done`; the last state. */
+  const until = async (repo, done) => {
+    let state;
+    for (let i = 0; i < 200; i++) {
+      state = await stateOf();
+      if (done(state.sessions.find((s) => s.state.repo === repo))) return state;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return state;
+  };
+  const exits = (s) => s.log.filter((l) => l.startsWith("-- exited")).length;
+
   test("a wrapped child's cost counts once and its events go to the member repo's session", async () => {
-    const t = (await request("/api/token")).json().token;
-    const headers = { "x-orch-token": t, "content-type": "application/json" };
+    headers = { "x-orch-token": (await request("/api/token")).json().token, "content-type": "application/json" };
     for (const path of [group, member]) assert.equal((await request("/api/add-repo", { method: "POST", headers, body: { path } })).status, 200);
     const started = await request("/api/run", { method: "POST", headers, body: { repo: group, goal: "checkout" } });
     assert.equal(started.status, 200, started.text);
-    let state;
-    for (let i = 0; i < 200; i++) {
-      state = (await request("/api/state", { headers })).json();
-      const g = state.sessions.find((s) => s.state.repo === group);
-      if (!g.state.running && g.log.some((l) => l.startsWith("-- exited"))) break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    const state = await until(group, (g) => !g.state.running && exits(g) === 1);
     assert.equal(state.global.budget.spent, 0.9375, "plan 0.25 + child task 0.5 + unmatched child task 0.125 + fault 0.0625");
     const types = (repo) => state.sessions.find((s) => s.state.repo === repo).events.map((e) => e.type);
     assert.deepEqual(types(member), ["goal_start", "task_end"]);
     assert.deepEqual(types(group), ["group_start", "group_plan", "group_child", "group_fault", "group_end"]);
     const unmatched = state.sessions.find((s) => s.state.repo === group).events.find((e) => e.type === "group_child");
     assert.equal(unmatched.event.cost, 0.125, "a child of a repo that is not open stays with the group's session");
+  });
+
+  test("a member session with its own live run keeps the group's events apart; they still count once", async () => {
+    const held = await request("/api/run", { method: "POST", headers, body: { repo: member, goal: "hold" } });
+    assert.equal(held.status, 200, held.text);
+    await until(member, (m) => m.state.running);
+    const before = (await stateOf()).sessions.find((s) => s.state.repo === member).events;
+    assert.equal((await request("/api/run", { method: "POST", headers, body: { repo: group, goal: "checkout" } })).status, 200);
+    const state = await until(group, (g) => !g.state.running && exits(g) === 2);
+    assert.equal(state.global.budget.spent, 1.875, "both group runs, each counted once");
+    const sessionOf = (repo) => state.sessions.find((s) => s.state.repo === repo);
+    assert.deepEqual(sessionOf(member).events, before, "the member's own run sees none of the group's events");
+    assert.ok(sessionOf(member).state.running, "the member's own run is untouched");
+    assert.deepEqual(
+      sessionOf(group).events.map((e) => e.type),
+      ["group_start", "group_plan", "group_child", "group_child", "group_child", "group_fault", "group_end"],
+    );
+    assert.equal((await request("/api/stop", { method: "POST", headers, body: { repo: member } })).status, 200);
+    await until(member, (m) => !m.state.running);
   });
 });

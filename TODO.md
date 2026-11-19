@@ -115,6 +115,9 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Worktree per build task** (`--worktrees`, `"worktrees": true`, or **Isolate build tasks**): parallel build agents start from the same round snapshot. Orch applies each task's changes back after it finishes; a merge conflict keeps that task's worktree and reports its path. Opt-in; requires Git.
 - [x] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri; the browser's in
   browser mode; **Notify** in the header).
+- [ ] **Repo groups in the UI: member sessions busy during a group run.** The backends route a member's events to its
+  session only while that session has no run of its own (else they stay wrapped in the group's session); starting groups
+  from the UI must refuse a member's own start during a group run, and a group start while a member runs or waits to start.
 
 ## Greenfield
 

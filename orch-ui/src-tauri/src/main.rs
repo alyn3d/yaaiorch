@@ -302,17 +302,28 @@ fn emit_session<R: Runtime>(app: &AppHandle<R>, key: &str) {
     }
 }
 
+/// Whether a group member's event from session `from` goes to session `member`: an open session other than the group's
+/// with no run of its own (live or waiting to start), so it never mixes into that run.
+fn routes_to(g: &Inner, from: &str, member: &str) -> bool {
+    member != from
+        && g.find(member)
+            .is_some_and(|i| g.sessions[i].running.is_none() && g.sessions[i].pending.is_none())
+}
+
 /// One structured event from the process of session `key`. A group member's wrapped event goes to the session of that
-/// member's repo as if its own process had printed it; without such a session it stays here (the group's), still wrapped.
+/// member's repo as if its own process had printed it; without such a session, or while that session has its own run,
+/// it stays here (the group's), still wrapped.
+/// Gap (TODO.md): nothing yet marks member sessions busy while a group runs; the UI plan that starts groups must refuse
+/// a member's own start during a group run, and a group start while a member runs or waits to start.
 fn push_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: Value) {
     if let (Some(member), inner) = unwrap_group_event(&ev) {
         let member = key_of(Path::new(&member));
-        let found = {
+        let route = {
             let st = app.state::<AppState>();
             let g = st.0.lock().unwrap();
-            g.find(&member).is_some()
+            routes_to(&g, key, &member)
         };
-        if found && member != key {
+        if route {
             let inner = inner.clone();
             return push_event(app, &member, inner);
         }
@@ -1818,6 +1829,34 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routes_group_events_only_to_idle_member_sessions() {
+        let session = |repo: &str| Session {
+            repo: PathBuf::from(repo),
+            running: None,
+            pending: None,
+            log: Vec::new(),
+            events: Vec::new(),
+        };
+        let mut g = Inner {
+            sessions: vec![session("/g/group"), session("/g/member")],
+            ..Inner::default()
+        };
+        let (group, member) = (key_of(Path::new("/g/group")), key_of(Path::new("/g/member")));
+        assert!(routes_to(&g, &group, &member), "an idle member session gets it");
+        assert!(!routes_to(&g, &group, &group), "the group's own session keeps it");
+        assert!(!routes_to(&g, &group, &key_of(Path::new("/g/not-open"))), "no session: it stays with the group");
+        g.sessions[1].running = Some(Running {
+            pid: 1,
+            label: "run".into(),
+            started_at: 0,
+        });
+        assert!(!routes_to(&g, &group, &member), "a member with its own live run keeps it apart");
+        g.sessions[1].running = None;
+        g.sessions[1].pending = Some((vec!["run".into()], "run".into()));
+        assert!(!routes_to(&g, &group, &member), "a member with a start waiting keeps it apart");
+    }
 
     #[test]
     fn unwraps_group_child_events() {
