@@ -168,7 +168,9 @@ orch group run shop "users can upload an avatar" [--max-cost 8] [--power heavy] 
 ```
 
 `orch group list [--json]`, `orch group remove NAME`, `orch group stop NAME` and `orch group rollback NAME` do what
-they say. A group is a small file, `~/.yaaiorch/groups/<name>.json`:
+they say. `--repo` paths may be relative to the current directory; they are saved absolute. A repo path may not be a
+network (UNC) path or contain `[ ] * ? { } !`: the other repo's read-only rules could not cover it. A group is a small
+file, `~/.yaaiorch/groups/<name>.json`:
 
 ```json
 {
@@ -194,17 +196,26 @@ What a run does:
    (`.orchestrator/contract.md` in both repos; with `--approve-plan`, answer with `orch approve --group NAME`).
 2. Both repos build in parallel, each as its own `orch run` with the contract, the other repo readable (never writable)
    and `--strict-files`. The repo's own `branch`, `pr`, `approvePlan`, `worktrees` and `ask` settings are ignored in a group.
-3. The backend is started in its repo (a server already answering at the URL is used as is), and the frontend is
-   checked against it in the browser. On a failure the coordinator says which side is at fault, only that side gets a
-   fix goal, and integration runs again, up to `integrationRounds` (default 2).
+   After every step both repos must be clean: an uncommitted change (say, a script that wrote into the other repo)
+   fails the group and names the files.
+3. The backend is started in its repo with `serve.command`, and the frontend is checked against it in the browser. If
+   something already answers at the URL, the group stops there (stop it, so the group can start the backend it just
+   built). Without a `command` you run the backend yourself: the group uses the one answering, with a warning, and a
+   backend fix fails the group (restart your backend and rerun). On a failure the coordinator says which side is at
+   fault, only that side gets a fix goal (the group's backend is stopped while it is fixed and started again after),
+   and integration runs again. `integrationRounds: N` (default 2) means up to N integration runs and N-1 fix rounds.
 4. Pass: each repo keeps its commits on its current branch. Failure: each repo's work is parked on
    `orchestrator/failed-group-*` and the repo is reset to where it started; stop parks as `interrupted-group-*`.
 
 `--max-cost` is split over the steps (60% for the build, the rest for integration and fixes). A usage limit parks the
-work as interrupted and exits with code 3; groups do not wait and resume yet. `orch group rollback NAME` undoes the
-last passed group goal in both repos (everything after the start commit goes to `orchestrator/discarded-group-*`,
-including commits you made since; it says so). It refuses a failed or already rolled back run, and checks both repos
-before it resets either. No pull requests: the result is commits on the local branches.
+work as interrupted and exits with code 3; groups do not wait and resume yet. To stop a group run, use
+`orch group stop NAME` (it parks both repos); on Windows Ctrl+C may not reach every child process.
+`orch group rollback NAME` undoes the last passed group goal in both repos (everything after the start commit goes to
+`orchestrator/discarded-group-*`, including commits you made since; it says so), and checks both repos before it resets
+either. After a failed run it resets only a repo whose work could not be parked (the run says so and keeps that repo's
+group checkpoint), and after a run that never finished (killed hard) each repo whose group checkpoint is still there.
+It refuses a failed run that parked both repos, and an already rolled back one. No pull requests: the result is
+commits on the local branches.
 
 ### Desktop app
 

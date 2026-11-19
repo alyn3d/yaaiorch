@@ -489,7 +489,8 @@ async function checkTrees(s: Run, step: "build" | "integration" | "fix") {
     }),
   );
   const dirty = found.filter(Boolean);
-  if (dirty.length) throw new Error(`uncommitted changes after the ${step} (written outside a member run's own commits, e.g. into the other repo): ${dirty.join("; ")}`);
+  if (dirty.length)
+    throw new Error(`uncommitted changes after the ${step} (written outside a member run's own commits, e.g. into the other repo): ${dirty.join("; ")}`);
 }
 
 /** The last `n` characters: a failure report part stays bounded however much a child printed. */
