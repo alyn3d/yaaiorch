@@ -412,6 +412,7 @@ async function runChildren(
   goals: Partial<Record<GroupRole, string>>,
   extra: string[],
   watch?: (role: GroupRole, e: Event) => void,
+  info: Record<string, unknown> = {},
 ): Promise<ChildEnd[]> {
   const roles = ROLES.filter((r) => goals[r]);
   const left = budgetLeft(s);
@@ -419,7 +420,7 @@ async function runChildren(
   const started = roles.map((role) => {
     const repo = repoOf(s, role);
     const others = s.g.repos.filter((x) => x.role !== role);
-    emit("group_step", { step, repo: role, round });
+    emit("group_step", { step, repo: role, round, ...info });
     let cost = 0;
     // The goal goes last, after "--": a goal that starts with "-" (a markdown list) is never read as an option.
     const args = [
@@ -500,6 +501,10 @@ function childrenPassed(s: Run, ends: ChildEnd[], what: string) {
  * Step 4: start the backend (in the backend repo) and run the frontend against it. On a failure the coordinator says
  * who is at fault (and may revise the contract), the fix goals run, and integration runs again, at most
  * `integrationRounds` times. Returns on a pass; throws on a failure, a usage limit or a stop.
+ *
+ * With a serve command the group checks only a backend it started itself: something already answering at the URL fails
+ * the step (it would not be the code just built). Without one the person runs the backend: an answering server is used
+ * (`external`), and a backend fix fails the group, since the group cannot restart that server to check the fix.
  */
 async function integrationStep(s: Run): Promise<void> {
   if (!s.serve) {
@@ -511,11 +516,29 @@ async function integrationStep(s: Run): Promise<void> {
   const be = repoOf(s, "backend");
   const server = new DevServer(s.serve, { cwd: be.path });
   backendServer = server;
-  const up = (p: Promise<string | null>) => p.catch((e: unknown) => `could not start the backend: ${msg(e)}`);
+  const owned = !!s.serve.command;
+  let external = false;
+  /** Null once the backend answers, else why not; throws when the URL answers but not from a server the group started. */
+  const start = async (round: number): Promise<string | null> => {
+    if (!server.running && (await server.answering())) {
+      if (owned) {
+        const why = `something already answers at ${server.url}; stop it so the group can start the backend it just built`;
+        emit("group_step", { step: "integration", round, failed: why });
+        throw new Error(why);
+      }
+      if (!external)
+        console.warn(
+          `warning: the backend at ${server.url} was not started by the group (no serve.command): integration runs against it as it is, ` +
+            `so restart it yourself if it does not reload the code the group just built`,
+        );
+      external = true;
+    }
+    return server.ensure().catch((e: unknown) => `could not start the backend: ${msg(e)}`);
+  };
   try {
     let down: string | null | undefined;
     for (let round = 1; ; round++) {
-      if (down === undefined) down = await up(server.ensure());
+      if (down === undefined) down = await start(round);
       if (s.stopped) throw new Stopped();
       let report: string;
       if (down) {
@@ -526,7 +549,15 @@ async function integrationStep(s: Run): Promise<void> {
         const base = s.serve.baseUrl ?? new URL(server.url).origin;
         const goal = `Verify the frontend works against the running backend at ${base} for this contract; fix the frontend if it does not.`;
         const findings: Findings = { failures: [], checks: [], problems: [] };
-        const ends = await runChildren(s, "integration", round, { frontend: goal }, ["--no-fast"], (_, e) => noteFinding(findings, e));
+        const ends = await runChildren(
+          s,
+          "integration",
+          round,
+          { frontend: goal },
+          ["--no-fast"],
+          (_, e) => noteFinding(findings, e),
+          external ? { external: true } : {},
+        );
         if (s.stopped) throw new Stopped();
         const [end] = ends;
         if (end.code === 3) throw new Limit("a member run hit the Claude usage limit");
@@ -538,10 +569,13 @@ async function integrationStep(s: Run): Promise<void> {
       }
       if (round >= rounds) throw new Error(`integration failed after ${rounds} round${rounds === 1 ? "" : "s"}: ${report.split("\n")[0]}`);
       const call = await coordinateFault(s, report);
+      // The group's backend is stopped while the backend is fixed (its port and files are free), then started again.
+      if (call.goals.backend) await server.stopAndWait();
       const ends = await runChildren(s, "fix", round, call.goals, ["--no-fast"]);
       childrenPassed(s, ends, "fix");
-      // A fixed backend is restarted (a dev server may not reload); otherwise the next round checks the one running.
-      down = call.goals.backend ? await up(server.restart()) : undefined;
+      if (call.goals.backend && !owned) throw new Error("backend changed; restart your backend and rerun");
+      // A fixed backend starts again; otherwise the next round checks the one running.
+      down = call.goals.backend ? await start(round + 1) : undefined;
     }
   } finally {
     server.stop();

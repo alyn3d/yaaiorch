@@ -1189,7 +1189,7 @@ describe("orch group run", { timeout: 600_000 }, () => {
   };
   const BACKEND = join(root, "test", "fixtures", "group-backend.mjs");
   /** setup() plus a backend serve (the fixture on a free port, unless `command` is given) and a frontend whose check needs API_URL. */
-  const setupServe = async ({ command, timeout } = {}) => {
+  const setupServe = async ({ command, timeout, external } = {}) => {
     const s = setup();
     const port = await freePort();
     const url = `http://localhost:${port}`;
@@ -1198,7 +1198,11 @@ describe("orch group run", { timeout: 600_000 }, () => {
       JSON.stringify({
         name: "shop",
         repos: [
-          { path: s.be, role: "backend", serve: { command: command ?? `node "${BACKEND}" ${port}`, url, ...(timeout ? { timeout } : {}) } },
+          {
+            path: s.be,
+            role: "backend",
+            serve: { ...(external ? {} : { command: command ?? `node "${BACKEND}" ${port}` }), url, ...(timeout ? { timeout } : {}) },
+          },
           { path: s.fe, role: "frontend", env: { API_URL: "{backend}" } },
         ],
       }),
@@ -1328,6 +1332,86 @@ describe("orch group run", { timeout: 600_000 }, () => {
       assert.equal(JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8")).reason, reason);
       assert.deepEqual(locks(s), []);
     } finally {
+      clean(s);
+    }
+  });
+
+  /** The fixture backend on the group's port, started by the test (not the group): resolves once it answers. */
+  const startOwnBackend = async (s) => {
+    const p = spawn(process.execPath, [BACKEND, String(s.port)], { stdio: "ignore" });
+    const end = Date.now() + 15_000;
+    while (!(await answers(s.url))) {
+      if (Date.now() > end) throw new Error("the test's own backend did not start");
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return p;
+  };
+
+  test("a server the group did not start already answering at serve.url fails integration", async () => {
+    const s = await setupServe();
+    const prompts = join(s.home, "prompts");
+    const own = await startOwnBackend(s);
+    try {
+      const run = groupAsync(s, ["run", "shop", "list the items", "--max-rounds", "1"], { FAKE_PROMPTS: prompts });
+      const { code, out } = await run.done;
+      assert.equal(code, 1, out);
+      const end = run.events().at(-1);
+      assert.equal(end.type, "group_end");
+      assert.match(end.reason, /something already answers at http:\/\/localhost:\d+; stop it so the group can start the backend it just built/);
+      const integ = run.events().filter((e) => e.type === "group_step" && e.step === "integration");
+      assert.equal(integ.length, 1, out);
+      assert.match(integ[0].failed, /something already answers/);
+      assert.ok(!run.events().some((e) => e.type === "group_child" && e.event.goal?.startsWith("Verify")), "no integration child ran");
+      const faults = readdirSync(prompts)
+        .map((f) => readFileSync(join(prompts, f), "utf8"))
+        .filter((p) => p.includes("Integration failed"));
+      assert.equal(faults.length, 0, "no fault call");
+      for (const [dir, start] of [
+        [s.be, s.heads.be],
+        [s.fe, s.heads.fe],
+      ]) {
+        assert.equal(head(dir), start);
+        assert.ok(
+          branches(dir).some((b) => b.startsWith("orchestrator/failed-group-")),
+          branches(dir).join(", "),
+        );
+      }
+      assert.deepEqual(locks(s), []);
+    } finally {
+      own.kill();
+      clean(s);
+    }
+  });
+
+  test("without serve.command an answering backend is used (external), but a backend fix cannot be verified on it", async () => {
+    const s = await setupServe({ external: true });
+    const own = await startOwnBackend(s);
+    try {
+      const pass = groupAsync(s, ["run", "shop", "list the items", "--max-rounds", "1"]);
+      const ok = await pass.done;
+      assert.equal(ok.code, 0, ok.out);
+      assert.match(ok.out, /warning: .*not started by the group/);
+      const integ = pass.events().filter((e) => e.type === "group_step" && e.step === "integration");
+      assert.equal(integ.length, 1, ok.out);
+      assert.equal(integ[0].external, true);
+
+      const run = groupAsync(s, ["run", "shop", "list the items again", "--max-rounds", "1"], { FAKE_QA_FAIL_INTEGRATION: "1", FAKE_GROUP_FAULT: "backend" });
+      const { code, out } = await run.done;
+      assert.equal(code, 1, out);
+      const end = run.events().at(-1);
+      assert.equal(end.reason, "backend changed; restart your backend and rerun");
+      assert.deepEqual(
+        run
+          .events()
+          .filter((e) => e.type === "group_step" && e.step === "integration")
+          .map((e) => e.round),
+        [1],
+        "no integration against the stale server",
+      );
+      assert.ok(await answers(s.url), "the group never stops a server it did not start");
+      assert.deepEqual(locks(s), []);
+    } finally {
+      own.kill();
       clean(s);
     }
   });

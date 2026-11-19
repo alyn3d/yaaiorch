@@ -363,6 +363,22 @@ export class DevServer {
     this.proc = undefined;
   }
 
+  /** Whether this server started a process that is still running (a URL that answers may be someone else's). */
+  get running(): boolean {
+    return !!this.proc && this.proc.exitCode === null && this.proc.signalCode === null;
+  }
+
+  /** Whether anything answers at the URL right now, started by this server or not. */
+  answering(): Promise<boolean> {
+    return this.url === "auto" ? Promise.resolve(false) : answers(this.url);
+  }
+
+  /** Stop, then wait (up to 5 s) until the URL no longer answers, so a later start does not find the old process. */
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    for (let i = 0; i < 20 && (await this.answering()); i++) await sleep(250);
+  }
+
   private start() {
     console.log(`starting the dev server: ${this.cfg.command}`);
     this.out = "";
