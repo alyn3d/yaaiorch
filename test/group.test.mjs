@@ -414,3 +414,123 @@ describe("member run flags", () => {
     }
   });
 });
+
+describe("orch group-member", () => {
+  const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const repo = () => {
+    const dir = tmp();
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "user.name", "test");
+    git(dir, "config", "user.email", "test@localhost");
+    git(dir, "config", "core.autocrlf", "false");
+    git(dir, "commit", "-q", "--allow-empty", "-m", "init");
+    return dir;
+  };
+  const member = (dir, env, ...args) => {
+    const r = spawnSync(process.execPath, [TSX, ORCH, "group-member", ...args], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 60_000,
+      env: { ...process.env, ORCH_NO_MAIN: "", FORCE_COLOR: "0", ...env },
+    });
+    return { code: r.status, out: `${r.stdout}${r.stderr}`, json: r.status === 0 ? JSON.parse(r.stdout.trim().split("\n").pop()) : null };
+  };
+  const withLock = (fn) => {
+    const dir = repo();
+    const id = o.acquireRunLock("group", dir);
+    try {
+      fn(dir, { ORCH_GROUP_LOCK: id });
+    } finally {
+      o.releaseRunLock(id, dir);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const branches = (dir) => git(dir, "branch", "--format=%(refname:short)").split("\n");
+
+  test("checkpoint refuses a dirty tree, creates the branch on a clean one", () =>
+    withLock((dir, env) => {
+      writeFileSync(join(dir, "a.txt"), "x");
+      const bad = member(dir, env, "checkpoint", "s1");
+      assert.notEqual(bad.code, 0);
+      assert.match(bad.out, /uncommitted changes/);
+      rmSync(join(dir, "a.txt"));
+      const ok = member(dir, env, "checkpoint", "s1");
+      assert.equal(ok.code, 0, ok.out);
+      assert.deepEqual(ok.json, { checkpoint: "orchestrator/group-checkpoint-s1", head: git(dir, "rev-parse", "HEAD") });
+      assert.ok(branches(dir).includes("orchestrator/group-checkpoint-s1"));
+    }));
+
+  test("park failed keeps the work on failed-group-<stamp> and resets to the checkpoint", () =>
+    withLock((dir, env) => {
+      const cp = member(dir, env, "checkpoint", "s2").json.checkpoint;
+      const base = git(dir, "rev-parse", "HEAD");
+      writeFileSync(join(dir, "a.txt"), "x");
+      git(dir, "add", "a.txt");
+      git(dir, "commit", "-q", "-m", "work");
+      writeFileSync(join(dir, "b.txt"), "uncommitted");
+      const r = member(dir, env, "park", cp, "failed");
+      assert.equal(r.code, 0, r.out);
+      assert.deepEqual(r.json, { parked: "orchestrator/failed-group-s2" });
+      assert.equal(git(dir, "rev-parse", "HEAD"), base);
+      assert.equal(existsSync(join(dir, "a.txt")), false);
+      assert.equal(git(dir, "show", "orchestrator/failed-group-s2:b.txt"), "uncommitted");
+      assert.equal(git(dir, "show", "orchestrator/failed-group-s2:a.txt"), "x");
+    }));
+
+  test("park interrupted names the branch interrupted-group-<stamp>; nothing to park gives null", () =>
+    withLock((dir, env) => {
+      const cp = member(dir, env, "checkpoint", "s3").json.checkpoint;
+      assert.deepEqual(member(dir, env, "park", cp, "interrupted").json, { parked: null });
+      writeFileSync(join(dir, "a.txt"), "x");
+      assert.deepEqual(member(dir, env, "park", cp, "interrupted").json, { parked: "orchestrator/interrupted-group-s3" });
+    }));
+
+  test("reset parks as discarded-group-<stamp> and resets", () =>
+    withLock((dir, env) => {
+      const cp = member(dir, env, "checkpoint", "s4").json.checkpoint;
+      writeFileSync(join(dir, "a.txt"), "x");
+      const r = member(dir, env, "reset", cp);
+      assert.equal(r.code, 0, r.out);
+      assert.deepEqual(r.json, { parked: "orchestrator/discarded-group-s4" });
+      assert.equal(existsSync(join(dir, "a.txt")), false);
+    }));
+
+  test("drop deletes a group checkpoint and refuses other branches", () =>
+    withLock((dir, env) => {
+      const cp = member(dir, env, "checkpoint", "s5").json.checkpoint;
+      const bad = member(dir, env, "drop", "main");
+      assert.notEqual(bad.code, 0);
+      assert.match(bad.out, /group-checkpoint/);
+      assert.ok(branches(dir).includes("main"));
+      const r = member(dir, env, "drop", cp);
+      assert.equal(r.code, 0, r.out);
+      assert.deepEqual(r.json, {});
+      assert.equal(branches(dir).includes(cp), false);
+    }));
+
+  test("a bad stamp is refused", () =>
+    withLock((dir, env) => {
+      const r = member(dir, env, "checkpoint", "a b/..");
+      assert.notEqual(r.code, 0);
+      assert.match(r.out, /stamp/);
+    }));
+
+  test("every action refuses without ORCH_GROUP_LOCK", () => {
+    const dir = repo();
+    try {
+      for (const args of [
+        ["checkpoint", "s6"],
+        ["park", "orchestrator/group-checkpoint-s6", "failed"],
+        ["reset", "orchestrator/group-checkpoint-s6"],
+        ["drop", "orchestrator/group-checkpoint-s6"],
+      ]) {
+        const r = member(dir, { ORCH_GROUP_LOCK: "" }, ...args);
+        assert.notEqual(r.code, 0, args.join(" "));
+        assert.match(r.out, /ORCH_GROUP_LOCK/);
+      }
+      assert.equal(existsSync(join(dir, ".orchestrator")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

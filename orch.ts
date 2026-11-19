@@ -2701,12 +2701,14 @@ function changedFiles(): string[] {
   return out.filter(Boolean);
 }
 
+const GROUP_CHECKPOINT = `${BRANCH_PREFIX}group-checkpoint-`;
+
 /** Commit what is left, keep HEAD on a side branch, and reset the current branch to `cp`. */
 function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string): string | null {
   commitAll(message, true); // throws if it cannot commit: never reset over uncommitted work
   if (dirtyFiles()) throw new Error("could not commit the changes; leaving the tree as is");
   if (git("rev-parse", "HEAD") === git("rev-parse", cp)) return null;
-  const saved = cp.replace("checkpoint", kind);
+  const saved = cp.startsWith(GROUP_CHECKPOINT) ? `${BRANCH_PREFIX}${kind}-group-${cp.slice(GROUP_CHECKPOINT.length)}` : cp.replace("checkpoint", kind);
   git("branch", saved);
   git("reset", "-q", "--hard", cp);
   return saved;
@@ -2751,6 +2753,42 @@ function finishGit(cp: string, goal: string, passed: boolean, park: boolean, int
 const checkpoints = () => git("branch", "--list", `${BRANCH_PREFIX}checkpoint-*`, "--format=%(refname:short)").split("\n").filter(Boolean).sort();
 
 /** Undo a goal: reset the current branch to its checkpoint, keeping the discarded work on a branch. */
+/** `orch group-member checkpoint|park|reset|drop`: the repo-level git steps of a group run (hidden; the group process holds the run lock). */
+function groupMember(args: string[]) {
+  const [action, a, b] = args;
+  if (!process.env.ORCH_GROUP_LOCK) throw new Error("orch group-member is only for a group run: ORCH_GROUP_LOCK is not set");
+  acquireRunLock("group-member");
+  const out = (o: object) => console.log(JSON.stringify(o));
+  const checkpoint = (name?: string) => {
+    if (!name?.startsWith(GROUP_CHECKPOINT) || !/^[A-Za-z0-9-]+$/.test(name.slice(GROUP_CHECKPOINT.length)))
+      throw new Error(`expected a ${GROUP_CHECKPOINT}<stamp> branch, got "${name ?? ""}"`);
+    return name;
+  };
+  switch (action) {
+    case "checkpoint": {
+      if (!a || !/^[A-Za-z0-9-]+$/.test(a)) throw new Error("usage: orch group-member checkpoint <stamp> (the stamp is letters, digits and dashes)");
+      if (!isGitRepo() || !hasCommits()) throw new Error("a group member must be a git repo with at least one commit");
+      const dirty = dirtyFiles();
+      if (dirty)
+        throw new Error(`working tree has uncommitted changes; commit or stash them first, or run "orch rollback" after a stopped run:
+${dirty}`);
+      git("branch", `${GROUP_CHECKPOINT}${a}`);
+      return out({ checkpoint: `${GROUP_CHECKPOINT}${a}`, head: git("rev-parse", "HEAD") });
+    }
+    case "park": {
+      if (b !== "failed" && b !== "interrupted") throw new Error("usage: orch group-member park <checkpoint> <failed|interrupted>");
+      return out({ parked: moveWorkAside(checkpoint(a), b, `orch: group ${b} (unfinished)`) });
+    }
+    case "reset":
+      return out({ parked: moveWorkAside(checkpoint(a), "discarded", "orch: group reset (discarded)") });
+    case "drop":
+      git("branch", "-D", checkpoint(a));
+      return out({});
+    default:
+      throw new Error("usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint> | drop <checkpoint>");
+  }
+}
+
 function rollback(branch?: string) {
   if (!isGitRepo()) throw new Error("not a git repo; nothing to roll back");
   const cp = branch ?? checkpoints().at(-1);
@@ -5771,6 +5809,8 @@ async function main() {
     }
     case "group":
       return groupCommand(rest, values);
+    case "group-member":
+      return groupMember(rest);
     case "rollback":
       acquireRunLock("rollback");
       return rollback(rest[0]);
