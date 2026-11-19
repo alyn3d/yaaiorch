@@ -404,9 +404,31 @@ const LOCK_STALE_MS = 2 * 60_000;
  * lock is taken over only when its process is gone (same machine) or it has not been touched for two
  * minutes (a reused process id, or another machine), so a live process never loses its lock. It is
  * released on exit, and only if it is still ours.
+ *
+ * `root` lets a group process lock a member repo it is not running in: no per-run cleanup and no signal
+ * handlers there (the group handles its own), but the same heartbeat and release on exit. A child the group
+ * starts gets the lock id in ORCH_GROUP_LOCK and runs under the held lock without writing, touching or
+ * releasing it; any other value, or no lock at all, is refused. Returns the lock id.
  */
-function acquireRunLock(cmd: string) {
-  mkdirSync(DIR, { recursive: true });
+function acquireRunLock(cmd: string, root = process.cwd()): string {
+  const atCwd = resolve(root) === resolve(process.cwd());
+  const lockFile = atCwd ? RUN_LOCK : join(root, DIR, "run.lock");
+  mkdirSync(dirname(lockFile), { recursive: true });
+  const inherited = process.env.ORCH_GROUP_LOCK;
+  if (inherited) {
+    let held: Partial<LockInfo> = {};
+    try {
+      held = JSON.parse(readFileSync(lockFile, "utf8"));
+    } catch {
+      /* no lock: a mismatch below */
+    }
+    if (held.id !== inherited) throw new Error(`group lock mismatch: ${lockFile} is not held by this group (ORCH_GROUP_LOCK)`);
+    if (atCwd) {
+      clearRunLeftovers();
+      exitOnSignals(cmd);
+    }
+    return inherited;
+  }
   const me: LockInfo = {
     pid: process.pid,
     host: hostname(),
@@ -416,7 +438,7 @@ function acquireRunLock(cmd: string) {
   };
   for (let attempt = 1; ; attempt++) {
     try {
-      const fd = openSync(RUN_LOCK, "wx");
+      const fd = openSync(lockFile, "wx");
       writeFileSync(fd, JSON.stringify(me));
       closeSync(fd);
       break;
@@ -425,8 +447,8 @@ function acquireRunLock(cmd: string) {
       let holder: Partial<LockInfo> = {};
       let age: number;
       try {
-        holder = JSON.parse(readFileSync(RUN_LOCK, "utf8"));
-        age = Date.now() - statSync(RUN_LOCK).mtimeMs;
+        holder = JSON.parse(readFileSync(lockFile, "utf8"));
+        age = Date.now() - statSync(lockFile).mtimeMs;
       } catch {
         age = Infinity; // unreadable or vanished: a crashed half-write
       }
@@ -435,30 +457,23 @@ function acquireRunLock(cmd: string) {
       if (alive)
         throw new Error(
           `another orch is already running in this repo (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}${sameHost ? "" : ` on ${holder.host}`}, ` +
-            `since ${holder.since ? new Date(holder.since).toLocaleString() : "?"}). Wait for it, stop it, or delete ${RUN_LOCK} if you are sure it is gone.`,
+            `since ${holder.since ? new Date(holder.since).toLocaleString() : "?"}). Wait for it, stop it, or delete ${lockFile} if you are sure it is gone.`,
           { cause: e },
         );
       console.warn(
         `taking over a stale lock (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}): ${sameHost ? "its process is gone" : "not touched for 2 minutes"}`,
       );
       try {
-        unlinkSync(RUN_LOCK);
+        unlinkSync(lockFile);
       } catch {
         /* someone else removed it first; try again */
       }
     }
   }
-  if (existsSync(QUESTIONS_DIR)) {
-    for (const name of readdirSync(QUESTIONS_DIR)) {
-      if (/^[0-9a-f-]{36}\.(?:json|answer\.json|claim|answer\.\d+\.tmp)$/.test(name)) rmSync(join(QUESTIONS_DIR, name), { force: true });
-    }
-  }
-  // Commands and MCP configs a crashed run left behind.
-  if (existsSync(COMMANDS_DIR)) for (const name of readdirSync(COMMANDS_DIR)) rmSync(join(COMMANDS_DIR, name), { force: true });
-  for (const name of readdirSync(DIR)) if (/^agentm-\d+-\d+\.json$/.test(name)) rmSync(join(DIR, name), { force: true });
+  if (atCwd) clearRunLeftovers();
   const beat = setInterval(() => {
     try {
-      utimesSync(RUN_LOCK, new Date(), new Date());
+      utimesSync(lockFile, new Date(), new Date());
     } catch {
       /* lock removed by hand: nothing to touch */
     }
@@ -466,13 +481,35 @@ function acquireRunLock(cmd: string) {
   beat.unref();
   process.on("exit", () => {
     clearInterval(beat);
-    try {
-      if ((JSON.parse(readFileSync(RUN_LOCK, "utf8")) as LockInfo).id === me.id) unlinkSync(RUN_LOCK);
-    } catch {
-      /* not there, or not ours any more */
-    }
+    releaseRunLock(me.id, root);
   });
-  // Ctrl+C and kill: exit normally so the lock is released (loop has its own SIGINT handler).
+  if (atCwd) exitOnSignals(cmd);
+  return me.id;
+}
+
+/** Delete the run lock at root, but only if it is still the one with this id. */
+function releaseRunLock(id: string, root: string) {
+  const lockFile = join(root, DIR, "run.lock");
+  try {
+    if ((JSON.parse(readFileSync(lockFile, "utf8")) as LockInfo).id === id) unlinkSync(lockFile);
+  } catch {
+    /* not there, or not ours any more */
+  }
+}
+
+/** Questions, commands and MCP configs a crashed run left behind in this repo. */
+function clearRunLeftovers() {
+  if (existsSync(QUESTIONS_DIR)) {
+    for (const name of readdirSync(QUESTIONS_DIR)) {
+      if (/^[0-9a-f-]{36}\.(?:json|answer\.json|claim|answer\.\d+\.tmp)$/.test(name)) rmSync(join(QUESTIONS_DIR, name), { force: true });
+    }
+  }
+  if (existsSync(COMMANDS_DIR)) for (const name of readdirSync(COMMANDS_DIR)) rmSync(join(COMMANDS_DIR, name), { force: true });
+  for (const name of readdirSync(DIR)) if (/^agentm-\d+-\d+\.json$/.test(name)) rmSync(join(DIR, name), { force: true });
+}
+
+/** Ctrl+C and kill: exit normally so exit handlers run and the lock is released (loop has its own SIGINT handler). */
+function exitOnSignals(cmd: string) {
   for (const sig of ["SIGTERM", "SIGHUP"] as const) process.once(sig, () => process.exit(130));
   if (cmd !== "loop") process.once("SIGINT", () => process.exit(130));
 }
@@ -5693,6 +5730,8 @@ export {
   backendBaseUrl,
   groupEnv,
   groupsDir,
+  acquireRunLock,
+  releaseRunLock,
 };
 
 if (!process.env.ORCH_NO_MAIN)

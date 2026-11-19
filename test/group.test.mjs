@@ -1,8 +1,9 @@
-// Tests for repo groups: the config format (orch-group.ts via orch.ts) and `orch group add|list|remove`.
+// Tests for repo groups: the config format (orch-group.ts via orch.ts), `orch group add|list|remove` and the run lock
+// a group holds in each member repo (inherited by its children through ORCH_GROUP_LOCK).
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -141,6 +142,87 @@ describe("orch group", () => {
       assert.match(r.out, /role/);
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("run lock held by a group", () => {
+  const FAKE = join(root, "test", "fake-claude", process.platform === "win32" ? "claude.cmd" : "claude");
+  const git = (dir, ...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const repo = () => {
+    const dir = tmp();
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "user.name", "test");
+    git(dir, "config", "user.email", "test@localhost");
+    git(dir, "config", "core.autocrlf", "false");
+    git(dir, "commit", "-q", "--allow-empty", "-m", "init");
+    return dir;
+  };
+  const orchRun = (dir, env = {}) => {
+    const r = spawnSync(process.execPath, [TSX, ORCH, "run", "x", "--max-rounds", "1"], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 120_000,
+      env: { ...process.env, ORCH_NO_MAIN: "", CLAUDE_BIN: FAKE, FAKE_QA: "pass", FAKE_LOG: `${dir}.fake.log`, FORCE_COLOR: "0", ...env },
+    });
+    return { code: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  const lockFile = (dir) => join(dir, ".orchestrator", "run.lock");
+  const withLock = (fn) => {
+    const dir = repo();
+    const id = o.acquireRunLock("group", dir);
+    try {
+      fn(dir, id);
+    } finally {
+      o.releaseRunLock(id, dir);
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(`${dir}.fake.log`, { force: true });
+    }
+  };
+
+  test("acquireRunLock at another root writes the lock there, releaseRunLock removes it", () =>
+    withLock((dir, id) => {
+      assert.equal(typeof id, "string");
+      assert.equal(JSON.parse(readFileSync(lockFile(dir), "utf8")).id, id);
+      o.releaseRunLock("someone-else", dir);
+      assert.ok(existsSync(lockFile(dir)), "a different id must not release the lock");
+      o.releaseRunLock(id, dir);
+      assert.equal(existsSync(lockFile(dir)), false);
+    }));
+
+  test("plain run refused while group holds the lock", () =>
+    withLock((dir) => {
+      const r = orchRun(dir);
+      assert.notEqual(r.code, 0, r.out);
+      assert.match(r.out, /another orch is already running in this repo \(group/);
+    }));
+
+  test("child with ORCH_GROUP_LOCK runs", () =>
+    withLock((dir, id) => {
+      const r = orchRun(dir, { ORCH_GROUP_LOCK: id });
+      assert.equal(r.code, 0, r.out);
+      assert.ok(existsSync(lockFile(dir)), "the child must not release the group's lock");
+      assert.equal(JSON.parse(readFileSync(lockFile(dir), "utf8")).id, id);
+    }));
+
+  test("mismatched ORCH_GROUP_LOCK refused", () =>
+    withLock((dir, id) => {
+      const r = orchRun(dir, { ORCH_GROUP_LOCK: "not-the-id" });
+      assert.notEqual(r.code, 0, r.out);
+      assert.match(r.out, /group lock mismatch/);
+      assert.equal(JSON.parse(readFileSync(lockFile(dir), "utf8")).id, id);
+    }));
+
+  test("ORCH_GROUP_LOCK without a lock refused", () => {
+    const dir = repo();
+    try {
+      const r = orchRun(dir, { ORCH_GROUP_LOCK: "nothing-held" });
+      assert.notEqual(r.code, 0, r.out);
+      assert.match(r.out, /group lock mismatch/);
+      assert.equal(existsSync(lockFile(dir)), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(`${dir}.fake.log`, { force: true });
     }
   });
 });
