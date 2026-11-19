@@ -183,7 +183,7 @@ they say. A group is a small file, `~/.yaaiorch/groups/<name>.json`:
 
 - `serve` (backend) says how to start the backend for the integration step: `command`, a local `url`, optional
   `baseUrl` (what the frontend should call, default the origin of `url`) and `timeout`. Without it the backend repo's
-  own `.orchestrator/config.json` `serve` is used; with neither, integration is skipped with a warning. URLs must be local.
+  own `.orchestrator/config.json` `serve` is used; with neither, integration is skipped with a warning. A backend config with `serve: "auto"` is rejected: give the group an explicit serve. URLs must be local.
 - `env` (frontend): environment variables for everything the frontend's runs start. `{backend}` becomes the
   backend's base URL. Names are plain `NAME` identifiers; values are not secrets.
 - `contract` (optional): text of a standing API contract the coordinator keeps and extends.

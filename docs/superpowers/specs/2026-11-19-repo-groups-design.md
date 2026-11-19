@@ -92,13 +92,12 @@ The user picked A.
   absent, the backend repo's own `.orchestrator/config.json` `serve` is used; if neither, the integration step is
   skipped with a warning event.
 - `baseUrl` on the backend's `serve`: the API base the frontend should call (defaults to the origin of `url`).
-- `env` on the frontend: environment variables set for the frontend's integration and fix children, which pass them on
+- `env` on the frontend: environment variables set for all the frontend's children (build, integration and fix; changed during the build, it was integration and fix only), which pass them on
   to everything they start (dev server, checks, browser checks). `{backend}` is replaced by the backend's `baseUrl`.
   This is how the user's frontend finds the backend (an env var such as `VITE_API_URL`). Process env must win over
   the frontend's `.env` files (true for Vite and most tools; the builder confirms `DEV_SERVER` and `runChecks`
   inherit the child's env). Names must be plain `[A-Z_][A-Z0-9_]*`; values are not secrets and may be logged.
-- `contract` (optional): a path inside the backend repo where a machine-readable contract already lives (OpenAPI,
-  GraphQL schema…). When set, the coordinator reads it and the backend sub-goal must keep it in sync.
+- `contract` (optional): the text of a standing API contract, which the coordinator keeps and extends (changed during the build: the design had a path to a machine-readable contract in the backend repo, the code takes the text).
 - CLI: `orch group add <name> --repo PATH:ROLE ... [--serve-command C --serve-url U]`, `orch group list`,
   `orch group remove <name>`. Writes go through `writeFileAtomic`.
 
