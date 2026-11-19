@@ -159,6 +159,25 @@ describe("orch group", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+  test("add resolves relative --repo paths against the current directory", () => {
+    const home = tmp();
+    try {
+      const r = spawnSync(process.execPath, [TSX, ORCH, "group", "add", "shop", "--repo", "be:backend", "--repo", join("sub", "fe") + ":frontend"], {
+        cwd: home,
+        encoding: "utf8",
+        timeout: 60_000,
+        env: { ...process.env, ORCH_NO_MAIN: "", YAAIORCH_HOME: home, FORCE_COLOR: "0" },
+      });
+      assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+      const saved = JSON.parse(readFileSync(join(home, "groups", "shop.json"), "utf8"));
+      assert.deepEqual(
+        saved.repos.map((x) => x.path),
+        [join(home, "be"), join(home, "sub", "fe")],
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   test("a bad role exits non-zero with the message", () => {
     const home = tmp();
     try {
@@ -825,6 +844,10 @@ describe("orch group-member coordinate", () => {
 
 describe("group budget shares", () => {
   test("the build gets 60% of what is left, split over the repos that build", () => {
+    assert.deepEqual(o.groupCostArgs(undefined), []);
+    assert.deepEqual(o.groupCostArgs(0.5), ["--max-cost", "0.5000"]);
+    // A share that rounds to $0.0000 is no budget at all (orch would read it as "no --max-cost" or refuse it).
+    assert.throws(() => o.groupCostArgs(0.00004), /--max-cost is used up/);
     assert.equal(o.childShare(10, "build", 2, 1, 2), 3);
     assert.equal(o.childShare(10, "build", 1, 1, 2), 6);
   });

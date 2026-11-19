@@ -47,7 +47,7 @@ import {
   type GroupConfig,
   type GroupRepo,
 } from "./orch-group";
-import { approveGroup, childShare, GROUP_EXIT, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
+import { approveGroup, childShare, costArgs as groupCostArgs, GROUP_EXIT, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
@@ -5691,7 +5691,7 @@ async function groupCommand(args: string[], values: GroupFlags) {
     const repos: GroupRepo[] = (values.repo ?? []).map((spec) => {
       const i = spec.lastIndexOf(":"); // a Windows path has a colon too: the role follows the last one
       if (i <= 0) throw new Error(`--repo wants PATH:ROLE (backend or frontend), got "${spec}"`);
-      return { path: spec.slice(0, i), role: spec.slice(i + 1) } as GroupRepo;
+      return { path: resolve(spec.slice(0, i)), role: spec.slice(i + 1) } as GroupRepo; // relative to where orch runs
     });
     const be = repos.find((r) => r.role === "backend");
     const fe = repos.find((r) => r.role === "frontend");
@@ -6072,6 +6072,7 @@ export {
   parseGroupPlan,
   parseFaultCall,
   childShare,
+  groupCostArgs,
   readDenyRules,
   acquireRunLock,
   releaseRunLock,

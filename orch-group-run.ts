@@ -276,7 +276,13 @@ function budgetLeft(s: Run): number | undefined {
   if (!(left > 0.0001)) throw new Error(`the group's --max-cost of $${s.o.maxCost} is used up`);
   return left;
 }
-const costArgs = (amount: number | undefined) => (amount === undefined ? [] : ["--max-cost", amount.toFixed(4)]);
+/** `--max-cost` for a child: a share that rounds to $0.0000 means the budget is used up (never "--max-cost 0.0000"). */
+export function costArgs(amount: number | undefined): string[] {
+  if (amount === undefined) return [];
+  const fixed = amount.toFixed(4);
+  if (!(Number(fixed) > 0)) throw new Error(`the group's --max-cost is used up: this step's share rounds to $${fixed}`);
+  return ["--max-cost", fixed];
+}
 
 /**
  * Budget policy with --max-cost (`left` is what is left of it when the step starts). The build gets 60% of it,
