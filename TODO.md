@@ -140,6 +140,9 @@ Each item should show its effect in the evals before it becomes the default.
   (done, failed, blocked, cost, time left) above the queue and in the overview.
 - [x] **Multi-round eval cases**: `api-patch-contract`, `lib-retry-lint` (house rules only the checks enforce).
 - [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
+- [ ] **Structured agent text**: ask the architect, the coordinator and QA for short task sentences with bulleted
+  acceptance criteria, a contract as a list of endpoints, reports with headings. The UI already renders Markdown and
+  splits long paragraphs (0.6.1); measure on the evals before shipping, since it changes the prompts.
 
 ## Issue to merged PR
 
@@ -147,6 +150,12 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Talk on the issue** (start, done, failed, blocked) and **priority labels**.
 - [ ] A GitHub Action that runs orch on a labelled issue in CI, so no local machine is needed.
 - [ ] Optional auto-merge once CI and a human review pass.
+- [x] **Pull requests on any git host** (0.6.1): the push is git, GitHub opens the PR with `gh`, other hosts get a
+  link to open it; `orch new --remote URL`.
+- [ ] **Open pull requests on other hosts too** (0.7): `glab` for GitLab, `tea` for Gitea and Codeberg, Bitbucket's
+  REST API with an app password; then their CI checks and issues for the CI fixes and intake.
+- [ ] **Create the hosted repo** for a new project (`gh repo create`, GitLab and Gitea APIs), instead of asking for an
+  empty one first.
 
 ## Safety
 
@@ -154,7 +163,8 @@ Each item should show its effect in the evals before it becomes the default.
   commands they run, in a container or VM for repos you do not fully trust them with.
 - [x] **Protected paths** (`protect`, default `.github/workflows/`): rejected in plans, reverted if changed anyway.
 - [x] **Secret scan** before every commit: known key formats, private keys, `.env` files.
-- [ ] A scan for licenses or large binaries added by agents; a size limit per round.
+- [x] A size limit for committed files (`maxFileSize`, default 5 MB; 0.6.1).
+- [ ] A scan for licenses added by agents; a size limit per round.
 
 ## Agent M
 
@@ -165,9 +175,9 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Faster first answer**: opening Agent M gathers the machine status in the background (`orch chat --warm`).
 - [ ] **What a command does**: a one-line explanation and risk note from Haiku under each waiting command; the human
   still decides.
-- [ ] **Always-allowed commands** per repo: list them in run settings and let the user remove one (config `allow`).
-- [ ] **Verify the real flow** in both UIs on a goal that needs a dependency (only the CLI path has been run against
-  the real `claude` so far).
+- [x] **Always-allowed commands** per repo: listed in run settings, each removable (`orch allow`; 0.6.1).
+- [ ] **Verify the real flow** in the desktop app on a goal that needs a dependency. Done in browser mode (2026-11-20):
+  an economy run asked for `npm install yaml`, the card's Allow ran it, the tests passed ($0.28).
 
 ## Browser checks for QA
 
@@ -206,3 +216,5 @@ Each item should show its effect in the evals before it becomes the default.
   for Windows, macOS and Linux from CI.
 - [ ] **Verify on macOS and Linux** (CLI, browser mode, desktop build), including the desktop app started from
   Finder or a launcher finding `claude` (PATH from the login shell). **good first issue** if you have the machine.
+  Linux so far: the whole test suite on Ubuntu (WSL, Node 22) with the fake claude; still open there: a real
+  `claude` run, the desktop build, a launcher.

@@ -5,6 +5,26 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-20
+
+### Added
+- Pull requests on any git host: `--pr` pushes with git to whatever `origin` is. On GitHub, `gh` opens the pull request as before; on GitLab, Bitbucket, Codeberg (Gitea, Forgejo) and other hosts, or on GitHub without `gh`, the run shows a link that opens it in one click (the one the host prints on push, else one built for the host). CI watching and issue comments stay GitHub-only.
+- New projects can start with a remote: **Remote** in **+ New project**, or `orch new --remote URL` (any host, or a local path). It becomes `origin` and gets the first commit, so pull requests have a base there.
+- **Always allow npm install …** on Agent M's card: allow every command that starts with the same two words (`Bash(npm install:*)` in config `allow`, `orch decide ID prefix`), after a confirmation that says what it allows. Offered only for a single plain command; never for a shell, an interpreter, `rm`, `curl`, `git` and the like, or `npm exec` / `dlx`; a chained command (`npm install x && …`) still asks.
+- **Always-allowed commands** in a repo's run settings: what Agent M's **Always allow** added for that repo, each with **Remove** (`orch allow`, `orch allow --remove RULE`). Before, only editing `config.json` undid it.
+- A size limit for committed files: a new or changed file over 5 MB (a binary, a dump, build output) is not committed and fails the round, like a secret. `"maxFileSize"` (MB, `0` for none) or `--max-file-size` sets it.
+- `orch doctor` reports the GitHub CLI (`gh`). With `--pr` (the UI passes its **Open pull request** switch) or `pr` in the config it checks what pull requests need: a warning without an `origin`, and for a GitHub origin when `gh` is missing or logged out; another host needs no `gh`. GitHub issue intake warns the same way. README's requirements and the release notes now name `gh`: optional, GitHub only, logged in on its own (a git login is not enough).
+
+### Changed
+- Agent text is easier to read: plans, plan approvals, group goals, the API contract, task reports, failures and agent questions render their Markdown (code, bold, lists, links), and a long single paragraph is shown one sentence per line (`structureText`, split only at a real sentence end, never inside code, quotes or brackets). What agents are asked to write is unchanged.
+- The desktop app bundles Node.js 24.22.3 (LTS, the version CI tests with) instead of 22.14.0, which was missing several security releases.
+- CI also runs the tests on Node 22, the oldest supported version.
+- The landing page mentions pushes to any git host, the file size limit, the always-allowed list, and the GitHub CLI as optional. The Agent M screenshot shows the new button, and the repo group screenshot was retaken at the same zoom as the others (it was captured at a smaller scale) and shows the new plan formatting.
+
+### Fixed
+- The unit and group tests failed on Node 22: they imported tsx's CommonJS entry. They now load its ESM entry (`test/tsx.mjs`).
+- The Agents page no longer asks the server for a repo's agents before a repo is selected (an `unknown repo` error in the server log).
+
 ## [0.6.0] - 2026-11-20
 
 ### Added
@@ -420,7 +440,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/alyn3d/yaaiorch/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/alyn3d/yaaiorch/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/alyn3d/yaaiorch/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/alyn3d/yaaiorch/compare/v0.5.4...v0.5.5

@@ -552,17 +552,22 @@ const plugins = (s: Session, fresh: boolean) => {
   return list;
 };
 
-/** `orch doctor --json` in a repo, without blocking the event loop (SSE keeps flowing). */
-const doctor = (s: Session) =>
+/** `orch doctor --json` in a repo, without blocking the event loop (SSE keeps flowing). `pr`: the UI opens pull requests. */
+const doctor = (s: Session, pr = false) =>
   new Promise<unknown>((ok) =>
-    execFile(process.execPath, [TSX_CLI, ORCH, "doctor", "--json"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (_err, stdout) => {
-      // exit 1 just means a "fail" finding; the JSON is still on stdout
-      try {
-        ok(JSON.parse(stdout));
-      } catch {
-        ok([{ name: "orchestrator", level: "fail", detail: "could not run orch doctor" }]);
-      }
-    }),
+    execFile(
+      process.execPath,
+      [TSX_CLI, ORCH, "doctor", "--json", ...(pr ? ["--pr"] : [])],
+      { cwd: s.repo, encoding: "utf8", windowsHide: true },
+      (_err, stdout) => {
+        // exit 1 just means a "fail" finding; the JSON is still on stdout
+        try {
+          ok(JSON.parse(stdout));
+        } catch {
+          ok([{ name: "orchestrator", level: "fail", detail: "could not run orch doctor" }]);
+        }
+      },
+    ),
   );
 
 /** Through `orch add`, which edits the queue under its lock, so a running loop never loses the new goal. */
@@ -760,7 +765,7 @@ http
         return;
       }
       if (url.pathname === "/api/state") return json(200, initPayload());
-      if (url.pathname === "/api/doctor") return json(200, await doctor(mustGet(url.searchParams.get("repo"))));
+      if (url.pathname === "/api/doctor") return json(200, await doctor(mustGet(url.searchParams.get("repo")), url.searchParams.get("pr") === "1"));
       if (url.pathname === "/api/browser" && req.method === "GET") {
         const s = mustGet(url.searchParams.get("repo"));
         const result = await new Promise<string>((ok, fail) =>
@@ -834,6 +839,12 @@ http
             return json(400, { error: "kind (skill or agent), name and enabled are required" });
           return json(200, JSON.parse(await orchOutput(s.repo, ["agents", flag[b.enabled ? 1 : 0], b.name])));
         }
+        if (url.pathname === "/api/allow") {
+          // The repo's always-allowed commands (config allow), optionally removing one first; orch writes the config.
+          const s = mustGet(typeof b.repo === "string" ? b.repo : null);
+          if (b.remove !== undefined && (typeof b.remove !== "string" || !b.remove)) return json(400, { error: "remove must be a rule" });
+          return json(200, JSON.parse(await orchOutput(s.repo, ["allow", "--json", ...(b.remove ? ["--remove", b.remove] : [])])));
+        }
         if (url.pathname === "/api/add-repo") {
           if (typeof b.path !== "string" || !b.path.trim()) return json(400, { error: "path required" });
           const s = addRepo(b.path.trim());
@@ -858,9 +869,11 @@ http
           const file = join(tmpdir(), `yaaiorch-brief-${process.pid}-${Date.now()}.md`);
           writeFileSync(file, b.spec);
           const setup = typeof b.setup === "string" && b.setup.trim() ? ["--setup", b.setup.trim().slice(0, 300)] : [];
+          // orch checks the URL (never an option, no whitespace); any git host or a local path.
+          const remote = typeof b.remote === "string" && b.remote.trim() ? ["--remote", b.remote.trim().slice(0, 500)] : [];
           requestStart(
             s,
-            ["new", ".", "--brief-file", file, "--brief-file-temp", ...setup, ...(b.start ? ["--start"] : []), ...flags({ ...b, dryRun: false })],
+            ["new", ".", "--brief-file", file, "--brief-file-temp", ...setup, ...remote, ...(b.start ? ["--start"] : []), ...flags({ ...b, dryRun: false })],
             "new project",
           );
           return json(200, { ok: true, repo: s.repo });
@@ -1062,8 +1075,8 @@ http
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/decide-command") {
-          if (typeof b.id !== "string" || !["allow", "deny", "always"].includes(b.decision))
-            return json(400, { error: "command ID and decision (allow, deny, always) required" });
+          if (typeof b.id !== "string" || !["allow", "deny", "always", "prefix"].includes(b.decision))
+            return json(400, { error: "command ID and decision (allow, deny, always, prefix) required" });
           await decideCommand(s, b.id, b.decision);
           return json(200, { ok: true });
         }

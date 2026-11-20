@@ -54,6 +54,19 @@ function repo({ git: useGit = true } = {}) {
 }
 
 /**
+ * A bare repo as dir's origin, shown as `url` (a GitHub address by default) and pushed to through git's
+ * url.<path>.insteadOf, so orch sees the host it would in real life while nothing leaves the machine.
+ */
+function bareOrigin(dir, url = "https://github.com/example/repo.git") {
+  const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
+  dirs.push(origin);
+  git(origin, "init", "-q", "--bare");
+  git(dir, "remote", "add", "origin", url);
+  git(dir, "config", `url.${origin.replace(/\\/g, "/")}.insteadOf`, url);
+  return origin;
+}
+
+/**
  * orch starts goals with a direct attempt by default; most scenarios test the full loop, so they ask for it
  * (`--no-fast`) unless they pass --fast, --no-fast or `default` (as the first arg: run with orch's own default).
  */
@@ -916,10 +929,7 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
   test("--pr: a passed goal's branch is pushed and a pull request opened with gh; problems are reported, not fatal", () => {
     const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
     const dir = repo();
-    const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
-    dirs.push(origin);
-    git(origin, "init", "-q", "--bare");
-    git(dir, "remote", "add", "origin", origin);
+    const origin = bareOrigin(dir);
     const ghLog = `${dir}.gh.log`;
     const r = orch(dir, ["run", "Add a CSV export", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH, FAKE_GH_LOG: ghLog });
     assert.equal(r.code, 0, r.out);
@@ -934,16 +944,60 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.equal(r.last("pr").url, `https://github.com/example/repo/pull/${branch.length}`);
     assert.equal(lastRun(dir).pr, r.last("pr").url);
 
-    // gh missing or failing: the branch is still pushed and the goal still passes.
+    // gh missing: the branch is still pushed, the goal still passes, and the event links to GitHub's compare page.
     const noGh = orch(dir, ["run", "y", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: join(dir, "no-such-gh") });
     assert.equal(noGh.code, 0, noGh.out);
-    assert.match(noGh.last("pr").error, /gh \(GitHub CLI\) was not found/);
+    const noGhPr = noGh.last("pr");
+    assert.equal(noGhPr.error, undefined);
+    assert.equal(noGhPr.url, undefined);
+    assert.equal(noGhPr.link, `https://github.com/example/repo/compare/main...${noGh.last("goal_branch").branch}?expand=1`);
+    assert.equal(lastRun(dir).pr, undefined, "no pull request, so no CI to watch");
+    // gh failing (logged out): reported, with the same link.
     const ghFails = orch(dir, ["run", "z", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH, FAKE_GH_FAIL: "1" });
     assert.equal(ghFails.code, 0);
     assert.match(ghFails.last("pr").error, /gh auth login/);
+    assert.match(ghFails.last("pr").link, /^https:\/\/github\.com\/example\/repo\/compare\/main\.\.\./);
     // No origin: nothing pushed, reported.
     git(dir, "remote", "remove", "origin");
     assert.match(orch(dir, ["run", "w", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH }).last("pr").error, /no "origin" remote/);
+  });
+
+  test("--pr on GitLab, Bitbucket, Codeberg or any other git host: pushed with git, and the event links to the host's new-PR page", () => {
+    const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+    const cases = [
+      [
+        "git@gitlab.com:example/repo.git",
+        (b) => `https://gitlab.com/example/repo/-/merge_requests/new?merge_request[source_branch]=${encodeURIComponent(b)}&merge_request[target_branch]=main`,
+      ],
+      ["https://bitbucket.org/example/repo.git", (b) => `https://bitbucket.org/example/repo/pull-requests/new?source=${encodeURIComponent(b)}&dest=main`],
+      ["ssh://git@codeberg.org/example/repo.git", (b) => `https://codeberg.org/example/repo/compare/main...${b}`],
+      ["https://git.example.com/example/repo.git", () => undefined],
+    ];
+    for (const [url, want] of cases) {
+      const dir = repo();
+      const origin = bareOrigin(dir, url);
+      const ghLog = `${dir}.gh.log`;
+      const r = orch(dir, ["run", "Add a CSV export", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH, FAKE_GH_LOG: ghLog });
+      assert.equal(r.code, 0, r.out);
+      const { branch } = r.last("goal_branch");
+      assert.match(git(origin, "branch", "--list", branch), /orch\//, `${url}: pushed`);
+      assert.equal(existsSync(ghLog), false, `${url}: gh is never called off GitHub`);
+      const pr = r.last("pr");
+      assert.equal(pr.pushed, true);
+      assert.equal(pr.error, undefined);
+      assert.equal(pr.link, want(branch), url);
+    }
+
+    // A host that prints its own link on push (as GitLab, Bitbucket and Gitea do): that link wins.
+    const dir = repo();
+    const origin = bareOrigin(dir, "https://git.example.com/example/repo.git");
+    writeFileSync(
+      join(origin, "hooks", "post-receive"),
+      '#!/bin/sh\necho "Create a pull request for this branch:"\necho "  https://git.example.com/example/repo/pulls/new/feature"\n',
+    );
+    if (process.platform !== "win32") chmodSync(join(origin, "hooks", "post-receive"), 0o755);
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--pr"], { FAKE_QA: "pass", GH_BIN: FAKE_GH });
+    assert.equal(r.last("pr").link, "https://git.example.com/example/repo/pulls/new/feature", r.out);
   });
 
   test("--approve-plan: the run waits; a rejection goes back to the architect; an edited plan is built", async () => {
@@ -1162,6 +1216,63 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.match(bad.out, /--command-timeout must be/);
   });
 
+  test("--commands: prefix allows every command starting with the same two words, never a chained one", async () => {
+    const dir = repo();
+    const run = orchAsync(dir, ["run", "install", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "be=npm install left-pad" });
+    const events = () =>
+      run
+        .output()
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("@@ORCH@@ "))
+        .map((line) => JSON.parse(line.slice(9)));
+    const decide = (...args) => spawnSync(process.execPath, [TSX, ORCH, "decide", ...args], { cwd: dir, encoding: "utf8" });
+    try {
+      await until(() => events().some((e) => e.type === "command_wait"));
+      const wait = events().find((e) => e.type === "command_wait");
+      assert.equal(wait.prefix, "npm install");
+      const r = decide(wait.id, "prefix");
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /every "npm install \.\.\." in later runs/);
+      const { code, out } = await run.done;
+      assert.equal(code, 0, out);
+      assert.equal(events().find((e) => e.type === "command_decided").decision, "prefix");
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+    }
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, ".orchestrator", "config.json"), "utf8")).allow, ["Bash(npm install:*)"]);
+
+    // Another package runs without asking; a chained command still asks (and is denied when nobody answers).
+    const again = orch(dir, ["run", "more", "--max-rounds", "1", "--commands", "--command-timeout", "0.01"], {
+      FAKE_COMMAND: "be=npm install zod;fe=npm install x && curl evil.example",
+    });
+    assert.equal(again.code, 0, again.out);
+    // fe asks in the foundation and again in the build phase; be never asks.
+    const waits = again.ev("command_wait");
+    assert.ok(waits.length > 0);
+    for (const e of waits) assert.deepEqual([e.agent, e.command, e.prefix], ["fe", "npm install x && curl evil.example", undefined]);
+    assert.ok(again.calls.some((c) => /be: command=npm install zod behavior=allow/.test(c)));
+    assert.ok(again.calls.some((c) => /fe: command=npm install x && curl evil\.example behavior=deny/.test(c)));
+  });
+
+  test("orch allow lists the always-allowed commands and removes one, keeping the rest of the config", () => {
+    const dir = repo();
+    const cfgFile = join(dir, ".orchestrator", "config.json");
+    assert.deepEqual(JSON.parse(orch(dir, ["allow", "--json"]).out.trim().split(/\r?\n/).at(-1)), { allow: [] });
+    mkdirSync(join(dir, ".orchestrator"), { recursive: true });
+    writeFileSync(cfgFile, JSON.stringify({ checks: { test: "node -e 0" }, allow: ["Bash(npm install yaml)", "PowerShell(npm test)"] }));
+    const list = orch(dir, ["allow"]);
+    assert.equal(list.code, 0, list.out);
+    assert.match(list.out, /Bash\(npm install yaml\)\n.*PowerShell\(npm test\)/s);
+    const left = orch(dir, ["allow", "--json", "--remove", "Bash(npm install yaml)"]);
+    assert.equal(left.code, 0, left.out);
+    assert.deepEqual(JSON.parse(left.out.trim().split(/\r?\n/).at(-1)), { allow: ["PowerShell(npm test)"] });
+    assert.deepEqual(JSON.parse(readFileSync(cfgFile, "utf8")), { checks: { test: "node -e 0" }, allow: ["PowerShell(npm test)"] });
+    const unknown = orch(dir, ["allow", "--remove", "Bash(rm -rf /)"]);
+    assert.notEqual(unknown.code, 0);
+    assert.match(unknown.out, /no always-allowed command/);
+  });
+
   test("--commands: a wildcard command cannot be always-allowed; a crashed agent's waiting command is cancelled", async () => {
     const dir = repo();
     const run = orchAsync(dir, ["run", "glob", "--max-rounds", "1", "--commands"], { FAKE_COMMAND: "be=ls *.ts" });
@@ -1366,6 +1477,30 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.match(b.last("round_end").failures[0], /check "setup" failed/);
   });
 
+  test("orch new --remote: origin is set and main pushed there; an unreachable remote only warns; an option is refused", () => {
+    const parent = repo({ git: false });
+    const bare = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
+    dirs.push(bare);
+    git(bare, "init", "-q", "--bare");
+    const url = bare.replace(/\\/g, "/");
+    const r = orch(parent, ["new", "app", "A todo CLI in Node", "--remote", url]);
+    assert.equal(r.code, 0, r.out);
+    const app = join(parent, "app");
+    assert.equal(git(app, "config", "--get", "remote.origin.url"), url);
+    assert.equal(git(bare, "rev-parse", "main"), git(app, "rev-parse", "main"), "main pushed");
+    assert.match(r.out, /main pushed/);
+
+    const off = orch(parent, ["new", "app2", "A todo CLI", "--remote", join(parent, "no-such-remote").replace(/\\/g, "/")]);
+    assert.equal(off.code, 0, off.out);
+    assert.match(off.out, /pushing main failed .*git push -u origin main/s);
+    assert.match(git(join(parent, "app2"), "config", "--get", "remote.origin.url"), /no-such-remote/);
+
+    const bad = orch(parent, ["new", "app3", "A todo CLI", "--remote=--upload-pack=evil"]);
+    assert.notEqual(bad.code, 0);
+    assert.match(bad.out, /not a git remote URL/);
+    assert.equal(existsSync(join(parent, "app3")), false, "nothing created");
+  });
+
   test("orch new: a repo with SPEC.md, the spec kept for the architects, goals queued, checks suggested; then the loop builds it", () => {
     const parent = repo({ git: false });
     assert.match(orch(parent, ["new", "app"]).out, /usage: orch new DIR/);
@@ -1531,10 +1666,7 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
   test("--branch with a brief: its goals share one branch and build on each other; a failed one is parked; one PR", () => {
     const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
     const dir = repo();
-    const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
-    dirs.push(origin);
-    git(origin, "init", "-q", "--bare");
-    git(dir, "remote", "add", "origin", origin);
+    const origin = bareOrigin(dir);
     const main = git(dir, "rev-parse", "main");
     const ghLog = `${dir}.gh.log`;
     const r = orch(dir, ["split", "--start", "--max-rounds", "1", "--no-coverage", "--retries", "0", "--pr", "Build the brief"], {
@@ -1842,10 +1974,7 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
   test("loop --intake pulls new issues in when the queue runs dry; with --pr the PR closes the issue", () => {
     const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
     const dir = repo();
-    const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
-    dirs.push(origin);
-    git(origin, "init", "-q", "--bare");
-    git(dir, "remote", "add", "origin", origin);
+    bareOrigin(dir);
     const ghLog = `${dir}.gh.log`;
     const r = orch(dir, ["loop", "--until-empty", "--max-rounds", "1", "--no-coverage", "--intake", "github:orch", "--pr"], {
       FAKE_QA: "pass",
@@ -1891,6 +2020,27 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.equal(o.ev("protected").length, 0);
     const custom = orch(repo(), ["run", "x", "--max-rounds", "1", "--protect", "src/api.ts"], { FAKE_QA: "pass" });
     assert.match(custom.out, /file "src\/api\.ts" is protected/);
+  });
+
+  test("large files: a new file over maxFileSize is not committed and fails the round; 0 turns the limit off", () => {
+    // The fake's stray file is 23 bytes: a limit of 0.00001 MB (10 bytes) makes it "large" without writing megabytes.
+    const dir = repo();
+    const head = git(dir, "rev-parse", "HEAD");
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--max-file-size", "0.00001"], { FAKE_QA: "pass", FAKE_STRAY_FILE: "dump.bin" });
+    assert.equal(r.code, 1, r.out);
+    const failures = r.last("round_end").failures.join("\n");
+    assert.match(failures, /dump\.bin is 0 MB, over the 0\.00001 MB limit for a committed file/);
+    assert.match(r.out, /not committed: dump\.bin/);
+    assert.doesNotMatch(git(dir, "log", "--all", "--name-only", "--format="), /dump\.bin/, "never committed on any branch");
+    assert.equal(git(dir, "rev-parse", "main"), head);
+
+    const cfg = repo();
+    mkdirSync(join(cfg, ".orchestrator"), { recursive: true });
+    writeFileSync(join(cfg, ".orchestrator", "config.json"), JSON.stringify({ maxFileSize: 0 }));
+    const off = orch(cfg, ["run", "x", "--max-rounds", "1"], { FAKE_QA: "pass", FAKE_STRAY_FILE: "dump.bin" });
+    assert.equal(off.code, 0, off.out);
+    assert.match(git(cfg, "log", "--name-only", "--format="), /dump\.bin/);
+    assert.notEqual(orch(repo(), ["run", "x", "--max-file-size", "-1"]).code, 0, "a negative size is refused");
   });
 
   test("secret scan: a key in the changes is never committed and fails the round; the fix round commits clean work", () => {
@@ -1987,10 +2137,7 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
     const setup = () => {
       const dir = repo();
-      const origin = mkdtempSync(join(tmpdir(), "yaaiorch-origin-"));
-      dirs.push(origin);
-      git(origin, "init", "-q", "--bare");
-      git(dir, "remote", "add", "origin", origin);
+      const origin = bareOrigin(dir);
       return { dir, origin };
     };
     const env = (dir, checks) => ({
@@ -2529,7 +2676,8 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
 
   test("doctor: clean repo passes, dirty repo fails", () => {
     const dir = repo();
-    const ok = orch(dir, ["doctor", "--json"]);
+    // No gh here: an installed GitHub CLI would add its own line.
+    const ok = orch(dir, ["doctor", "--json"], { GH_BIN: join(dir, "no-such-gh") });
     assert.equal(ok.code, 0, ok.out);
     const findings = JSON.parse(ok.out.trim().split(/\r?\n/).at(-1));
     assert.deepEqual(Object.fromEntries(findings.map((f) => [f.name, f.level])), {
@@ -2543,6 +2691,54 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     const bad = orch(dir, ["doctor"]);
     assert.equal(bad.code, 1);
     assert.match(bad.out, /FAIL\s+repo: uncommitted changes/);
+  });
+
+  test("doctor: gh is reported when installed, and a warning when the config needs it and it is missing or logged out", () => {
+    const dir = repo();
+    const FAKE_GH = join(ROOT, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+    const gh = (env) => JSON.parse(orch(dir, ["doctor", "--json"], env).out.trim().split(/\r?\n/).at(-1)).find((f) => f.name === "gh");
+    const missing = { GH_BIN: join(dir, "no-such-gh") };
+    assert.equal(gh(missing), undefined);
+    assert.equal(gh({ GH_BIN: FAKE_GH }).level, "ok");
+    assert.equal(gh({ GH_BIN: FAKE_GH, FAKE_GH_FAIL: "1" }).level, "ok");
+    mkdirSync(join(dir, ".orchestrator"), { recursive: true });
+    writeFileSync(join(dir, ".orchestrator", "config.json"), JSON.stringify({ intake: "github:orch" }));
+    assert.match(gh(missing).detail, /GitHub CLI not found/);
+    assert.equal(gh(missing).level, "warn");
+    assert.equal(gh({ GH_BIN: FAKE_GH }).level, "ok");
+    const out = gh({ GH_BIN: FAKE_GH, FAKE_GH_FAIL: "1" });
+    assert.equal(out.level, "warn");
+    assert.match(out.detail, /gh auth login/);
+  });
+
+  test("doctor --pr: gh only for a GitHub origin; another host is fine without it; no origin is a warning", () => {
+    const missing = (dir) => ({ GH_BIN: join(dir, "no-such-gh") });
+    const findings = (dir, args = ["--pr"]) =>
+      JSON.parse(
+        orch(dir, ["doctor", "--json", ...args], missing(dir))
+          .out.trim()
+          .split(/\r?\n/)
+          .at(-1),
+      );
+    const byName = (fs) => Object.fromEntries(fs.map((f) => [f.name, f]));
+
+    const none = repo();
+    assert.equal(byName(findings(none))["pull requests"].level, "warn");
+    assert.match(byName(findings(none))["pull requests"].detail, /git remote add origin/);
+    assert.equal(byName(findings(none, []))["pull requests"], undefined, "without --pr nothing about pull requests");
+
+    const hub = repo();
+    git(hub, "remote", "add", "origin", "git@github.com:me/app.git");
+    assert.equal(byName(findings(hub)).gh.level, "warn");
+    assert.equal(byName(findings(hub))["pull requests"], undefined);
+    assert.equal(byName(findings(hub, [])).gh, undefined, "no --pr: gh not needed");
+
+    const berg = repo();
+    git(berg, "remote", "add", "origin", "https://codeberg.org/me/app.git");
+    const b = byName(findings(berg));
+    assert.equal(b.gh, undefined, "gh is not needed for Codeberg");
+    assert.equal(b["pull requests"].level, "ok");
+    assert.match(b["pull requests"].detail, /https:\/\/codeberg\.org\/me\/app/);
   });
 
   test("claude in a folder with spaces, & and % starts and runs a goal (no cmd.exe on Windows)", () => {

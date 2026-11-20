@@ -1072,6 +1072,25 @@ button {
     margin-top: 8px;
   }
 }
+.allowed-commands {
+  list-style: none;
+  padding: 0;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  code {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+  }
+}
 .model-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -1430,22 +1449,22 @@ button {
     font-size: 12px;
     color: var(--text-2);
   }
-  pre {
+  .task-report-body {
     max-height: 360px;
     overflow: auto;
     margin: 8px 0 0;
-    padding: 10px;
+    padding: 10px 12px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: var(--code);
+    background: var(--surface-2);
     color: var(--text-2);
-    font: 12px/1.5 var(--mono);
-    white-space: pre;
+    font-size: 13px;
+    overflow-wrap: anywhere;
   }
-}
-.task-report pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
 }
 .phase {
   margin: 8px 0 2px;
@@ -2131,17 +2150,22 @@ input.limit {
     }
   }
 }
-pre.contract {
+.contract-label {
+  margin: 4px 0 -4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+// The API contract: rendered agent text (AgentText), one line per rule when the coordinator wrote one paragraph.
+.contract {
   margin: 0;
-  max-height: 320px;
+  max-height: 360px;
   overflow: auto;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--code);
   border: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: pre-wrap;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
@@ -2157,4 +2181,61 @@ pre.contract {
 }
 .agent-enabled {
   margin: 4px 0 8px;
+}
+
+/* Agent text rendered from Markdown (AgentText.tsx): Agent M answers, plans, goals, contracts, reports. */
+.md {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  p {
+    margin: 0;
+    white-space: normal;
+  }
+  h4,
+  h5 {
+    margin: 4px 0 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  ul,
+  ol {
+    margin: 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--code);
+    border: 1px solid var(--border);
+  }
+  pre {
+    margin: 0;
+    padding: 8px 10px;
+    background: var(--code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+    code {
+      padding: 0;
+      border: 0;
+      background: none;
+    }
+  }
+  a {
+    color: var(--link);
+  }
+}
+.md-inline code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--code);
+  border: 1px solid var(--border);
 }

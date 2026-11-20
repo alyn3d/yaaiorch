@@ -32,6 +32,10 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
     setError("");
     setLoading(true);
     setEditing(false);
+    if (!repo) {
+      setLoading(false);
+      return;
+    }
     transport.agents(repo).then(
       (data) => {
         if (!active) return;

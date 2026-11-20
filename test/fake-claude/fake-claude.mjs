@@ -48,6 +48,7 @@
 //   FAKE_GROUP_FAULT=backend|frontend|both   the group coordinator's fault call (default frontend); FAKE_GROUP_REVISE=1
 //                            adds contract "REVISED". Without "Integration failed" in the prompt it answers a plan.
 //                            FAKE_GROUP_BULLETS=1: every goal it gives starts with "- " (a markdown bullet list)
+//                            FAKE_GROUP_PLAN_FILE=<file>: its plan is that JSON ({contract, goals}; demos)
 //                            FAKE_GROUP_ONLY=backend|frontend: its plan has a goal for that repo only
 //   FAKE_LEAK=<agent>        that implementer also writes leaked-by-<agent>.txt into its first --add-dir (another repo)
 //   FAKE_SECRET_ONCE=<agent> that agent's first call writes an AWS-style access key into its files
@@ -363,6 +364,10 @@ if (prompt.startsWith("You are the group coordinator.")) {
         }) +
         "\n```",
     );
+  } else if (env.FAKE_GROUP_PLAN_FILE) {
+    // A hand-written plan (screenshots and demos): {contract, goals: {backend, frontend}}.
+    log("coordinator: plan from file");
+    reply("```json\n" + readFileSync(env.FAKE_GROUP_PLAN_FILE, "utf8") + "\n```");
   } else {
     log("coordinator: plan");
     reply(

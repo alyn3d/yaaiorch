@@ -6,6 +6,7 @@ import type { GroupConfig, GroupRole, GroupView as Group, Power } from "./types"
 import { transport, type GroupForm } from "./transport";
 import { baseName, usd } from "./repoStatus";
 import type { Session } from "./useOrch";
+import { AgentText } from "./AgentText";
 
 const POWERS: Power[] = ["max", "heavy", "balanced", "economy"];
 const ROLES: GroupRole[] = ["backend", "frontend"];
@@ -356,7 +357,7 @@ function GroupRunCard({
         <ul className="group-goals">
           {ROLES.filter((r) => group.goals?.[r]).map((role) => (
             <li key={role}>
-              <span className={`badge ${role === "backend" ? "be" : "fe"}`}>{role}</span> {group.goals![role]}
+              <span className={`badge ${role === "backend" ? "be" : "fe"}`}>{role}</span> <AgentText text={group.goals![role]!} />
               {pathOf(role) && (
                 <button className="small ghost" onClick={() => onOpenRepo(pathOf(role)!)}>
                   Progress
@@ -375,7 +376,7 @@ function GroupRunCard({
           <ul className="failures muted">
             {ROLES.filter((r) => group.fault!.goals[r]).map((r) => (
               <li key={r}>
-                {r} fix: {group.fault!.goals[r]}
+                {r} fix: <AgentText text={group.fault!.goals[r]!} />
               </li>
             ))}
           </ul>
@@ -387,7 +388,7 @@ function GroupRunCard({
           <ul className="failures">
             {ROLES.filter((r) => group.fault!.goals[r]).map((r) => (
               <li key={r}>
-                {r} fix: {group.fault!.goals[r]}
+                {r} fix: <AgentText text={group.fault!.goals[r]!} />
               </li>
             ))}
           </ul>
@@ -429,7 +430,9 @@ function GroupRunCard({
       {group.contract && (
         <details className="disclosure" hidden={!!group.approval && running}>
           <summary>API contract</summary>
-          <pre className="contract">{group.contract}</pre>
+          <div className="contract">
+            <AgentText text={group.contract} />
+          </div>
         </details>
       )}
     </section>
@@ -470,11 +473,14 @@ function GroupApproval({ a, onAnswer }: { a: NonNullable<Group["approval"]>; onA
           <ul className="plan">
             {ROLES.filter((r) => a.goals[r]).map((r) => (
               <li key={r}>
-                <span className="agent">{r}</span> {a.goals[r]}
+                <span className="agent">{r}</span> <AgentText text={a.goals[r]!} />
               </li>
             ))}
           </ul>
-          <pre className="contract">{a.contract}</pre>
+          <p className="contract-label">API contract</p>
+          <div className="contract">
+            <AgentText text={a.contract} />
+          </div>
         </>
       ) : (
         <>

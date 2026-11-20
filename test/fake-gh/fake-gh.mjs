@@ -43,6 +43,8 @@ if (args[0] === "run" && args[1] === "view") {
   console.log("test\tRun npm test\t##[error] Expected 2, got 3");
   process.exit(0);
 }
+// `gh auth status`: logged in (FAKE_GH_FAIL above is the logged-out case).
+if (args[0] === "auth" && args[1] === "status") process.exit(0);
 // `gh issue comment N --body-file -`: logged (args and body) above.
 if (args[0] === "issue" && args[1] === "comment") process.exit(0);
 if (args[0] === "pr" && args[1] === "create") {

@@ -818,7 +818,8 @@
           <p class="download-meta" id="download-meta" hidden></p>
           <p class="requirements">
             Desktop app for Windows, macOS and Linux. The CLI runs wherever Node.js 20+ does. Needs
-            Claude Code (installed and logged in) and git; the desktop app brings its own Node.js.
+            Claude Code (installed and logged in) and git; the desktop app brings its own Node.js. The GitHub CLI is
+            optional, for opening pull requests on GitHub.
           </p>
         </div>
 
@@ -893,7 +894,7 @@
               height="1077"
               loading="lazy"
               decoding="async"
-              alt="The Agent M page: an agent asks to run npm install zod and waits for Allow, Always allow or Deny, above a chat answer explaining why a run failed."
+              alt="The Agent M page: an agent asks to run npm install zod and waits for Allow, Always allow, Always allow npm install or Deny, above a chat answer explaining why a run failed."
             />
           </div>
           <figcaption>Agent M, simulated: an agent waits for your OK to run a command, and the chat explains a failed run.</figcaption>
@@ -906,7 +907,7 @@
               height="1077"
               loading="lazy"
               decoding="async"
-              alt="A repo group page: a backend and a frontend demo repo, and the coordinator's API contract and per-repo goals waiting for Build it, Edit plan or Send back."
+              alt="A repo group waiting for plan approval: the coordinator's goals for the backend and the frontend as short lists, and their API contract one rule per line, for sorting items by price."
             />
           </div>
           <figcaption>A repo group on two demo repos: one goal, an API contract and a goal per repo, waiting for your approval.</figcaption>
@@ -961,8 +962,8 @@
             <h3>Built for supervised autonomy</h3>
             <p>
               Git checkpoints, a commit per round, rollback, budgets, timeouts and stuck detection help you review and
-              recover work. Protected paths, a secret scan before every commit and an optional plan approval step keep
-              unattended runs in bounds. Opt in to agent questions when you want to make decisions during a run.
+              recover work. Protected paths, a secret scan and a file size limit before every commit, and an optional
+              plan approval step keep unattended runs in bounds. Opt in to agent questions when you want to make decisions during a run.
             </p>
           </article>
           <article class="feature">
@@ -988,7 +989,8 @@
             <p>
               Label a GitHub issue and YAAIORCH picks it up: it works on its own branch, opens a pull request that
               closes the issue, comments on progress, and tries to fix the pull request's CI when a check fails. You
-              review the pull request before merging.
+              review the pull request before merging. Branches push to any git host; on GitLab, Bitbucket or Codeberg
+              you open the pull request from a link.
             </p>
           </article>
           <article class="feature feature-wide">
@@ -1026,7 +1028,8 @@
             <h3>Agent M: you approve every command</h3>
             <p>
               Turn it on and agents can ask to install a dependency or run a generator. Each command waits on the Agent M
-              page, from every repo, for Allow, Always allow or Deny; nothing runs until you answer. The same page has a
+              page, from every repo, for Allow, Always allow or Deny; nothing runs until you answer, and each repo's
+              settings list what you always allowed, ready to remove. The same page has a
               chat that answers questions about your setup, MCP servers, queues and failed runs.
             </p>
           </article>

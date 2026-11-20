@@ -24,6 +24,7 @@ export function NewProjectDialog({ onCreated, onClose }: { onCreated: (repo: str
   const [name, setName] = useState("");
   const [spec, setSpec] = useState("");
   const [setup, setSetup] = useState("");
+  const [remote, setRemote] = useState("");
   const [power, setPower] = useState<Power>("heavy");
   const [maxCost, setMaxCost] = useState("");
   const [total, setTotal] = useState("");
@@ -44,6 +45,7 @@ export function NewProjectDialog({ onCreated, onClose }: { onCreated: (repo: str
         name: name.trim(),
         spec,
         setup: setup.trim() || undefined,
+        remote: remote.trim() || undefined,
         start,
         power,
         maxCost: cap > 0 ? cap : undefined,
@@ -118,6 +120,10 @@ export function NewProjectDialog({ onCreated, onClose }: { onCreated: (repo: str
           <label title="Installs dependencies when a manifest changes, run by orch before the checks (agents never install). It runs packages' install scripts with your rights; --ignore-scripts is safer. Empty: no dependencies are installed.">
             Setup
             <input placeholder="e.g. npm install (optional)" value={setup} onChange={(e) => setSetup(e.target.value)} />
+          </label>
+          <label title="An empty repo you created on GitHub, GitLab, Bitbucket, Codeberg or any git server. It becomes origin and gets the first commit; pull requests go there. Empty: local only (add one later with git remote add origin URL).">
+            Remote
+            <input placeholder="e.g. git@codeberg.org:me/app.git (optional)" value={remote} onChange={(e) => setRemote(e.target.value)} spellCheck={false} />
           </label>
           <label>
             Power

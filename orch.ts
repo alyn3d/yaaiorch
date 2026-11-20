@@ -79,13 +79,13 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
               [--disable-skill NAME | --enable-skill NAME | --disable-agent NAME | --enable-agent NAME]
                         list agents + skills, use a custom agent in a built-in role, or turn a skill or
                         custom agent off in this repo (config skills.disable / agents.disable)
-  orch doctor [--json]  check node, claude (installed, logged in), git and the repo
+  orch doctor [--json] [--pr]  check node, claude (installed, logged in), git and the repo (--pr: and what pull requests need)
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
   orch split "<brief>" [--brief-file FILE] [--start]   split a big brief into queued goals for this repo (kept in
                         .orchestrator/spec.md, which every goal's architect reads); --start runs the loop right away;
                         --propose only shows the split; --accept queues {brief, goals} JSON from stdin
-  orch new DIR "<spec>" [--spec-file FILE] [--setup CMD] [--start]   start a project in a new or empty folder: git,
+  orch new DIR "<spec>" [--spec-file FILE] [--setup CMD] [--remote URL] [--start]   start a project in a new or empty folder: git,
                         SPEC.md, a .gitignore, and the spec split into queued goals (scaffold first) with suggested
                         checks in .orchestrator/config.json; --start runs the loop, else "orch loop --until-empty" there
   orch retry ID          put a failed or blocked goal back in the queue, with the goals it blocked
@@ -96,7 +96,8 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
                         plan (edited: a plan as JSON on stdin), or send it back to the architect with your reason;
                         --group: the group plan of "orch group run NAME --approve-plan" (edited: {contract, goals})
   orch answer ID        answer an agent's question with text from stdin
-  orch decide ID allow|deny|always   answer a shell command an agent wants to run (--commands)
+  orch decide ID allow|deny|always|prefix   answer a shell command an agent wants to run (--commands)
+  orch allow [--json] [--remove RULE]   list the repo's always-allowed commands (config allow), or remove one
   orch chat             ask Agent M (Haiku, read-only) about your setup and repos: {"question", "session"?, "repos"?, "running"?}
                         as JSON on stdin; prints {"answer", "session", "cost"}. --warm: only gather the machine status
                         (cached 10 minutes) so the next question is quick
@@ -153,6 +154,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   .github/workflows/; also "protect" in config ([] for none)
          --no-secret-scan   do not check the changes for keys, tokens, private keys and .env files before each commit
                   (by default a finding blocks the commit and fails the round); also "secretScan": false
+         --max-file-size MB   a new or changed file over this size is not committed and fails the round (default 5;
+                  0: no limit); also "maxFileSize" in config
          --ci-fixes N   with --pr: wait for the pull request's CI checks; when one fails, run up to N fix goals on
                   its branch (default 2; 0 only reports it)  --no-ci-watch   do not wait; also "ciFixes", "ciWatch"
          --no-issue-comments   loop: do not comment on the GitHub issue a goal came from (by default: when it starts,
@@ -166,7 +169,8 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   send it back with a reason; also "approvePlan": true in config
          --ask            allow agents to pause for your decisions; also "ask": true in config; --no-ask turns it off
          --commands   implementers may run shell commands, each one only after you allow it ("orch decide", or
-                  Agent M in the UI); "always" adds it to config "allow"; unanswered after --command-timeout MIN
+                  Agent M in the UI); "always" adds it to config "allow", "prefix" its first two words ("npm
+                  install:*"); unanswered after --command-timeout MIN
                   (default 10) it is denied; also "commands": "ask" and "commandTimeout" in config; --no-commands
          --branch   run each goal on its own branch, orch/<id>-<slug>, and switch back afterwards: your branch is
                   never changed (the goal's work stays on its branch); also "branch": true in config
@@ -781,6 +785,8 @@ type Config = {
   /** Paths no task may change ("dir/", "file", "*.lock", "infra/**"); default [".github/workflows/"]. */
   protect?: string[];
   secretScan?: boolean;
+  /** Largest new or changed file a round may commit, in MB (default 5; 0: no limit). */
+  maxFileSize?: number;
   issueComments?: boolean;
   /** --pr: fix goals for failing CI checks (default 2; 0 only reports them); ciWatch false: do not wait for CI. */
   ciFixes?: number;
@@ -1588,7 +1594,8 @@ function answerQuestion(id: string | undefined) {
 // asks it before a tool call it would refuse. It writes .orchestrator/commands/<id>.json and waits for
 // `orch decide <id> allow|deny|always` (the UI's Agent M); this process emits command_wait / command_decided.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-type CommandDecision = "allow" | "deny" | "always";
+/** "prefix": allow it, and every command starting with its first two words (`prefixRule`), in later runs too. */
+type CommandDecision = "allow" | "deny" | "always" | "prefix";
 type CommandOutcome = CommandDecision | "timeout" | "cancelled";
 type CommandRequest = {
   id: string;
@@ -1623,6 +1630,43 @@ function alwaysBlocked(command: string): string {
   if (/[()]/.test(command)) return "it contains parentheses, which an allow rule cannot hold";
   if (redactOutput(command) !== command) return "it contains what looks like a secret";
   return "";
+}
+
+/** Shells, interpreters and commands whose arguments decide everything: never offered as a prefix rule. */
+const NO_PREFIX = new Set(
+  "sh bash zsh fish dash cmd cmd.exe powershell powershell.exe pwsh pwsh.exe node deno bun python python3 py ruby perl php env sudo su doas xargs eval exec source rm rmdir del erase rd curl wget iwr irm invoke-webrequest invoke-restmethod invoke-expression iex start-process git ssh scp chmod chown dd mv cp".split(
+    " ",
+  ),
+);
+/** Package-manager subcommands that run any package named after them, so their prefix names nothing. */
+const NO_PREFIX_PAIRS = new Set(["npm exec", "npm x", "pnpm exec", "pnpm dlx", "yarn dlx", "yarn exec", "bunx x"]);
+
+/**
+ * The prefix "Always allow <prefix> ..." would save for this command: its first two words, when more follows, both
+ * plain words, and the command a single one (no chaining, pipes, redirects or substitutions). Undefined when a
+ * prefix rule would allow too much: a shell or interpreter, a destructive command, or a flag as the second word.
+ */
+function prefixRule(command: string): string | undefined {
+  const c = command.trim();
+  if (alwaysBlocked(c) || /[;&|<>`$\n\r]/.test(c)) return undefined;
+  const words = c.split(/\s+/);
+  if (words.length < 3) return undefined;
+  const [first, second] = words;
+  if (!/^[\w.@/-]+$/.test(first) || !/^[\w.@-]+$/.test(second) || second.startsWith("-")) return undefined;
+  const name = first.toLowerCase().replace(/^.*[\\/]/, "");
+  if (NO_PREFIX.has(name) || NO_PREFIX_PAIRS.has(`${name} ${second.toLowerCase()}`)) return undefined;
+  return `${first} ${second}`;
+}
+
+/** Whether config `allow` covers this command: the exact rule, or a prefix rule `Tool(prefix:*)` for a single command. */
+function allowedBy(rules: unknown[], tool: string, command: string): boolean {
+  if (rules.includes(allowRule(tool, command))) return true;
+  if (/[;&|<>`$\n\r]/.test(command)) return false;
+  const c = command.trim();
+  return rules.some((r) => {
+    const m = typeof r === "string" ? /^(\w+)\((.+):\*\)$/.exec(r) : null;
+    return !!m && m[1] === tool && (c === m[2] || c.startsWith(`${m[2]} `));
+  });
 }
 
 /** Per-call MCP config files, removed when the call ends (or this process exits). */
@@ -1711,12 +1755,15 @@ function scanCommands() {
         command,
         ...(r.description ? { description: redactOutput(r.description) } : {}),
         ...(alwaysBlocked(r.command) ? { noAlways: true } : {}),
+        ...(prefixRule(r.command) ? { prefix: prefixRule(r.command) } : {}),
       });
-      console.log(`\n${r.agent} wants to run: ${command}\nAnswer with: orch decide ${id} allow|deny|always (or Agent M in the UI)`);
+      console.log(
+        `\n${r.agent} wants to run: ${command}\nAnswer with: orch decide ${id} allow|deny|always${prefixRule(r.command) ? "|prefix" : ""} (or Agent M in the UI)`,
+      );
     } else if (kind === "done.json") {
       if (announcedCommands.delete(id)) {
         emit("command_decided", { id, decision: data.outcome });
-        console.log(`command ${data.outcome === "allow" || data.outcome === "always" ? "allowed" : String(data.outcome)}`);
+        console.log(`command ${["allow", "always", "prefix"].includes(String(data.outcome)) ? "allowed" : String(data.outcome)}`);
       }
       rmSync(file, { force: true });
     }
@@ -1737,15 +1784,24 @@ function cancelCommands(call: string) {
   }
 }
 
-/** `orch decide ID allow|deny|always`: answer a waiting command. "always" also adds it to config.json's `allow`. */
+/**
+ * `orch decide ID allow|deny|always|prefix`: answer a waiting command. "always" also adds it to config.json's `allow`;
+ * "prefix" adds `Tool(<first two words>:*)` instead, so later commands starting with them run without asking.
+ */
 function decideCommand(id: string | undefined, decision: string | undefined) {
-  if (!id || !UUID_RE.test(id) || !["allow", "deny", "always"].includes(decision ?? "")) throw new Error("usage: orch decide ID allow|deny|always");
+  if (!id || !UUID_RE.test(id) || !["allow", "deny", "always", "prefix"].includes(decision ?? ""))
+    throw new Error("usage: orch decide ID allow|deny|always|prefix");
   const request = join(COMMANDS_DIR, `${id}.json`);
   if (!existsSync(request)) throw new Error("no command with that ID is waiting");
   const r = JSON.parse(readFileSync(request, "utf8")) as CommandRequest;
   if (!lockLive(RUN_LOCK, r.lockId)) throw new Error("no command with that ID is waiting");
   const blocked = decision === "always" ? alwaysBlocked(r.command) : "";
   if (blocked) throw new Error(`cannot always allow this command: ${blocked}; allow it once instead`);
+  const prefix = decision === "prefix" ? prefixRule(r.command) : undefined;
+  if (decision === "prefix" && !prefix)
+    throw new Error(
+      "no prefix rule for this command (a shell, interpreter or destructive command, a flag, or more than one command); allow it once or always instead",
+    );
   const claim = join(COMMANDS_DIR, `${id}.claim`);
   try {
     closeSync(openSync(claim, "wx", 0o600));
@@ -1753,10 +1809,10 @@ function decideCommand(id: string | undefined, decision: string | undefined) {
     throw new Error("that command was already answered", { cause: e });
   }
   try {
-    if (decision === "always") {
+    if (decision === "always" || decision === "prefix") {
       const cfg = readJsonFile<Record<string, unknown>>(CONFIG_FILE, {});
       const allow = Array.isArray(cfg.allow) ? cfg.allow.map(String) : [];
-      const rule = allowRule(r.tool, r.command);
+      const rule = prefix ? allowRule(r.tool, `${prefix}:*`) : allowRule(r.tool, r.command);
       if (!allow.includes(rule)) writeFileAtomic(CONFIG_FILE, JSON.stringify({ ...cfg, allow: [...allow, rule] }, null, 2) + "\n");
     }
     writeFileAtomic(join(COMMANDS_DIR, `${id}.decision.json`), JSON.stringify({ id, decision }));
@@ -1764,7 +1820,31 @@ function decideCommand(id: string | undefined, decision: string | undefined) {
     rmSync(claim, { force: true });
     throw e;
   }
-  console.log(decision === "deny" ? "command denied" : decision === "always" ? "command allowed, now and in later runs" : "command allowed");
+  console.log(
+    decision === "deny"
+      ? "command denied"
+      : decision === "always"
+        ? "command allowed, now and in later runs"
+        : decision === "prefix"
+          ? `command allowed, and every "${prefix} ..." in later runs`
+          : "command allowed",
+  );
+}
+
+/** The repo's always-allowed command rules (config `allow`: added by "Always allow", or by hand). */
+function allowRules(): string[] {
+  const cfg = readJsonFile<Record<string, unknown>>(CONFIG_FILE, {});
+  return Array.isArray(cfg.allow) ? cfg.allow.map(String) : [];
+}
+
+/** `orch allow --remove RULE`: drop one rule from config `allow`; returns what is left. */
+function removeAllowRule(rule: string): string[] {
+  const cfg = readJsonFile<Record<string, unknown>>(CONFIG_FILE, {});
+  const allow = allowRules();
+  if (!allow.includes(rule)) throw new Error(`no always-allowed command ${JSON.stringify(rule)}`);
+  const left = allow.filter((r) => r !== rule);
+  writeFileAtomic(CONFIG_FILE, JSON.stringify({ ...cfg, allow: left }, null, 2) + "\n");
+  return left;
 }
 
 // ---------- Agent M chat: questions about the user's setup, repos and runs, answered by a cheap model ----------
@@ -2010,7 +2090,7 @@ async function permitServer() {
   const alwaysAllowed = (tool: string, command: string) => {
     try {
       const cfg = JSON.parse(readFileSync(env.ORCH_PERMIT_CONFIG ?? CONFIG_FILE, "utf8")) as { allow?: unknown };
-      return Array.isArray(cfg.allow) && cfg.allow.includes(allowRule(tool, command));
+      return Array.isArray(cfg.allow) && allowedBy(cfg.allow, tool, command);
     } catch {
       return false;
     }
@@ -2051,7 +2131,7 @@ async function permitServer() {
       if (existsSync(decisionFile)) {
         try {
           const d = JSON.parse(readFileSync(decisionFile, "utf8")) as { decision?: string };
-          if (d.decision === "allow" || d.decision === "deny" || d.decision === "always") {
+          if (d.decision === "allow" || d.decision === "deny" || d.decision === "always" || d.decision === "prefix") {
             outcome = d.decision;
             break;
           }
@@ -2073,7 +2153,7 @@ async function permitServer() {
       await sleep(250);
     }
     finish(id, outcome);
-    if (outcome === "allow" || outcome === "always") return { behavior: "allow", updatedInput: input };
+    if (outcome === "allow" || outcome === "always" || outcome === "prefix") return { behavior: "allow", updatedInput: input };
     const minutes = Math.round((timeoutMs / 60_000) * 10) / 10;
     return deny(
       outcome === "timeout"
@@ -2527,6 +2607,25 @@ const SECRETS: [string, RegExp][] = [
 ];
 const ENV_FILE = /(^|\/)\.env(\.(?!example$|sample$|template$|dist$)[^/]+)?$/i;
 let SECRET_SCAN = true;
+let MAX_FILE_MB = 5;
+
+/** New or changed files (since HEAD, or untracked) over MAX_FILE_MB, the biggest first. */
+function largeFiles(): { file: string; mb: number }[] {
+  if (!MAX_FILE_MB) return [];
+  const base = hasCommits() ? "HEAD" : "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  const changed = git("diff", "--name-only", "--diff-filter=AMR", "--no-renames", base, "--", ".", NOT_STATE).split("\n");
+  const untracked = git("ls-files", "--others", "--exclude-standard", "--", ".", NOT_STATE).split("\n");
+  const out: { file: string; mb: number }[] = [];
+  for (const file of new Set([...changed, ...untracked].filter(Boolean))) {
+    try {
+      const mb = statSync(file).size / (1024 * 1024);
+      if (mb > MAX_FILE_MB) out.push({ file, mb: Math.round(mb * 10) / 10 });
+    } catch {
+      /* deleted or unreadable */
+    }
+  }
+  return out.sort((a, b) => b.mb - a.mb);
+}
 
 /** Never put recognized secret values in structured output or persisted UI summaries. */
 function redactOutput(text: string): string {
@@ -2827,6 +2926,8 @@ function commitAll(message: string, park = false): string | null {
   if (!park) {
     const found = scanSecrets();
     if (found.length) throw new Error(`refusing to commit: ${found.map((x) => `${x.what} in ${x.file}`).join(", ")}`);
+    const large = largeFiles();
+    if (large.length) throw new Error(`refusing to commit files over ${MAX_FILE_MB} MB: ${large.map((x) => `${x.file} (${x.mb} MB)`).join(", ")}`);
   }
   let identity: string[] = [];
   try {
@@ -3273,21 +3374,98 @@ function briefPullRequest(gb: GoalBranch, lr: LastRun): string | undefined {
   return url;
 }
 
-/** Push the goal branch to origin and open a pull request with gh. Returns its URL; failures are reported, never thrown. */
+type Forge = "github" | "gitlab" | "bitbucket" | "gitea" | "other";
+
+/** A remote URL (https, ssh or scp-like git@host:path) as the repo's web address, e.g. https://host/owner/repo. */
+function remoteWeb(remote: string): string | undefined {
+  const r = remote.trim();
+  let host: string, path: string;
+  const scp = /^[\w.-]+@([\w.-]+):(?!\/\/)(.+)$/.exec(r);
+  if (scp) [host, path] = [scp[1], scp[2]];
+  else {
+    try {
+      const u = new URL(r);
+      if (!["https:", "http:", "ssh:", "git:"].includes(u.protocol)) return undefined;
+      [host, path] = [u.hostname, u.pathname];
+    } catch {
+      return undefined;
+    }
+  }
+  path = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+  // Bitbucket Server and some hosts put ssh repos under scm/ or a port-specific path; good enough for the big hosts.
+  if (!host || !path.includes("/")) return undefined;
+  return `https://${host}/${path}`;
+}
+
+/** Which hosting service a web address belongs to (self-hosted GitLab, Gitea and Forgejo usually say so in the host). */
+function forgeOf(web: string | undefined): Forge {
+  const host = web ? new URL(web).hostname.toLowerCase() : "";
+  if (host === "github.com" || host.includes("github")) return "github";
+  if (host === "gitlab.com" || host.includes("gitlab")) return "gitlab";
+  if (host === "bitbucket.org" || host.includes("bitbucket")) return "bitbucket";
+  if (host === "codeberg.org" || host.includes("gitea") || host.includes("forgejo")) return "gitea";
+  return "other";
+}
+
+/** The page where a person opens the pull (merge) request for `branch` into `base`, or undefined for an unknown host. */
+function newPullRequestUrl(web: string, forge: Forge, base: string, branch: string): string | undefined {
+  const q = encodeURIComponent;
+  if (forge === "github") return `${web}/compare/${base}...${branch}?expand=1`;
+  if (forge === "gitlab") return `${web}/-/merge_requests/new?merge_request[source_branch]=${q(branch)}&merge_request[target_branch]=${q(base)}`;
+  if (forge === "bitbucket") return `${web}/pull-requests/new?source=${q(branch)}&dest=${q(base)}`;
+  if (forge === "gitea") return `${web}/compare/${base}...${branch}`;
+  return undefined;
+}
+
+/** The "create a pull/merge request" link a host prints on push (GitLab, Bitbucket, Gitea, Forgejo, GitHub do). */
+function pushLink(output: string): string | undefined {
+  for (const line of output.split(/\r?\n/)) {
+    if (!/^remote:/.test(line)) continue;
+    const url = /https?:\/\/\S+/.exec(line)?.[0];
+    if (url && /merge_requests\/new|pull-requests\/new|\/pull\/new\/|\/compare\/|\/pulls?\/new/.test(url)) return url;
+  }
+  return undefined;
+}
+
+/** origin's URL, or undefined without one. */
+function originUrl(): string | undefined {
+  if (!git("remote").split("\n").includes("origin")) return undefined;
+  // As configured: `git remote get-url` would apply url.*.insteadOf rewrites, which hide the real host.
+  return git("config", "--get", "remote.origin.url").trim() || undefined;
+}
+
+/**
+ * Push the goal branch to origin, then open its pull request: with gh on GitHub; on any other host (or GitHub
+ * without gh) the push is all orch does, and the `pr` event carries `link`, the host's page to open it in one click.
+ * Returns the URL of a pull request that was opened; failures are reported, never thrown.
+ */
 function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: string): string | undefined {
   let url: string | undefined;
+  let link: string | undefined;
   let error: string | undefined;
   try {
-    if (!git("remote").split("\n").includes("origin")) throw new Error('no "origin" remote to push to');
-    // Never wait for a credential prompt: an unattended run would hang.
-    execFileSync("git", ["push", "-q", "-u", "origin", gb.branch], {
+    const remote = originUrl();
+    if (!remote) throw new Error('no "origin" remote to push to; add one with "git remote add origin URL"');
+    // Never wait for a credential prompt: an unattended run would hang. Not quiet: hosts print the PR link on stderr.
+    const pushed = spawnSync("git", ["push", "-u", "origin", gb.branch], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      windowsHide: true,
       timeout: 120_000,
     });
-    const gh = resolveCommand(process.env.GH_BIN ?? "gh");
-    if (gh.missing) throw new Error(`pushed ${gb.branch}, but gh (GitHub CLI) was not found; open the pull request yourself`);
+    if (pushed.status !== 0) throw new Error(`git push failed: ${(pushed.stderr || String(pushed.error ?? "")).trim().slice(-300)}`);
+    const web = remoteWeb(remote);
+    const forge = forgeOf(web);
+    const manual = () => pushLink(`${pushed.stdout}\n${pushed.stderr}`) ?? (web ? newPullRequestUrl(web, forge, gb.base, gb.branch) : undefined);
+    const gh = forge === "github" ? resolveCommand(process.env.GH_BIN ?? "gh") : undefined;
+    if (!gh || gh.missing) {
+      link = manual();
+      const why = forge === "github" ? "gh (GitHub CLI) was not found" : `orch opens pull requests itself only on GitHub`;
+      console.log(`pushed ${gb.branch} to origin; ${why}: ${link ? `open the pull request at ${link}` : "open the pull request on your git host"}`);
+      emit("pr", { branch: gb.branch, base: gb.base, link, pushed: true });
+      return undefined;
+    }
     // The title is the only goal text on a command line; strip what a shell fallback could misread.
     const title = (gh.shell ? goal.replace(/[^\w .,:()/+-]/g, "") : goal).replace(/\s+/g, " ").trim().slice(0, 72) || "YAAIORCH goal";
     const r = spawnSync(gh.file, [...gh.pre, "pr", "create", "--base", gb.base, "--head", gb.branch, "--title", title, "--body-file", "-"], {
@@ -3297,16 +3475,21 @@ function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: strin
       windowsHide: true,
       timeout: 120_000,
     });
-    if (r.error && "code" in r.error && r.error.code === "ENOENT")
+    if (r.error && "code" in r.error && r.error.code === "ENOENT") {
+      link = manual();
       throw new Error(`pushed ${gb.branch}, but gh (GitHub CLI) was not found; open the pull request yourself`);
-    if (r.status !== 0) throw new Error(`gh pr create failed: ${(r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 300)}`);
+    }
+    if (r.status !== 0) {
+      link = manual();
+      throw new Error(`pushed ${gb.branch}, but gh pr create failed: ${(r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 300)}`);
+    }
     url = /https?:\/\/\S+/.exec(r.stdout)?.[0];
     console.log(`pull request: ${url ?? r.stdout.trim()}`);
   } catch (e) {
     error = msg(e);
-    console.warn(`warning: no pull request (${error})`);
+    console.warn(`warning: no pull request (${error})${link ? `; open it at ${link}` : ""}`);
   }
-  emit("pr", { branch: gb.branch, base: gb.base, url, error });
+  emit("pr", { branch: gb.branch, base: gb.base, url, link, error });
   return url;
 }
 
@@ -3506,7 +3689,7 @@ function cli(cmd: string, args: string[]) {
   return spawnSync(cmd, args, { encoding: "utf8", windowsHide: true, timeout: 30_000 });
 }
 
-function doctor(): Finding[] {
+function doctor(pr = false): Finding[] {
   const f: Finding[] = [];
   const major = Number(process.versions.node.split(".")[0]);
   f.push({ name: "node", level: major >= 20 ? "ok" : "fail", detail: `v${process.versions.node}${major >= 20 ? "" : " (need 20 or newer)"}` });
@@ -3584,7 +3767,48 @@ function doctor(): Finding[] {
   } catch (e) {
     f.push({ name: "browser", level: "fail", detail: msg(e) });
   }
+  f.push(...remoteFindings(readJsonFile<Config>(CONFIG_FILE, {}), pr));
   return f;
+}
+
+/**
+ * Pull requests and the GitHub CLI. `pr`: the caller opens pull requests (`doctor --pr`, the UI's switch), as does a
+ * config with `pr`. gh is needed for GitHub issue intake, and for pull requests when origin is on GitHub; then a
+ * missing or logged-out gh is a warning. Otherwise gh shows up only when it is installed.
+ */
+function remoteFindings(cfg: Config, pr: boolean): Finding[] {
+  const f: Finding[] = [];
+  const intake = ([] as string[]).concat(cfg.intake ?? []).some((s) => s.startsWith("github"));
+  const opensPrs = pr || cfg.pr === true;
+  let origin: string | undefined;
+  try {
+    origin = isGitRepo() ? originUrl() : undefined;
+  } catch {
+    /* no git */
+  }
+  const web = origin ? remoteWeb(origin) : undefined;
+  const forge = forgeOf(web);
+  if (opensPrs) {
+    if (!origin) f.push({ name: "pull requests", level: "warn", detail: 'no "origin" remote to push to; add one with "git remote add origin URL"' });
+    else if (forge !== "github")
+      f.push({
+        name: "pull requests",
+        level: "ok",
+        detail: `origin is ${web ?? origin}: orch pushes the branch and links to the page that opens the pull request`,
+      });
+  }
+  const gh = ghFinding(intake || (opensPrs && forge === "github"));
+  if (gh) f.push(gh);
+  return f;
+}
+
+function ghFinding(used: boolean): Finding | undefined {
+  const why = "needed for pull requests on GitHub, GitHub issue intake and PR CI fixes";
+  const gh = resolveCommand(process.env.GH_BIN ?? "gh");
+  if (gh.missing) return used ? { name: "gh", level: "warn", detail: `GitHub CLI not found; ${why}. Install it and run "gh auth login"` } : undefined;
+  const r = spawnSync(gh.file, [...gh.pre, "auth", "status"], { encoding: "utf8", shell: gh.shell, windowsHide: true, timeout: 30_000 });
+  if (r.status === 0) return { name: "gh", level: "ok", detail: "GitHub CLI logged in" };
+  return { name: "gh", level: used ? "warn" : "ok", detail: `GitHub CLI not logged in; run "gh auth login" (${why})` };
 }
 
 const short = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 60);
@@ -3643,6 +3867,8 @@ type Opts = {
   probe?: string;
   /** Refuse to commit known key formats, private keys and .env files. */
   secretScan: boolean;
+  /** Refuse to commit a new or changed file over this many MB (0: no limit). */
+  maxFileMb: number;
   /** Comment on the GitHub issue a goal came from (start, done, failed, blocked). */
   issueComments: boolean;
   /** --pr: wait for the pull request's CI checks, and how many fix goals to run when they fail (-1: do not wait). */
@@ -4345,8 +4571,35 @@ const NEW_GITIGNORE = [".orchestrator/", "node_modules/", ".venv/", "venv/", "__
  * `orch new DIR "<spec>"`: a git repo in a new or empty folder with SPEC.md and a .gitignore, then the spec split into
  * queued goals (the scaffold first) with suggested checks for .orchestrator/config.json. With --start the loop runs.
  */
-async function newProject(dir: string, spec: string, o: Opts, setup: string | undefined, start: boolean, poll: number) {
+/** A git remote URL from a person: any host or a local path, but never something git would read as an option. */
+function checkRemote(url: string): string {
+  const u = url.trim();
+  if (!u || u.length > 500 || u.startsWith("-") || /\s/.test(u) || [...u].some((c) => c.charCodeAt(0) < 32))
+    throw new Error(`not a git remote URL: ${JSON.stringify(url.slice(0, 80))}`);
+  return u;
+}
+
+/** origin for a new project, and the first commit pushed to it so pull requests have a base there. Never fatal. */
+function connectRemote(url: string) {
+  git("remote", "add", "origin", url);
+  const r = spawnSync("git", ["push", "-u", "origin", "main"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    windowsHide: true,
+    timeout: 120_000,
+  });
+  if (r.status === 0) console.log(`origin: ${url} (main pushed)`);
+  else
+    console.warn(
+      `warning: origin is ${url}, but pushing main failed (${(r.stderr || String(r.error ?? "")).trim().split(/\r?\n/).pop()}); ` +
+        `create the empty repo on your git host, check your git login, then "git push -u origin main"`,
+    );
+}
+
+async function newProject(dir: string, spec: string, o: Opts, setup: string | undefined, start: boolean, poll: number, remote?: string) {
   if (!spec.trim()) throw new Error('usage: orch new DIR "<spec>"  (or --spec-file FILE)');
+  if (remote !== undefined) remote = checkRemote(remote);
   const target = resolve(dir);
   // Only .orchestrator (a UI's doctor or plugin check may create it) counts as empty too.
   if (existsSync(target) && readdirSync(target).some((f) => f !== ".orchestrator"))
@@ -4358,6 +4611,7 @@ async function newProject(dir: string, spec: string, o: Opts, setup: string | un
   writeFileSync("SPEC.md", `# Spec\n\n${spec.trim()}\n`);
   writeFileSync(".gitignore", NEW_GITIGNORE);
   commitAll("orch: new project (spec)");
+  if (remote) connectRemote(remote);
   acquireRunLock("new");
   writeBrief(
     `This is a new project, built by an automated loop from the spec in SPEC.md; the first goal sets it up. ` +
@@ -4658,6 +4912,7 @@ function visualSetup(cfg: Config, o: Opts): { serve: ServeConfig; exe: string } 
 async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: LastRun, resumed: string[] | null = null, title?: string): Promise<boolean> {
   PROTECT = o.protect;
   SECRET_SCAN = o.secretScan;
+  MAX_FILE_MB = o.maxFileMb;
   const cfg = readJsonFile<Config>(CONFIG_FILE, {});
   const roster = configuredRoster(cfg);
   const byName = new Map(roster.map((a) => [a.name, a]));
@@ -5003,7 +5258,10 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       console.warn(`secrets in the changes, not committed: ${secrets.map((x) => `${x.what} in ${x.file}`).join(", ")}`);
       emit("secrets", { round, found: secrets });
     }
-    const committed = cp && !secrets.length ? tryCommit(`orch: ${title ?? short(goal)} (round ${round})`) : null;
+    // Large files: binaries, dumps or build output an agent added; not committed, and the round fails.
+    const large = cp ? largeFiles() : [];
+    if (large.length) console.warn(`files over ${MAX_FILE_MB} MB, not committed: ${large.map((x) => `${x.file} (${x.mb} MB)`).join(", ")}`);
+    const committed = cp && !secrets.length && !large.length ? tryCommit(`orch: ${title ?? short(goal)} (round ${round})`) : null;
     const diffForRound = roundDiff(roundBase, dirtyAtStart, secrets.length > 0);
     emit("round_diff", { round, diff: diffForRound });
     const progressed = cp ? !!committed || !!dirtyFiles() : results.some((r) => r.touched.length > 0);
@@ -5138,7 +5396,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       !reviewFailures.length &&
       !(o.strictFiles && unowned.length) &&
       !touchedProtected.length &&
-      !secrets.length;
+      !secrets.length &&
+      !large.length;
     const prevKey = failureKey(failures);
     const ownershipFailures =
       o.strictFiles && unowned.length
@@ -5151,6 +5410,10 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       ...secrets.map(
         (x) =>
           `${x.what} in ${x.file}: secrets must never be committed. Remove it and read it from the environment or a config file that is not committed instead.`,
+      ),
+      ...large.map(
+        (x) =>
+          `${x.file} is ${x.mb} MB, over the ${MAX_FILE_MB} MB limit for a committed file: do not commit binaries, dumps, archives or build output. Delete it, make it smaller, or add it to .gitignore if it is generated.`,
       ),
     ];
     failures = [
@@ -5737,6 +6000,8 @@ function parseOpts(values: Record<string, string | boolean | string[] | undefine
         ? cfg.protect.map(String)
         : [".github/workflows/"];
   const secretScan = !values["no-secret-scan"] && cfg.secretScan !== false;
+  const maxFileMb = values["max-file-size"] !== undefined ? Number(values["max-file-size"]) : (cfg.maxFileSize ?? 5);
+  if (!Number.isFinite(maxFileMb) || maxFileMb < 0) throw new Error("--max-file-size / maxFileSize: megabytes, 0 or more (0: no limit)");
   const issueComments = !values["no-issue-comments"] && cfg.issueComments !== false;
   const visual = !values["no-visual"] && cfg.visual !== false;
   const ciFixesRaw = Number(values["ci-fixes"] ?? cfg.ciFixes ?? 2);
@@ -5780,6 +6045,7 @@ function parseOpts(values: Record<string, string | boolean | string[] | undefine
     intake,
     protect,
     secretScan,
+    maxFileMb,
     issueComments,
     ciFixes,
     visual,
@@ -6004,6 +6270,7 @@ async function main() {
       intake: { type: "string" },
       protect: { type: "string" },
       "no-secret-scan": { type: "boolean", default: false },
+      "max-file-size": { type: "string" },
       "no-issue-comments": { type: "boolean", default: false },
       "ci-fixes": { type: "string" },
       "no-ci-watch": { type: "boolean", default: false },
@@ -6016,6 +6283,8 @@ async function main() {
       "enable-skill": { type: "string" },
       "disable-agent": { type: "string" },
       "enable-agent": { type: "string" },
+      remove: { type: "string" },
+      remote: { type: "string" },
       github: { type: "string" },
       backlog: { type: "string" },
       setup: { type: "string" },
@@ -6145,8 +6414,13 @@ async function main() {
       if (rest.length !== 1) throw new Error("usage: orch answer ID (answer on stdin)");
       return answerQuestion(rest[0]);
     case "decide":
-      if (rest.length !== 2) throw new Error("usage: orch decide ID allow|deny|always");
+      if (rest.length !== 2) throw new Error("usage: orch decide ID allow|deny|always|prefix");
       return decideCommand(rest[0], rest[1]);
+    case "allow": {
+      const list = typeof values.remove === "string" ? removeAllowRule(values.remove) : allowRules();
+      if (values.json) return console.log(JSON.stringify({ allow: list }));
+      return console.log(list.length ? list.join("\n") : "no always-allowed commands");
+    }
     case "permit":
       return permitServer();
     case "probe":
@@ -6178,7 +6452,15 @@ async function main() {
       const [dir, ...words] = rest;
       if (!dir) throw new Error('usage: orch new DIR "<spec>"  (or --spec-file FILE)');
       const spec = briefFrom(values, words);
-      return newProject(dir, spec, parseOpts(values), values.setup ? String(values.setup) : undefined, !!values.start, Number(values.poll));
+      return newProject(
+        dir,
+        spec,
+        parseOpts(values),
+        values.setup ? String(values.setup) : undefined,
+        !!values.start,
+        Number(values.poll),
+        typeof values.remote === "string" ? values.remote : undefined,
+      );
     }
     case "split":
       return split(values, rest);
@@ -6199,7 +6481,7 @@ async function main() {
       return;
     }
     case "doctor": {
-      const findings = doctor();
+      const findings = doctor(!!values.pr);
       if (values.json) console.log(JSON.stringify(findings));
       else for (const x of findings) console.log(`${x.level === "ok" ? "ok  " : x.level === "warn" ? "warn" : "FAIL"}  ${x.name}: ${x.detail}`);
       return process.exit(findings.some((x) => x.level === "fail") ? 1 : 0);
@@ -6288,6 +6570,12 @@ export {
   priorityOf,
   alwaysBlocked,
   probeTarget,
+  remoteWeb,
+  prefixRule,
+  allowedBy,
+  forgeOf,
+  newPullRequestUrl,
+  pushLink,
   protectRe,
   protectedBy,
   SECRETS,

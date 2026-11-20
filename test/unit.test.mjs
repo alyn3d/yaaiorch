@@ -2,7 +2,7 @@
 // running when imported, and tsx loads the TypeScript.
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { tsxApi } from "./tsx.mjs";
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -13,8 +13,7 @@ let o;
 
 before(async () => {
   process.env.ORCH_NO_MAIN = "1";
-  const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-  const { tsImport } = await import(pathToFileURL(api).href);
+  const { tsImport } = await tsxApi(root);
   o = await tsImport(pathToFileURL(join(root, "orch.ts")).href, import.meta.url);
 });
 
@@ -194,8 +193,7 @@ describe("run history: listing reads only the ends of large runs, and old runs a
   let h, dir;
   const here = process.cwd();
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     h = await tsImport(pathToFileURL(join(root, "orch-history.ts")).href, import.meta.url);
   });
   const inRepo = (fn) => {
@@ -255,9 +253,37 @@ describe("run history: listing reads only the ends of large runs, and old runs a
 describe("Agent M answers: Markdown subset (orch-ui/src/markdown.ts)", () => {
   let md;
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     md = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "markdown.ts")).href, import.meta.url);
+  });
+  test("sentences: split at a real sentence end only, never in code, quotes, brackets or after an abbreviation", () => {
+    assert.deepEqual(md.splitSentences("In server.js, add `sort`. Read it from the URL; empty keeps the order. Tests: two items."), [
+      "In server.js, add `sort`.",
+      "Read it from the URL; empty keeps the order.",
+      "Tests: two items.",
+    ]);
+    assert.deepEqual(md.splitSentences("Use a guard (e.g. a counter. Or AbortController) here. Done."), [
+      "Use a guard (e.g. a counter. Or AbortController) here.",
+      "Done.",
+    ]);
+    assert.deepEqual(md.splitSentences('Return {"error":"bad. Value"} as JSON. Then stop.'), ['Return {"error":"bad. Value"} as JSON.', "Then stop."]);
+    assert.deepEqual(md.splitSentences("Call `a. B` first. See e.g. Foo, i.e. Bar, and U.S. Rules. Ok!"), [
+      "Call `a. B` first.",
+      "See e.g. Foo, i.e. Bar, and U.S. Rules.",
+      "Ok!",
+    ]);
+    assert.deepEqual(md.splitSentences("GET /api/items?max=8. 400 for bad input. Version 1.2 ships. then lowercase stays."), [
+      "GET /api/items?max=8.",
+      "400 for bad input.",
+      "Version 1.2 ships. then lowercase stays.",
+    ]);
+  });
+  test("structureText: a long single paragraph becomes one bullet per sentence; short or structured text stays", () => {
+    const long = "Make GET /api/items accept `sort`. ".repeat(4) + "Keep /health unchanged.";
+    assert.equal(md.structureText(long, 100), "- Make GET /api/items accept `sort`.\n".repeat(4) + "- Keep /health unchanged.");
+    assert.equal(md.structureText("Short. Two sentences."), "Short. Two sentences.");
+    assert.equal(md.structureText("Line one.\n\nLine two is longer. " + "x".repeat(300)), "Line one.\n\nLine two is longer. " + "x".repeat(300));
+    assert.equal(md.structureText("one very long sentence " + "word ".repeat(80)), ("one very long sentence " + "word ".repeat(80)).trim());
   });
   test("inline: bold, italic, code (literal inside), http links only", () => {
     assert.deepEqual(md.parseInline("Run **npm test** or `a **b**` then *fast* and _slow_ in snake_case_name"), [
@@ -316,8 +342,7 @@ describe("Agent M answers: Markdown subset (orch-ui/src/markdown.ts)", () => {
 describe("claude-bin: start claude without a shell on Windows", () => {
   let cb, dir;
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     cb = await tsImport(pathToFileURL(join(root, "claude-bin.ts")).href, import.meta.url);
     dir = mkdtempSync(join(tmpdir(), "yaaiorch-bin-"));
   });
@@ -381,8 +406,7 @@ describe("claude-bin: start claude without a shell on Windows", () => {
 describe("notification texts (orch-ui/src/notifyText.ts)", () => {
   let n;
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     n = (await tsImport(pathToFileURL(join(root, "orch-ui", "src", "notifyText.ts")).href, import.meta.url)).notificationFor;
   });
   test("a goal that passed or failed, a waiting plan, the usage limit", () => {
@@ -421,8 +445,7 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
 describe("per-repo run settings", () => {
   let settings;
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     settings = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "Settings.tsx")).href, import.meta.url);
   });
 
@@ -485,8 +508,7 @@ describe("per-repo run settings", () => {
 describe("brief progress (orch-ui/src/progress.ts)", () => {
   let p;
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     p = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "progress.ts")).href, import.meta.url);
   });
   test("counts the newest brief only, with cost and a time guess", () => {
@@ -514,8 +536,7 @@ describe("brief progress (orch-ui/src/progress.ts)", () => {
 describe("open in editor (orch-ui/src/editorLinks.ts)", () => {
   let o;
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     o = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "editorLinks.ts")).href, import.meta.url);
   });
   test("editor URLs for Windows and POSIX paths", () => {
@@ -533,8 +554,7 @@ describe("open in editor (orch-ui/src/editorLinks.ts)", () => {
 describe("run view (orch-ui/src/reduce.ts)", () => {
   let reduce, roundPhases, failureSummary, taskTimeline, overviewBoard;
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     ({ reduce } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "reduce.ts")).href, import.meta.url));
     ({ roundPhases, failureSummary, taskTimeline } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "runProgress.ts")).href, import.meta.url));
     ({ overviewBoard } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "overviewBoard.ts")).href, import.meta.url));
@@ -562,7 +582,7 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
       { type: "goal_start", goal: "g", maxRounds: 1 },
       { type: "command_wait", id: "a", agent: "be", round: 1, taskId: 0, tool: "Bash", command: "npm i zod", description: "schema" },
       { type: "command_wait", id: "b", agent: "fe", round: 1, tool: "Bash", command: "npm i x" },
-      { type: "command_wait", id: "c", agent: "fe", round: 1, tool: "Bash", command: "npm i y" },
+      { type: "command_wait", id: "c", agent: "fe", round: 1, tool: "Bash", command: "npm i y", prefix: "npm i" },
       { type: "command_decided", id: "a", decision: "always" },
       { type: "command_decided", id: "b", decision: "timeout" },
     ]);
@@ -576,6 +596,8 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     );
     assert.equal(run.commands[0].description, "schema");
     assert.equal(run.commands[0].taskId, 0);
+    assert.equal(run.commands[0].prefix, undefined);
+    assert.equal(run.commands[2].prefix, "npm i");
   });
   const start = [
     { type: "goal_start", goal: "g", maxRounds: 3, dryRun: false, maxCost: 2 },
@@ -890,6 +912,11 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     assert.match(run.rounds[0].note, /only the failing tasks move up next round \(be at max\)/);
     assert.deepEqual(run.branch, { name: "orch/1-g", base: "main" });
     assert.equal(run.pr.url, "https://example.com/pr/1");
+    const pushed = fold([
+      ...start,
+      { type: "pr", branch: "orch/1-g", base: "main", link: "https://codeberg.org/me/app/compare/main...orch/1-g", pushed: true },
+    ]);
+    assert.deepEqual(pushed.pr, { url: undefined, link: "https://codeberg.org/me/app/compare/main...orch/1-g", pushed: true, error: undefined });
     assert.equal(reduce(null, { type: "plan", round: 1, tasks: [], t: 1 }), null, "nothing to fold into before goal_start");
     assert.equal(reduce(run, { type: "something_new", t: 1 }), run, "unknown events change nothing");
   });
@@ -978,6 +1005,83 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
   });
 });
 
+describe("Agent M prefix rules (Always allow npm install …)", () => {
+  test("offered for a plain command with more after two plain words", () => {
+    assert.equal(o.prefixRule("npm install yaml"), "npm install");
+    assert.equal(o.prefixRule("pip install requests==2.0"), "pip install");
+    assert.equal(o.prefixRule("npx create-vite app"), "npx create-vite");
+    assert.equal(o.prefixRule("npm install"), undefined, "nothing after the prefix");
+    assert.equal(o.prefixRule("npm -g install x"), undefined, "a flag as the second word");
+    assert.equal(o.prefixRule("npm install x && rm -rf ."), undefined);
+    assert.equal(o.prefixRule("npm install x | tee log"), undefined);
+    assert.equal(o.prefixRule("npm install $(cat list)"), undefined);
+    assert.equal(o.prefixRule("npm install *.tgz"), undefined);
+  });
+  test("never for shells, interpreters, destructive commands or run-any-package subcommands", () => {
+    for (const c of [
+      "bash -c ls x",
+      "node scripts/x.js arg",
+      "python -m pip install x",
+      "rm -rf dist",
+      "curl https://x y",
+      "git push origin x",
+      "/usr/bin/sudo apt install x",
+      "npm exec foo bar",
+      "pnpm dlx foo bar",
+    ])
+      assert.equal(o.prefixRule(c), undefined, c);
+  });
+  test("a prefix rule covers the same tool and words only, never a chained command", () => {
+    const rules = ["Bash(npm install:*)", "PowerShell(npm test)"];
+    assert.equal(o.allowedBy(rules, "Bash", "npm install zod"), true);
+    assert.equal(o.allowedBy(rules, "Bash", "npm installer x"), false);
+    assert.equal(o.allowedBy(rules, "PowerShell", "npm install zod"), false);
+    assert.equal(o.allowedBy(rules, "Bash", "npm install x; rm -rf ."), false);
+    assert.equal(o.allowedBy(rules, "PowerShell", "npm test"), true);
+  });
+});
+
+describe("pull requests on any git host (--pr)", () => {
+  test("remote URLs become the repo's web address", () => {
+    assert.equal(o.remoteWeb("https://github.com/me/app.git"), "https://github.com/me/app");
+    assert.equal(o.remoteWeb("git@gitlab.com:group/sub/app.git"), "https://gitlab.com/group/sub/app");
+    assert.equal(o.remoteWeb("ssh://git@codeberg.org:22/me/app.git"), "https://codeberg.org/me/app");
+    assert.equal(o.remoteWeb("https://user@bitbucket.org/team/app.git/"), "https://bitbucket.org/team/app");
+    assert.equal(o.remoteWeb("D:/repos/app.git"), undefined);
+    assert.equal(o.remoteWeb("/srv/git/app.git"), undefined);
+    assert.equal(o.remoteWeb("file:///srv/git/app.git"), undefined);
+  });
+  test("hosts", () => {
+    assert.equal(o.forgeOf("https://github.com/me/app"), "github");
+    assert.equal(o.forgeOf("https://github.corp.example/me/app"), "github");
+    assert.equal(o.forgeOf("https://gitlab.example.org/me/app"), "gitlab");
+    assert.equal(o.forgeOf("https://bitbucket.org/me/app"), "bitbucket");
+    assert.equal(o.forgeOf("https://codeberg.org/me/app"), "gitea");
+    assert.equal(o.forgeOf("https://forgejo.example.net/me/app"), "gitea");
+    assert.equal(o.forgeOf("https://git.example.com/me/app"), "other");
+    assert.equal(o.forgeOf(undefined), "other");
+  });
+  test("new pull request pages, and links printed on push", () => {
+    assert.equal(o.newPullRequestUrl("https://git.example.com/me/app", "other", "main", "orch/1-x"), undefined);
+    assert.equal(
+      o.pushLink(
+        "remote: \nremote: To create a merge request for orch/1-x, visit:\nremote:   https://gitlab.com/me/app/-/merge_requests/new?merge_request%5Bsource_branch%5D=orch%2F1-x\n",
+      ),
+      "https://gitlab.com/me/app/-/merge_requests/new?merge_request%5Bsource_branch%5D=orch%2F1-x",
+    );
+    assert.equal(
+      o.pushLink("remote: Create pull request for orch/1-x:\nremote:   https://bitbucket.org/me/app/pull-requests/new?source=orch/1-x&t=1\n"),
+      "https://bitbucket.org/me/app/pull-requests/new?source=orch/1-x&t=1",
+    );
+    assert.equal(
+      o.pushLink("remote: Create a new pull request for 'orch/1-x':\nremote:   https://codeberg.org/me/app/compare/main...orch/1-x\n"),
+      "https://codeberg.org/me/app/compare/main...orch/1-x",
+    );
+    assert.equal(o.pushLink("remote: Resolving deltas: 100%\nremote: see https://example.com/docs\n"), undefined);
+    assert.equal(o.pushLink("To https://x/y.git\n * [new branch] orch/1-x -> orch/1-x\n"), undefined);
+  });
+});
+
 describe("probe tool (orch run --probe)", () => {
   test("requests reach the backend's origin only, with a known method", () => {
     const base = "http://localhost:3999/api";
@@ -1041,8 +1145,7 @@ describe("browser checks (orch-browser.ts)", () => {
   let b;
   let reduce;
   before(async () => {
-    const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-    const { tsImport } = await import(pathToFileURL(api).href);
+    const { tsImport } = await tsxApi(root);
     b = await tsImport(pathToFileURL(join(root, "orch-browser.ts")).href, import.meta.url);
     ({ reduce } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "reduce.ts")).href, import.meta.url));
   });

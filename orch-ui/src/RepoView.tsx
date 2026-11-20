@@ -65,7 +65,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
 
   // A group run holds this repo (its events show here): its own starts are refused until the group is done.
   const busy = !!state.running || !!state.queued || !!state.inGroup;
-  const findings = useFindings(repo, busy);
+  const findings = useFindings(repo, busy, settings.pr);
   // An empty or out-of-range field must not reach orch.ts as 0 or NaN.
   const cap = Number(maxCost);
   const models = modelSpec(settings);

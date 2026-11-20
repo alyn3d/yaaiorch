@@ -46,6 +46,7 @@ goal ──► architect ──► foundation ──► build (parallel) ──�
 - [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and logged in (`claude --version`, `claude auth status`)
 - Node.js 22.18+ (Node 20 works for the orchestrator itself; the eval runner needs 22.18+)
 - git (strongly recommended: checkpoints, commits, rollback)
+- Optional, for GitHub only: the [GitHub CLI](https://cli.github.com/) (`gh`), logged in with `gh auth login`, so orch can open pull requests itself, import GitHub issues and fix a PR's CI. Your git login is not enough for these: they call GitHub's API, and `gh` keeps its own login. Pushing a goal's branch needs only git, on any host (GitLab, Bitbucket, Codeberg and others get a link to open the pull request). `orch doctor --pr` checks what pull requests need.
 - For the desktop app: Rust (MSVC toolchain on Windows) and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 **Cost:** every run calls Claude models. A small goal costs roughly $0.30 on the `economy` tier and
@@ -287,7 +288,9 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   back to the architect, and a change there anyway is reverted and fails the round. Before every commit the
   changes are checked for known key and token formats (AWS, GitHub, Anthropic, OpenAI, Slack, Google, Stripe),
   private keys and `.env` files; a finding blocks the commit (so it is never pushed) and fails the round, without
-  printing the value. `--no-secret-scan` or `"secretScan": false` turns it off.
+  printing the value. `--no-secret-scan` or `"secretScan": false` turns it off. A new or changed file over 5 MB
+  (a binary, a dump, build output) is not committed either and fails the round; `"maxFileSize"` (MB, `0` for no
+  limit) or `--max-file-size` sets the limit.
 - **Goals from your backlog** (`orch intake --github LABEL`, `--backlog BACKLOG.md`; **Issues label** and
   **Import issues** in the queue section): open GitHub issues with a label (read with `gh`) and the unchecked
   `- [ ]` items of a backlog file become goals, each once; your files are not changed. `orch loop --intake
@@ -326,7 +329,9 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   In run history, **Run again** starts a fresh attempt with the repo's current settings.
 - **New projects** (**+ New project** next to the repo tabs, or `orch new DIR "<spec>"` / `--spec-file SPEC.md`;
   `--start` runs the loop right away). In the UI you pick the parent folder and a name, paste the spec, optionally
-  a setup command and a budget, and tick **Start building right away** if you want; the project opens in its own tab.
+  a setup command, a remote and a budget, and tick **Start building right away** if you want; the project opens in
+  its own tab. **Remote** (`--remote URL`) is an empty repo you created on GitHub, GitLab, Bitbucket, Codeberg or
+  any git server: it becomes `origin` and gets the first commit, so pull requests have somewhere to go.
   Otherwise: creates the folder with git, `SPEC.md` and a
   `.gitignore`, uses the spec as the first project brief, and has the architect split it into queued goals (the
   scaffold first, then one goal per feature) with suggested checks in `.orchestrator/config.json`. Nothing is
@@ -356,18 +361,25 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   `"commands": "ask"` in config): implementers may run shell commands (install a dependency, run a generator or a
   migration), but each one waits for you. The **Agent M** page in the sidebar shows every waiting command across your
   repos, with the agent, its reason and the exact command: **Allow**, **Always allow** (this exact command is added
-  to `allow` in `.orchestrator/config.json`, so later runs do not ask) or **Deny**. A command nobody answers is denied
+  to `allow` in `.orchestrator/config.json`, so later runs do not ask), **Always allow npm install …** (every command
+  starting with the same two words, whatever follows: offered only for a single plain command, never for a shell, an
+  interpreter, `rm`, `curl`, `git` and the like; it asks you to confirm, since any package an agent picks then
+  installs, with its scripts) or **Deny**. A command nobody answers is denied
   after `--command-timeout` minutes (default 10). The architect, QA and reviewers stay read-only and never ask. In a
   terminal: `orch decide <id> allow|deny|always`. Commands run on your machine without a sandbox: read each one.
+  **Always-allowed commands** in a repo's run settings lists what was always allowed there, each with **Remove**
+  (`orch allow`, `orch allow --remove RULE`).
 - **Ask Agent M**: the same page has a chat for questions about your setup and open repos (which MCP servers are
   connected, why a run failed, what is left in the queues). Haiku answers from a status of your machine and repos and may
   read the repos' files, but never changes anything or runs commands. Opening the page gathers that status in the
   background (it is cached for 10 minutes), so answers take seconds. Its cost counts toward the daily budget.
 - **A branch and a pull request per goal** (optional, **Branch per goal** / **Open pull request** in the run
   settings, `--branch` / `--pr`): each goal runs on its own `orch/<id>-<slug>` branch and orch switches back
-  afterwards, so your branch is never changed. With `--pr`, a passed goal's branch is pushed to `origin` and
-  a pull request is opened with the GitHub CLI (`gh`, logged in); you review PRs, not runs. A missing `gh` or
-  remote is reported, and the branch stays for you. orch then waits for the pull request's CI checks; when one
+  afterwards, so your branch is never changed. With `--pr`, a passed goal's branch is pushed to `origin` with git,
+  on any host. On GitHub the pull request is opened with the GitHub CLI (`gh`, logged in); you review PRs, not
+  runs. On GitLab, Bitbucket, Codeberg (Gitea, Forgejo) and other hosts, or without `gh`, the run gives you the
+  host's link to open it in one click. A missing remote is reported, and the branch stays for you. On GitHub, orch
+  then waits for the pull request's CI checks; when one
   fails, it reads the failing job's log and runs a fix goal on the PR branch (up to `--ci-fixes N`, default 2;
   your workflows stay protected, so it fixes the code, not the checks), pushes, and waits again.
   `--no-ci-watch` skips the wait.

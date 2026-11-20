@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** The Node.js release the app bundles (an LTS line). Bump it for security releases. */
-const VERSION = "22.14.0";
+const VERSION = "24.22.3";
 const DIST = {
   "x86_64-pc-windows-msvc": { name: "win-x64", ext: "zip" },
   "aarch64-pc-windows-msvc": { name: "win-arm64", ext: "zip" },

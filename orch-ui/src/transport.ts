@@ -50,8 +50,8 @@ export interface Transport {
   setUsageCap(cap: Global["usageCap"]): Promise<void>;
   /** Lift the usage-limit hold now ("Try now"). */
   clearLimit(): Promise<void>;
-  /** First-run checks (`orch doctor`) for one repo. */
-  doctor(repo: string): Promise<Finding[]>;
+  /** First-run checks (`orch doctor`) for one repo; `pr`: the repo opens pull requests (`--pr`). */
+  doctor(repo: string, pr?: boolean): Promise<Finding[]>;
   browserSetup(repo: string): Promise<BrowserSetup>;
   configureBrowser(repo: string, action: "enable" | "disable" | "login", id?: string): Promise<void>;
   /** The repo's Claude Code plugins with their token cost (slow; the browser server caches it). */
@@ -66,6 +66,8 @@ export interface Transport {
   saveAgent(repo: string, name: string, content: string): Promise<void>;
   /** Use a custom agent in a built-in role, or undo the mapping when `target` is omitted. */
   swapAgent(repo: string, role: string, target?: string): Promise<void>;
+  /** The repo's always-allowed commands (config allow); `remove` drops one rule first. */
+  allowed(repo: string, remove?: string): Promise<{ allow: string[] }>;
   /** Turn a skill or a custom agent on or off in this repo (config skills.disable / agents.disable). */
   toggleRoster(repo: string, kind: "skill" | "agent", name: string, enabled: boolean): Promise<void>;
   /** Agent M: ask about the setup and the open repos (Haiku, read-only); `session` continues a conversation. */
@@ -122,6 +124,8 @@ export type NewProject = {
   name: string;
   spec: string;
   setup?: string;
+  /** A git remote URL (any host) for origin; orch pushes main there. */
+  remote?: string;
   start: boolean;
   power: string;
   maxCost?: number;
@@ -192,8 +196,8 @@ const web: Transport = {
   setDailyBudget: (usd) => post("settings", { dailyBudget: usd }),
   setUsageCap: (cap) => post("settings", { usageCap: cap }),
   clearLimit: () => post("clear-limit", {}),
-  async doctor(repo) {
-    const r = await api(`/api/doctor?repo=${encodeURIComponent(repo)}`);
+  async doctor(repo, pr) {
+    const r = await api(`/api/doctor?repo=${encodeURIComponent(repo)}${pr ? "&pr=1" : ""}`);
     return r.ok ? r.json() : [{ name: "server", level: "fail", detail: r.statusText }];
   },
   async browserSetup(repo) {
@@ -232,6 +236,7 @@ const web: Transport = {
   saveAgent: (repo, name, content) => post("agents", { repo, name, content }),
   swapAgent: (repo, role, target) => post("agents/swap", { repo, role, target }),
   toggleRoster: (repo, kind, name, enabled) => post("agents/toggle", { repo, kind, name, enabled }),
+  allowed: (repo, remove) => post("allow", { repo, ...(remove ? { remove } : {}) }),
   agentMAsk: (question, session) => post("agent-m/ask", { question, session }),
   agentMWarm: () => post("agent-m/warm", {}),
   saveGroup: (g) => post("group-save", g),
@@ -310,7 +315,7 @@ const tauri: Transport = {
   setDailyBudget: (usd) => tauriInvoke("set_daily_budget", { dailyBudget: usd }),
   setUsageCap: (cap) => tauriInvoke("set_usage_cap", { fiveHour: cap.fiveHour, week: cap.week }),
   clearLimit: () => tauriInvoke("clear_limit"),
-  doctor: (repo) => tauriInvoke<Finding[]>("doctor", { repo }),
+  doctor: (repo, pr) => tauriInvoke<Finding[]>("doctor", { repo, pr: !!pr }),
   browserSetup: (repo) => tauriInvoke<BrowserSetup>("browser_detect", { repo }),
   configureBrowser: (repo, action, id) => tauriInvoke("browser_configure", { repo, action, id }),
   plugins: (repo) => tauriInvoke<Plugin[]>("plugins", { repo }),
@@ -325,6 +330,7 @@ const tauri: Transport = {
   saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
   swapAgent: (repo, role, target) => tauriInvoke("swap_agent", { repo, role, target }),
   toggleRoster: (repo, kind, name, enabled) => tauriInvoke("toggle_roster", { repo, kind, name, enabled }),
+  allowed: (repo, remove) => tauriInvoke<{ allow: string[] }>("allowed_commands", { repo, remove: remove ?? null }),
   agentMAsk: (question, session) => tauriInvoke<AgentMReply>("agent_m_ask", { question, session }),
   agentMWarm: () => tauriInvoke("agent_m_warm"),
   saveGroup: (g) => tauriInvoke("save_group", g),

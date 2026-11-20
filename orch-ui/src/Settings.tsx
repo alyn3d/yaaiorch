@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { Power } from "./types";
 import { DEFAULT_PLUGINS, PluginsPanel, type PluginSettings } from "./Plugins";
 import { BrowserSetup } from "./BrowserSetup";
+import { AllowedCommands } from "./AllowedCommands";
 
 /** Roles that call a model; mirrors ROLES in orch.ts. */
 export const ROLES = ["architect", "impl", "heavy", "qa", "dev"] as const;
@@ -49,7 +50,7 @@ export type RunSettings = {
   branch: boolean;
   /** Parallel build tasks get isolated Git worktrees (--worktrees). */
   worktrees: boolean;
-  /** Push a passed goal's branch and open a pull request with gh (--pr). */
+  /** Push a passed goal's branch and open a pull request: with gh on GitHub, else a link to open it (--pr). */
   pr: boolean;
   /** Wait for you to approve, edit or reject each plan before building (--approve-plan). */
   approvePlan: boolean;
@@ -239,7 +240,7 @@ export function SettingsPanel({
         </label>
         <label
           className="check"
-          title="When a goal passes, push its branch to origin and open a pull request against your branch with gh (GitHub CLI, logged in). Needs Branch per goal."
+          title="When a goal passes, push its branch to origin (any git host) and open a pull request against your branch. On GitHub orch opens it with gh (GitHub CLI, logged in); on GitLab, Bitbucket, Codeberg and others you get a link to open it in one click. Needs Branch per goal."
         >
           <input type="checkbox" checked={settings.pr} onChange={(e) => onChange({ ...settings, pr: e.target.checked })} /> Open pull request
         </label>
@@ -284,6 +285,7 @@ export function SettingsPanel({
         {error && <p className="error">{error}</p>}
       </details>
       <BrowserSetup repo={repo} busy={busy} />
+      <AllowedCommands repo={repo} busy={busy} />
       <PluginsPanel repo={repo} value={settings.plugins} onChange={(plugins) => onChange({ ...settings, plugins })} />
     </>
   );

@@ -1064,6 +1064,7 @@ fn new_project(
     name: String,
     spec: String,
     setup: Option<String>,
+    remote: Option<String>,
     start: Option<bool>,
     power: String,
     max_cost: Option<f64>,
@@ -1103,6 +1104,10 @@ fn new_project(
     ];
     if let Some(s) = setup.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         args.extend(["--setup".into(), s.chars().take(300).collect()]);
+    }
+    // orch checks the URL (never an option, no whitespace); any git host or a local path.
+    if let Some(r) = remote.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        args.extend(["--remote".into(), r.chars().take(500).collect()]);
     }
     if start.unwrap_or(false) {
         args.push("--start".into());
@@ -1532,6 +1537,27 @@ fn toggle_roster(app: AppHandle, repo: String, kind: String, name: String, enabl
     }
 }
 
+/// The repo's always-allowed commands (`orch allow --json`), optionally removing one first (`--remove RULE`).
+#[tauri::command(async)]
+fn allowed_commands(app: AppHandle, repo: String, remove: Option<String>) -> Result<Value, String> {
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let mut args = vec!["allow".to_string(), "--json".to_string()];
+    if let Some(rule) = remove.filter(|r| !r.is_empty()) {
+        args.push("--remove".into());
+        args.push(rule);
+    }
+    let out = node_cmd(&app, &dir, &args)?.output().map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch allow failed")
+            .to_string());
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("could not read the allowed commands: {e}"))
+}
+
 /// `orch learn`: a read-only pass that writes the project brief. A run like any other (slot, budget, log).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -1766,8 +1792,8 @@ fn agent_m_ask(app: AppHandle, question: String, session: Option<String>) -> Res
 
 #[tauri::command(async)]
 fn decide_command(app: AppHandle, repo: String, id: String, decision: String) -> Result<(), String> {
-    if !["allow", "deny", "always"].contains(&decision.as_str()) {
-        return Err("decision must be allow, deny or always".into());
+    if !["allow", "deny", "always", "prefix"].contains(&decision.as_str()) {
+        return Err("decision must be allow, deny, always or prefix".into());
     }
     let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
     let out = node_cmd(&app, &dir, &["decide".into(), id, decision])?
@@ -1873,10 +1899,14 @@ fn plugins(app: AppHandle, repo: String) -> Result<Value, String> {
 
 /// `orch doctor --json` in a repo. Async so starting node does not freeze the window.
 #[tauri::command(async)]
-fn doctor(app: AppHandle, repo: String) -> Value {
+fn doctor(app: AppHandle, repo: String, pr: Option<bool>) -> Value {
     let fail = |detail: String| json!([{ "name": "orchestrator", "level": "fail", "detail": detail }]);
+    let mut args = vec!["doctor".to_string(), "--json".to_string()];
+    if pr == Some(true) {
+        args.push("--pr".into());
+    }
     let out = match repo_of(&app, &key_of(Path::new(&repo)))
-        .and_then(|dir| node_cmd(&app, &dir, &["doctor".into(), "--json".into()]))
+        .and_then(|dir| node_cmd(&app, &dir, &args))
         .and_then(|mut c| c.output().map_err(|e| format!("{NODE_HINT}: {e}")))
     {
         Ok(o) => o,
@@ -2149,6 +2179,7 @@ fn main() {
             save_agent,
             swap_agent,
             toggle_roster,
+            allowed_commands,
             stop,
             clear_log,
             rollback,

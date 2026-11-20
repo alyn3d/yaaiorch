@@ -225,6 +225,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
               command: ev.command,
               description: ev.description,
               noAlways: ev.noAlways === true || undefined,
+              prefix: typeof ev.prefix === "string" ? ev.prefix : undefined,
             },
           ],
         }
@@ -234,7 +235,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
     case "goal_branch":
       return run && { ...run, branch: { name: ev.branch, base: ev.base } };
     case "pr":
-      return run && { ...run, pr: { url: ev.url, error: ev.error } };
+      return run && { ...run, pr: { url: ev.url, link: ev.link, pushed: ev.pushed, error: ev.error } };
     case "ci":
       return run && { ...run, ci: { state: ev.state, failed: ev.failed ?? [] } };
     case "review":

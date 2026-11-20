@@ -60,6 +60,25 @@ jobs:
       - name: Eval suite self-check (hidden tests fail before, pass with reference)
         run: node evals/run.ts --reference
 
+  node22:
+    name: Linux, Node 22 (the oldest supported) - tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: orch-ui/package-lock.json
+      - name: Install
+        working-directory: orch-ui
+        run: npm ci
+      - name: Scenario tests (fake claude)
+        timeout-minutes: 15
+        working-directory: orch-ui
+        run: npm test
+
   windows:
     name: Windows - scenarios, cargo check and test
     runs-on: windows-latest

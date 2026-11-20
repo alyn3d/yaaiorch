@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 alyn3d and contributors
 // SPDX-License-Identifier: GPL-3.0-only
 
-// A small Markdown subset for Agent M's answers: headings, paragraphs, bullet and numbered lists, fenced code,
+// A small Markdown subset for agent text (Agent M's answers, plans, goals, contracts, reports): headings, paragraphs, bullet and numbered lists, fenced code,
 // and inline bold, italic, code and links. Pure (no HTML is produced), so the UI renders it as React elements
 // and nothing in an answer can inject markup. Unit-tested.
 
@@ -27,6 +27,51 @@ export function parseInline(text: string): Inline[] {
   }
   if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
   return out;
+}
+
+/** Words whose trailing full stop does not end a sentence. */
+const ABBREVIATIONS = new Set(["e.g", "i.e", "etc", "vs", "cf", "approx", "incl", "no", "nr", "fig", "mr", "mrs", "ms", "dr", "st"]);
+
+/**
+ * The sentences of a plain paragraph. A sentence ends at `.`, `!` or `?` followed by a space and a capital letter,
+ * a digit, a quote, a parenthesis or a backtick; never inside `code`, quotes or parentheses, nor after an
+ * abbreviation (e.g., i.e., etc.) or a single letter. So `server.js`, `e.g. Foo` and `?max=8` stay whole.
+ */
+export function splitSentences(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let inCode = false;
+  let depth = 0;
+  let quote = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "`") inCode = !inCode;
+    if (inCode) continue;
+    if (c === '"' && (quote === '"' || !quote)) quote = quote ? "" : '"';
+    if (quote) continue;
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if ((c === ")" || c === "]" || c === "}") && depth > 0) depth--;
+    if (depth > 0 || !".!?".includes(c)) continue;
+    if (!/\s/.test(text[i + 1] ?? "") || !/[A-Z0-9("'`]/.test(text.slice(i + 1).trimStart()[0] ?? "")) continue;
+    const word = /([\w.]+)$/.exec(text.slice(start, i))?.[1].toLowerCase() ?? "";
+    if (c === "." && (ABBREVIATIONS.has(word) || /^[a-z]$/i.test(word) || /(^|\.)[a-z]$/.test(word))) continue;
+    out.push(text.slice(start, i + 1).trim());
+    start = i + 1;
+  }
+  const rest = text.slice(start).trim();
+  if (rest) out.push(rest);
+  return out;
+}
+
+/**
+ * Agent text made easier to read: a long single paragraph (over `min` characters, no line breaks) becomes a bullet
+ * list of its sentences; anything with its own structure, or short, is left as written.
+ */
+export function structureText(text: string, min = 250): string {
+  const t = text.trim();
+  if (t.length < min || /\n/.test(t)) return t;
+  const sentences = splitSentences(t);
+  return sentences.length < 2 ? t : sentences.map((s) => `- ${s}`).join("\n");
 }
 
 const BULLET = /^\s*[-*+]\s+(.*)$/;

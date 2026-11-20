@@ -66,7 +66,7 @@ jobs:
           releaseBody: |
             See [CHANGELOG.md](https://github.com/alyn3d/yaaiorch/blob/${{ github.ref_name }}/CHANGELOG.md) for what changed.
 
-            **Requirements:** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and logged in, and git. The desktop app brings its own Node.js; the CLI bundle (`yaaiorch-cli-*.mjs`) needs Node.js 20+.
+            **Requirements:** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and logged in, and git (the GitHub CLI `gh`, logged in, only to open pull requests on GitHub and import GitHub issues; pushes work with any git host). The desktop app brings its own Node.js; the CLI bundle (`yaaiorch-cli-*.mjs`) needs Node.js 20+.
             The installers are not code-signed yet, so Windows SmartScreen and macOS Gatekeeper will warn on first launch.
           releaseDraft: true
           prerelease: false

@@ -2,7 +2,7 @@
 // a group holds in each member repo (inherited by its children through ORCH_GROUP_LOCK).
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { tsxApi } from "./tsx.mjs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,8 +17,7 @@ let o;
 
 before(async () => {
   process.env.ORCH_NO_MAIN = "1";
-  const api = createRequire(join(root, "orch-ui", "package.json")).resolve("tsx/esm/api");
-  const { tsImport } = await import(pathToFileURL(api).href);
+  const { tsImport } = await tsxApi(root);
   o = await tsImport(pathToFileURL(join(root, "orch.ts")).href, import.meta.url);
 });
 

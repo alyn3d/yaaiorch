@@ -160,7 +160,8 @@ export type RunView = {
   goal: string;
   /** --branch: the goal's branch and where it started (`goal_branch`); --pr: the pull request (`pr`). */
   branch?: { name: string; base: string };
-  pr?: { url?: string; error?: string };
+  /** `link`: pushed, but no pull request was opened (another git host, or no gh): the host's page to open one. */
+  pr?: { url?: string; link?: string; pushed?: boolean; error?: string };
   /** --pr: the pull request's CI checks (`ci` events): pass, fail, none, timeout. */
   ci?: { state: string; failed: string[] };
   /** --approve-plan: the plan waiting for an answer (`approval_wait`), cleared by `approval`. */
@@ -233,5 +234,7 @@ export type AgentCommand = {
   description?: string;
   /** "Always allow" is refused for it (a wildcard, parentheses or a secret would end up in the rule). */
   noAlways?: boolean;
+  /** The words "Always allow <prefix> ..." would cover (e.g. "npm install"); absent when no prefix rule is offered. */
+  prefix?: string;
   decision?: string;
 };

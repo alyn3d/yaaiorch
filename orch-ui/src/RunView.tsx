@@ -6,6 +6,7 @@ import type { RoundDiff, RunView as Run, TaskView, TokenUsage } from "./types";
 import { transport } from "./transport";
 import { openExternal } from "./links";
 import { CommandCard } from "./AgentM";
+import { AgentText } from "./AgentText";
 import { ACTIVITY_LABELS, failureSummary, roundPhases, taskTimeline } from "./runProgress";
 
 const fmt = (ms: number) => {
@@ -131,7 +132,9 @@ function Task({ t, now }: { t: TaskView; now: number }) {
         <TokenCount tokens={t.tokens} />
         <span className="muted">{elapsed}</span>
       </div>
-      <p className="desc">{t.task}</p>
+      <div className="desc">
+        <AgentText text={t.task} />
+      </div>
       {t.files.length > 0 && <p className="muted files">{t.files.join(", ")}</p>}
       {t.touched.length > 0 && <p className="muted files">changed: {t.touched.join(", ")}</p>}
       {t.error && <p className="error">{t.error}</p>}
@@ -153,16 +156,18 @@ function Task({ t, now }: { t: TaskView; now: number }) {
       {t.report && (
         <details className="disclosure task-report">
           <summary>Agent report</summary>
-          <pre tabIndex={0} aria-label={`${t.agent} report`}>
-            {t.report}
-          </pre>
+          <div className="task-report-body" tabIndex={0} aria-label={`${t.agent} report`}>
+            <AgentText text={t.report} />
+          </div>
           {t.reportTruncated && <p className="muted">Report truncated at 4,000 characters.</p>}
         </details>
       )}
       {t.failures.length > 0 && (
         <ul className="failures">
           {t.failures.map((f, i) => (
-            <li key={i}>{f}</li>
+            <li key={i}>
+              <AgentText text={f} />
+            </li>
           ))}
         </ul>
       )}
@@ -243,12 +248,14 @@ function Approval({ a, onAnswer }: { a: NonNullable<Run["approval"]>; onAnswer: 
         <span className="badge warn">approval</span>
       </div>
       {a.error && <p className="error">{a.error}</p>}
-      <p>{a.summary}</p>
+      <div>
+        <AgentText text={a.summary} />
+      </div>
       {!editing ? (
         <ul className="plan">
           {a.tasks.map((t, i) => (
             <li key={i}>
-              <span className="agent">{t.agent}</span> <span className="muted">[{t.phase}]</span> {t.task}
+              <span className="agent">{t.agent}</span> <span className="muted">[{t.phase}]</span> <AgentText text={t.task} />
               {t.files?.length ? <span className="muted files"> ({t.files.join(", ")})</span> : null}
             </li>
           ))}
@@ -324,7 +331,9 @@ function QuestionCard({
         </strong>
         <span className={`badge ${question.answered ? "done" : "warn"}`}>{question.answered ? "answered" : active ? "waiting for you" : "unanswered"}</span>
       </div>
-      <p>{question.question}</p>
+      <div>
+        <AgentText text={question.question} />
+      </div>
       {active && onAnswer && (
         <>
           <div className="row">
@@ -396,7 +405,9 @@ export function RunPanel({
           <strong>{failure.previous ? `Previous round ${failure.round}` : `Round ${failure.round}`} needs attention</strong>
           <ul className="failures">
             {failure.issues.map((issue, i) => (
-              <li key={i}>{issue}</li>
+              <li key={i}>
+                <AgentText text={issue} />
+              </li>
             ))}
           </ul>
           {failure.note && <p>{failure.note}</p>}
@@ -429,6 +440,15 @@ export function RunPanel({
           </a>
         </p>
       )}
+      {run.pr?.link && (
+        <p>
+          Pushed {run.branch?.name ?? "the branch"}.{" "}
+          <a href={run.pr.link} target="_blank" rel="noreferrer" onClick={(e) => openExternal(e, run.pr!.link!)}>
+            Open the pull request
+          </a>
+        </p>
+      )}
+      {run.pr?.pushed && !run.pr.link && <p className="muted">Pushed {run.branch?.name ?? "the branch"} to origin; open the pull request on your git host.</p>}
       {run.pr?.error && <p className="note">No pull request: {run.pr.error}</p>}
       {run.ci && (
         <p className={run.ci.state === "pass" ? "muted" : "note"} title="The pull request's CI checks on GitHub">
@@ -486,15 +506,15 @@ export function RunPanel({
           </ol>
           <TaskTimeline tasks={r.tasks} now={now} live={run.status === "running" && run.rounds.at(-1) === r && r.passed === undefined} round={r.round} />
           {r.summary && (
-            <p>
-              {r.summary}
+            <div className="round-summary">
+              <AgentText text={r.summary} />
               {r.architectCost !== undefined && (
                 <>
                   <span className="cost"> (plan {money(r.architectCost)})</span>
                   <TokenCount tokens={r.architectTokens} />
                 </>
               )}
-            </p>
+            </div>
           )}
           {r.models && (
             <p className="cost" title="Model used per role in this round">

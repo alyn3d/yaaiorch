@@ -89,19 +89,19 @@ export function useOrch() {
   return { sessions, order, groups, maxParallel, setMaxParallel, global, connected, canPickRepo: transport.canPickRepo };
 }
 
-/** Doctor findings for one repo: on open, and whenever its process ends. */
-export function useFindings(repo: string, busy: boolean) {
+/** Doctor findings for one repo: on open, whenever its process ends, and when its pull request switch changes. */
+export function useFindings(repo: string, busy: boolean, pr = false) {
   const [findings, setFindings] = useState<Finding[]>([]);
   useEffect(() => {
     if (busy) return;
     let live = true;
-    transport.doctor(repo).then(
+    transport.doctor(repo, pr).then(
       (f) => live && setFindings(f),
       (e) => live && setFindings([{ name: "doctor", level: "fail", detail: String(e) }]),
     );
     return () => {
       live = false;
     };
-  }, [repo, busy]);
+  }, [repo, busy, pr]);
   return findings;
 }

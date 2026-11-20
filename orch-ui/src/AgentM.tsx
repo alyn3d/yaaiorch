@@ -6,80 +6,16 @@ import type { Session } from "./useOrch";
 import type { AgentCommand } from "./types";
 import { baseName } from "./repoStatus";
 import { transport } from "./transport";
-import { parseMarkdown, type Inline } from "./markdown";
-import { openExternal } from "./links";
+import { Markdown } from "./AgentText";
 import "./AgentM.scss";
 
-/** Inline spans as elements; links open in the system browser (desktop) or a new tab. */
-function Spans({ inline }: { inline: Inline[] }) {
-  return (
-    <>
-      {inline.map((s, i) =>
-        s.kind === "bold" ? (
-          <strong key={i}>{s.text}</strong>
-        ) : s.kind === "italic" ? (
-          <em key={i}>{s.text}</em>
-        ) : s.kind === "code" ? (
-          <code key={i}>{s.text}</code>
-        ) : s.kind === "link" ? (
-          <a key={i} href={s.href} target="_blank" rel="noreferrer" onClick={(e) => openExternal(e, s.href)}>
-            {s.text}
-          </a>
-        ) : (
-          <span key={i}>{s.text}</span>
-        ),
-      )}
-    </>
-  );
-}
-
-/** Agent M's answer, rendered from its Markdown as React elements (no HTML is injected). */
-function Markdown({ text }: { text: string }) {
-  return (
-    <div className="md">
-      {parseMarkdown(text).map((b, i) => {
-        if (b.kind === "code")
-          return (
-            <pre key={i}>
-              <code>{b.text}</code>
-            </pre>
-          );
-        if (b.kind === "heading") {
-          const H = (["h4", "h4", "h5"] as const)[b.level - 1];
-          return (
-            <H key={i}>
-              <Spans inline={b.inline} />
-            </H>
-          );
-        }
-        if (b.kind === "list") {
-          const L = b.ordered ? "ol" : "ul";
-          return (
-            <L key={i}>
-              {b.items.map((item, j) => (
-                <li key={j}>
-                  <Spans inline={item} />
-                </li>
-              ))}
-            </L>
-          );
-        }
-        return (
-          <p key={i}>
-            <Spans inline={b.inline} />
-          </p>
-        );
-      })}
-    </div>
-  );
-}
-
-export type CommandDecision = "allow" | "always" | "deny";
+export type CommandDecision = "allow" | "always" | "prefix" | "deny";
 type Decide = (repo: string, id: string, decision: CommandDecision) => Promise<boolean>;
 
 const OUTCOME: Record<string, { label: string; tone: string }> = {
   allow: { label: "allowed", tone: "done" },
   always: { label: "always allowed", tone: "done" },
+  prefix: { label: "allowed with any arguments", tone: "done" },
   deny: { label: "denied", tone: "failed" },
   timeout: { label: "no answer, denied", tone: "failed" },
   cancelled: { label: "run stopped", tone: "" },
@@ -102,6 +38,7 @@ export function commandsOf(sessions: Record<string, Session>, order: string[]) {
 /** One command an agent wants to run: who asks, why, the exact command, and (while it waits) the answers. */
 export function CommandCard({ repo, command, showRepo, onDecide }: { repo: string; command: AgentCommand; showRepo?: boolean; onDecide?: Decide }) {
   const [busy, setBusy] = useState(false);
+  const [confirmPrefix, setConfirmPrefix] = useState(false);
   const decide = async (d: CommandDecision) => {
     setBusy(true);
     if (!(await onDecide?.(repo, command.id, d))) setBusy(false);
@@ -122,7 +59,24 @@ export function CommandCard({ repo, command, showRepo, onDecide }: { repo: strin
         <span className="muted">{command.tool === "PowerShell" ? "PS> " : "$ "}</span>
         {command.command}
       </pre>
-      {!outcome && onDecide && (
+      {!outcome && onDecide && confirmPrefix && command.prefix && (
+        <div className="prefix-confirm" role="group" aria-label={`Allow every ${command.prefix} command`}>
+          <p>
+            Every <code>{command.prefix} …</code> command will run in this repo without asking, now and in later runs, whatever follows it. For{" "}
+            <code>npm install</code> that means any package an agent picks, and installing one runs its scripts on your machine. Remove the rule under
+            Always-allowed commands in the run settings.
+          </p>
+          <div className="row">
+            <button className="primary" disabled={busy} onClick={() => decide("prefix")}>
+              Allow every {command.prefix} …
+            </button>
+            <button className="ghost" disabled={busy} onClick={() => setConfirmPrefix(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {!outcome && onDecide && !confirmPrefix && (
         <div className="row">
           <button className="primary" disabled={busy} onClick={() => decide("allow")}>
             Allow
@@ -134,6 +88,15 @@ export function CommandCard({ repo, command, showRepo, onDecide }: { repo: strin
               title="Allow it now, and this exact command in later runs of this repo without asking (config.json allow)."
             >
               Always allow
+            </button>
+          )}
+          {command.prefix && (
+            <button
+              disabled={busy}
+              onClick={() => setConfirmPrefix(true)}
+              title={`Allow it now, and every command starting with "${command.prefix}" in later runs of this repo, whatever follows (config.json allow).`}
+            >
+              Always allow {command.prefix} …
             </button>
           )}
           <button className="danger" disabled={busy} onClick={() => decide("deny")}>
