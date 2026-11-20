@@ -63,7 +63,8 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
     if (el && !hidden) el.scrollTop = el.scrollHeight;
   }, [log, hidden]);
 
-  const busy = !!state.running || !!state.queued;
+  // A group run holds this repo (its events show here): its own starts are refused until the group is done.
+  const busy = !!state.running || !!state.queued || !!state.inGroup;
   const findings = useFindings(repo, busy);
   // An empty or out-of-range field must not reach orch.ts as 0 or NaN.
   const cap = Number(maxCost);
@@ -148,6 +149,15 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
                 <span className={`badge ${f.level === "fail" ? "failed" : "warn"}`}>{f.level}</span> <strong>{f.name}</strong> {f.detail}
               </p>
             ))}
+          </div>
+        </section>
+      )}
+
+      {state.inGroup && (
+        <section className="callout" role="status">
+          <div className="callout-text">
+            <strong>Running in group {state.inGroup}</strong>
+            <span>This repo's part of the group goal shows below. Its own runs and the queue wait until the group is done; stop it from the group's page.</span>
           </div>
         </section>
       )}
@@ -321,7 +331,7 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
                   Stop after this goal
                 </button>
               )}
-              <button className="danger" disabled={!busy} onClick={() => call("stop")}>
+              <button className="danger" disabled={!state.running && !state.queued} onClick={() => call("stop")}>
                 {state.queued && !state.running ? "Cancel" : "Stop"}
               </button>
               <button className="ghost" onClick={() => call("clear-log")}>

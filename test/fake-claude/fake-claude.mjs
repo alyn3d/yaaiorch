@@ -9,7 +9,9 @@
 //                                      (the fast path's `dev` agent writes src/direct.txt instead)
 //
 // Switches (environment):
-//   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap
+//   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap,
+//                            and "adddirs=<a|b>" at the end when --add-dir was given
+//   FAKE_PROMPTS=<dir>       write each call's prompt to <dir>/<time>-<pid>-<random>-<agent>.txt
 //   FAKE_QA=pass|fail|fail-once|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts;
 //                            fail-once fails the first verdict in the repo, then passes
 //   FAKE_TRANSIENT_ONCE=<agent>  that agent's first call fails with "API Error: 529 ... overloaded_error"
@@ -18,7 +20,8 @@
 //   FAKE_QA_NOTE=<text>      a passing QA verdict carries this in "notes"
 //   FAKE_CRITIC=approve|reject|reject-once   the plan critic's answer (default approve)
 //   FAKE_COST=<usd>          total_cost_usd per call (default 0.05)
-//   FAKE_FAIL_AGENT=<name>   that implementer exits 1
+//   FAKE_FAIL_AGENT=<name>   that implementer exits 1; FAKE_LOCK_REPO=<dir> then also leaves <dir>/.git/index.lock
+//                            behind, so git cannot commit or reset there (a park that fails)
 //   FAKE_HANG_AGENT=<name>   that implementer never returns
 //   FAKE_SLOW=<seconds>      implementers sleep first
 //   FAKE_ACTIVITY=<agents>    stream tool requests for these agents; FAKE_ACTIVITY_WAIT holds each call open (ms)
@@ -38,6 +41,13 @@
 //   FAKE_COVERAGE=missing|missing-once   the coverage check reports a missing goal (always, or the first time)
 //   FAKE_SPLIT=deps          orch split returns A, B (needs A) and C (needs nothing)
 //   FAKE_QA_FAIL_GOAL=<text> QA fails every round of a goal whose text contains this
+//   FAKE_QA_FAIL_INTEGRATION=<n>  QA fails a goal containing "against the running backend" the first n times
+//                            (counter in .orchestrator/fake-integration)
+//   FAKE_GROUP_FAULT=backend|frontend|both   the group coordinator's fault call (default frontend); FAKE_GROUP_REVISE=1
+//                            adds contract "REVISED". Without "Integration failed" in the prompt it answers a plan.
+//                            FAKE_GROUP_BULLETS=1: every goal it gives starts with "- " (a markdown bullet list)
+//                            FAKE_GROUP_ONLY=backend|frontend: its plan has a goal for that repo only
+//   FAKE_LEAK=<agent>        that implementer also writes leaked-by-<agent>.txt into its first --add-dir (another repo)
 //   FAKE_SECRET_ONCE=<agent> that agent's first call writes an AWS-style access key into its files
 // Also answers the notes tidy call and `orch share` (a CLAUDE.md section).
 // Every reply carries a new session_id; a call with --resume logs "<agent>: resume=<id> ...".
@@ -107,7 +117,17 @@ if (agentsFile) {
     process.exit(1);
   }
 }
-log(`call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap} builtin=${Boolean(agentsFile)}`);
+const addDirs = args.flatMap((a, i) => (a === "--add-dir" && i + 1 < args.length ? [args[i + 1]] : []));
+log(
+  `call agent=${agent} mode=${opt("--permission-mode")} settings=${opt("--settings")} model=${opt("--model")} cap=${cap} builtin=${Boolean(agentsFile)}` +
+    (addDirs.length ? ` adddirs=${addDirs.join("|")}` : ""),
+);
+if (env.FAKE_PROMPTS) {
+  // pid + time + a random tail: unique across parallel implementers without a shared counter.
+  mkdirSync(env.FAKE_PROMPTS, { recursive: true });
+  const n = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  writeFileSync(`${env.FAKE_PROMPTS}/${n}-${agent ?? "x"}.txt`, prompt);
+}
 if (env.FAKE_ACTIVITY?.split(",").includes(agent)) {
   const content = [
     { type: "tool_use", name: "Read", input: { file_path: env.FAKE_ACTIVITY_SECRET } },
@@ -287,7 +307,38 @@ if (prompt.startsWith("The user answered your question:") && existsSync(question
   prompt = readFileSync(questionFlag, "utf8");
 }
 
-if (prompt.includes("Review this change")) {
+if (prompt.startsWith("You are the group coordinator.")) {
+  // Repo groups: a plan (contract and both goals), or after "Integration failed" a fault call.
+  const bullet = env.FAKE_GROUP_BULLETS ? "- " : "";
+  if (prompt.includes("Integration failed")) {
+    const fault = env.FAKE_GROUP_FAULT ?? "frontend";
+    const sides = fault === "both" ? ["backend", "frontend"] : [fault];
+    log(`coordinator: fault=${fault}`);
+    reply(
+      "```json\n" +
+        JSON.stringify({
+          fault,
+          goals: Object.fromEntries(sides.map((s) => [s, `${bullet}fix the ${s} so it matches the contract`])),
+          ...(env.FAKE_GROUP_REVISE ? { contract: "REVISED" } : {}),
+        }) +
+        "\n```",
+    );
+  } else {
+    log("coordinator: plan");
+    reply(
+      "```json\n" +
+        JSON.stringify({
+          contract: "GET /api/items → Item[]",
+          goals: Object.fromEntries(
+            Object.entries({ backend: `${bullet}serve GET /api/items`, frontend: `${bullet}show the items from GET /api/items` }).filter(
+              ([role]) => !env.FAKE_GROUP_ONLY || role === env.FAKE_GROUP_ONLY,
+            ),
+          ),
+        }) +
+        "\n```",
+    );
+  }
+} else if (prompt.includes("Review this change")) {
   // Diff review (critic against the goal, or a reviewer for bugs): FAKE_REVIEW_REJECT=<agent,agent> reject.
   const lens = prompt.includes("against the goal") ? "goal" : "bugs";
   const reject = (env.FAKE_REVIEW_REJECT ?? "").split(",").includes(agent);
@@ -390,6 +441,17 @@ if (prompt.includes("Review this change")) {
     reply('{"passed": false, "failures": ["fake failure for this goal"]}');
     process.exit(0);
   }
+  // FAKE_QA_FAIL_INTEGRATION=<n>: a goal containing "against the running backend" fails its first n verdicts.
+  if (env.FAKE_QA_FAIL_INTEGRATION && goalLine.includes("against the running backend")) {
+    const f = ".orchestrator/fake-integration";
+    const seen = existsSync(f) ? Number(readFileSync(f, "utf8")) : 0;
+    if (seen < Number(env.FAKE_QA_FAIL_INTEGRATION)) {
+      writeFileSync(f, String(seen + 1));
+      log(`qa: failing integration goal (${seen + 1}/${env.FAKE_QA_FAIL_INTEGRATION})`);
+      reply('{"passed": false, "failures": ["fake integration failure"]}');
+      process.exit(0);
+    }
+  }
   const failOnce = mode === "fail-once" && !existsSync(".orchestrator/fake-qa-failed");
   if (failOnce) writeFileSync(".orchestrator/fake-qa-failed", "1");
   if (mode === "fail" || failOnce) reply('{"passed": false, "failures": ["fake failure"]}');
@@ -398,6 +460,7 @@ if (prompt.includes("Review this change")) {
 } else {
   if (env.FAKE_FAIL_AGENT === agent) {
     log(`${agent}: crashing`);
+    if (env.FAKE_LOCK_REPO) writeFileSync(`${env.FAKE_LOCK_REPO}/.git/index.lock`, "");
     process.exit(1);
   }
   if (env.FAKE_HANG_AGENT === agent) {
@@ -432,6 +495,10 @@ if (prompt.includes("Review this change")) {
     writeFileSync(secretFlag, "1");
     for (const f of files) writeFileSync(f, `export const key = "${"AKIA" + "ABCDEFGHIJKLMNOP"}";\n`);
     log(`${agent}: wrote a secret`);
+  }
+  if (env.FAKE_LEAK === agent && addDirs.length) {
+    writeFileSync(`${addDirs[0]}/leaked-by-${agent}.txt`, "written into another repo\n");
+    log(`${agent}: leaked into ${addDirs[0]}`);
   }
   if (env.FAKE_STRAY_FILE && agent === "be") {
     mkdirSync(dirname(env.FAKE_STRAY_FILE), { recursive: true });

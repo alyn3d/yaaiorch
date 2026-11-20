@@ -27,6 +27,27 @@ import { join, basename, dirname, resolve, relative, isAbsolute } from "node:pat
 import { parseArgs } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { BUILTIN_AGENTS } from "./orch-agents";
+import {
+  backendBaseUrl,
+  coordinatorFaultPrompt,
+  coordinatorPlanPrompt,
+  extractJson,
+  parseFaultCall,
+  parseGroupPlan,
+  groupEnv,
+  groupServe,
+  groupSection,
+  groupsDir,
+  listGroups,
+  memberOf,
+  readGroup,
+  removeGroup,
+  validateGroup,
+  writeGroup,
+  type GroupConfig,
+  type GroupRepo,
+} from "./orch-group";
+import { approveGroup, childShare, costArgs as groupCostArgs, GROUP_EXIT, groupDir, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
@@ -69,8 +90,9 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch intake [--github LABEL] [--backlog FILE]   queue open GitHub issues with that label (via gh) and the
                         unchecked "- [ ]" items of a backlog file, each once; anyone who can label issues
                         can direct the agents, so use a label only people you trust can set
-  orch approve [--reject "WHY"] [--plan-stdin]   answer a run waiting with --approve-plan: build the plan (edited:
-                        a plan as JSON on stdin), or send it back to the architect with your reason
+  orch approve [--reject "WHY"] [--plan-stdin] [--group NAME]   answer a run waiting with --approve-plan: build the
+                        plan (edited: a plan as JSON on stdin), or send it back to the architect with your reason;
+                        --group: the group plan of "orch group run NAME --approve-plan" (edited: {contract, goals})
   orch answer ID        answer an agent's question with text from stdin
   orch decide ID allow|deny|always   answer a shell command an agent wants to run (--commands)
   orch chat             ask Agent M (Haiku, read-only) about your setup and repos: {"question", "session"?, "repos"?, "running"?}
@@ -82,6 +104,15 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work is kept
                         on an orchestrator/discarded-* branch
   orch prune [--older-than DAYS]  delete orchestrator/* branches older than DAYS (14)
+  orch group add NAME --repo PATH:backend --repo PATH:frontend [--serve-command CMD] [--serve-url URL]
+                  [--base-url URL] [--env NAME=VALUE]   define a repo group (one backend, one frontend; the serve
+                  options belong to the backend, --env to the frontend, "{backend}" = the backend's URL)
+  orch group list [--json] | remove NAME   show or delete groups (~/.yaaiorch/groups)
+  orch group run NAME "<goal>" [--max-cost USD] [--power P] [--model SPEC] [--approve-plan] [--fast|--no-fast]
+                  one goal across the group: the coordinator writes the API contract and a goal per repo, both
+                  repos build in parallel; on failure or stop each repo's work is parked on a branch and the repo
+                  reset (exit 1, 3 on a usage limit, 130 when stopped). --approve-plan: orch approve --group NAME
+  orch group stop NAME   stop a running group goal (its work is parked as interrupted)
   orch browser [status | login [URL] | install]   the browser the checks use (status); log in to the app once in
                         a window on this repo's own browser profile, which the checks reuse (login); download
                         Chrome for Testing into ~/.yaaiorch/browser when no Chrome, Edge, Chromium or Brave is installed
@@ -387,9 +418,32 @@ const LOCK_STALE_MS = 2 * 60_000;
  * lock is taken over only when its process is gone (same machine) or it has not been touched for two
  * minutes (a reused process id, or another machine), so a live process never loses its lock. It is
  * released on exit, and only if it is still ours.
+ *
+ * `root` lets a group process lock a member repo it is not running in: no per-run cleanup and no signal
+ * handlers there (the group handles its own), but the same heartbeat and release on exit. A child the group
+ * starts gets the lock id in ORCH_GROUP_LOCK and runs under the held lock without writing, touching or
+ * releasing it; any other value, or no lock at all, is refused. Returns the lock id.
  */
-function acquireRunLock(cmd: string) {
-  mkdirSync(DIR, { recursive: true });
+function acquireRunLock(cmd: string, root = process.cwd(), file?: string): string {
+  // An explicit lock file (a group's own lock, or a member repo that is also the cwd) is always held as a foreign lock.
+  const atCwd = !file && resolve(root) === resolve(process.cwd());
+  const lockFile = file ?? (atCwd ? RUN_LOCK : join(root, DIR, "run.lock"));
+  const inherited = process.env.ORCH_GROUP_LOCK;
+  if (inherited) {
+    let held: Partial<LockInfo> = {};
+    try {
+      held = JSON.parse(readFileSync(lockFile, "utf8"));
+    } catch {
+      /* no lock: a mismatch below */
+    }
+    if (held.id !== inherited) throw new Error(`group lock mismatch: ${lockFile} is not held by this group (ORCH_GROUP_LOCK)`);
+    if (atCwd) {
+      clearRunLeftovers();
+      exitOnSignals(cmd);
+    }
+    return inherited;
+  }
+  mkdirSync(dirname(lockFile), { recursive: true });
   const me: LockInfo = {
     pid: process.pid,
     host: hostname(),
@@ -399,7 +453,7 @@ function acquireRunLock(cmd: string) {
   };
   for (let attempt = 1; ; attempt++) {
     try {
-      const fd = openSync(RUN_LOCK, "wx");
+      const fd = openSync(lockFile, "wx");
       writeFileSync(fd, JSON.stringify(me));
       closeSync(fd);
       break;
@@ -408,8 +462,8 @@ function acquireRunLock(cmd: string) {
       let holder: Partial<LockInfo> = {};
       let age: number;
       try {
-        holder = JSON.parse(readFileSync(RUN_LOCK, "utf8"));
-        age = Date.now() - statSync(RUN_LOCK).mtimeMs;
+        holder = JSON.parse(readFileSync(lockFile, "utf8"));
+        age = Date.now() - statSync(lockFile).mtimeMs;
       } catch {
         age = Infinity; // unreadable or vanished: a crashed half-write
       }
@@ -418,44 +472,68 @@ function acquireRunLock(cmd: string) {
       if (alive)
         throw new Error(
           `another orch is already running in this repo (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}${sameHost ? "" : ` on ${holder.host}`}, ` +
-            `since ${holder.since ? new Date(holder.since).toLocaleString() : "?"}). Wait for it, stop it, or delete ${RUN_LOCK} if you are sure it is gone.`,
+            `since ${holder.since ? new Date(holder.since).toLocaleString() : "?"}). Wait for it, stop it, or delete ${lockFile} if you are sure it is gone.`,
           { cause: e },
         );
       console.warn(
         `taking over a stale lock (${holder.cmd ?? "?"}, pid ${holder.pid ?? "?"}): ${sameHost ? "its process is gone" : "not touched for 2 minutes"}`,
       );
       try {
-        unlinkSync(RUN_LOCK);
+        unlinkSync(lockFile);
       } catch {
         /* someone else removed it first; try again */
       }
     }
   }
-  if (existsSync(QUESTIONS_DIR)) {
-    for (const name of readdirSync(QUESTIONS_DIR)) {
-      if (/^[0-9a-f-]{36}\.(?:json|answer\.json|claim|answer\.\d+\.tmp)$/.test(name)) rmSync(join(QUESTIONS_DIR, name), { force: true });
-    }
-  }
-  // Commands and MCP configs a crashed run left behind.
-  if (existsSync(COMMANDS_DIR)) for (const name of readdirSync(COMMANDS_DIR)) rmSync(join(COMMANDS_DIR, name), { force: true });
-  for (const name of readdirSync(DIR)) if (/^agentm-\d+-\d+\.json$/.test(name)) rmSync(join(DIR, name), { force: true });
+  if (atCwd) clearRunLeftovers();
   const beat = setInterval(() => {
     try {
-      utimesSync(RUN_LOCK, new Date(), new Date());
+      // Never keep someone else's lock fresh (ours was removed by hand and taken by another run).
+      if ((JSON.parse(readFileSync(lockFile, "utf8")) as LockInfo).id === me.id) utimesSync(lockFile, new Date(), new Date());
     } catch {
       /* lock removed by hand: nothing to touch */
     }
   }, 30_000);
   beat.unref();
-  process.on("exit", () => {
-    clearInterval(beat);
-    try {
-      if ((JSON.parse(readFileSync(RUN_LOCK, "utf8")) as LockInfo).id === me.id) unlinkSync(RUN_LOCK);
-    } catch {
-      /* not there, or not ours any more */
+  const onExit = () => releaseRunLock(me.id, root, file);
+  heldLocks.set(me.id, { beat, onExit });
+  process.on("exit", onExit);
+  if (atCwd) exitOnSignals(cmd);
+  return me.id;
+}
+
+/** Locks this process holds: their heartbeat and exit listener, dropped by releaseRunLock. */
+const heldLocks = new Map<string, { beat: NodeJS.Timeout; onExit: () => void }>();
+
+/** Delete the run lock at root (or `file`), but only if it is still the one with this id; stop its heartbeat either way. */
+function releaseRunLock(id: string, root: string, file?: string) {
+  const held = heldLocks.get(id);
+  if (held) {
+    heldLocks.delete(id);
+    clearInterval(held.beat);
+    process.off("exit", held.onExit);
+  }
+  const lockFile = file ?? join(root, DIR, "run.lock");
+  try {
+    if ((JSON.parse(readFileSync(lockFile, "utf8")) as LockInfo).id === id) unlinkSync(lockFile);
+  } catch {
+    /* not there, or not ours any more */
+  }
+}
+
+/** Questions, commands and MCP configs a crashed run left behind in this repo. */
+function clearRunLeftovers() {
+  if (existsSync(QUESTIONS_DIR)) {
+    for (const name of readdirSync(QUESTIONS_DIR)) {
+      if (/^[0-9a-f-]{36}\.(?:json|answer\.json|claim|answer\.\d+\.tmp)$/.test(name)) rmSync(join(QUESTIONS_DIR, name), { force: true });
     }
-  });
-  // Ctrl+C and kill: exit normally so the lock is released (loop has its own SIGINT handler).
+  }
+  if (existsSync(COMMANDS_DIR)) for (const name of readdirSync(COMMANDS_DIR)) rmSync(join(COMMANDS_DIR, name), { force: true });
+  for (const name of readdirSync(DIR)) if (/^agentm-\d+-\d+\.json$/.test(name)) rmSync(join(DIR, name), { force: true });
+}
+
+/** Ctrl+C and kill: exit normally so exit handlers run and the lock is released (loop has its own SIGINT handler). */
+function exitOnSignals(cmd: string) {
   for (const sig of ["SIGTERM", "SIGHUP"] as const) process.once(sig, () => process.exit(130));
   if (cmd !== "loop") process.once("SIGINT", () => process.exit(130));
 }
@@ -781,12 +859,29 @@ function loadChecks(cfg: Config): Record<string, string> {
  * they may not. Read-only roles also deny the edit tools and run in permission mode "default", where
  * shell commands that write files are refused too (acceptEdits would let `echo > file` through).
  */
-function writeAgentSettings(cfg: Config, checks: Record<string, string>, plugins: PluginChoice) {
+function writeAgentSettings(cfg: Config, checks: Record<string, string>, plugins: PluginChoice, readDirs: string[] = []) {
   const cmds = [...Object.values(checks), ...(checks.test ? ["npm test"] : []), "git status", "git diff", "git log", "git show"];
   const allow = [...cmds.flatMap((c) => [`Bash(${c}:*)`, `PowerShell(${c}:*)`]), ...(cfg.allow ?? [])];
   const extra = pluginSettings(plugins);
-  writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow }, ...extra }, null, 2));
-  writeFileSync(READONLY_SETTINGS, JSON.stringify({ permissions: { allow, deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] }, ...extra }, null, 2));
+  const denyRead = readDenyRules(readDirs);
+  writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow, ...(denyRead.length ? { deny: denyRead } : {}) }, ...extra }, null, 2));
+  writeFileSync(
+    READONLY_SETTINGS,
+    JSON.stringify({ permissions: { allow, deny: ["Edit", "Write", "MultiEdit", "NotebookEdit", ...denyRead] }, ...extra }, null, 2),
+  );
+}
+
+/**
+ * Deny rules that keep agents from changing a --read-dir (another repo of a group). `//` starts an absolute path in a
+ * permission rule, and on Windows Claude Code matches paths in POSIX form (C:\a\b as /c/a/b). The Edit rule covers every
+ * built-in tool that edits files and shell redirections; the Write, MultiEdit and NotebookEdit ones are belt and braces.
+ */
+function readDenyRules(dirs: string[]): string[] {
+  return dirs.flatMap((d) => {
+    const m = /^([A-Za-z]):[\\/]*(.*)$/.exec(d);
+    const p = (m ? `/${m[1].toLowerCase()}/${m[2]}` : d).replace(/\\/g, "/").replace(/\/+$/, "");
+    return ["Edit", "Write", "MultiEdit", "NotebookEdit"].map((t) => `${t}(/${p}/**)`);
+  });
 }
 
 // ---------- plugins: which of the user's Claude Code plugins and hooks the agents get ----------
@@ -840,7 +935,7 @@ function pluginSettings(c: PluginChoice): { enabledPlugins?: Record<string, fals
   };
 }
 
-function parsePlugins(values: Record<string, string | boolean | undefined>, cfg: Config["plugins"]): PluginChoice {
+function parsePlugins(values: Record<string, string | boolean | string[] | undefined>, cfg: Config["plugins"]): PluginChoice {
   const mode = String(values.plugins ?? (cfg?.off ? "off" : "on"));
   if (mode !== "on" && mode !== "off") throw new Error(`--plugins must be on or off, got "${mode}"`);
   const fromCli =
@@ -1047,6 +1142,10 @@ type RunCtx = {
   questionRound?: number;
   /** --commands: implementers' shell commands go to Agent M, waiting this long for an answer. */
   commandTimeoutMs?: number;
+  /** --read-dir: other repos of a group, readable by every agent (--add-dir), never writable (writeAgentSettings). */
+  addDirs?: string[];
+  /** --group-context: the group section (other repos, API contract) for the architect; implementers and QA get it in repoContext. */
+  groupContext?: string;
 };
 
 // ---------- subscription usage: read from the CLI's rate_limit_event (stream-json) ----------
@@ -2064,6 +2163,8 @@ async function runOnce(
       ...(permit ? ["--mcp-config", permit.arg, "--permission-prompt-tool", PERMIT_TOOL] : []),
       ...(agent.builtin ? ["--agents", BUILTIN_FILE] : []),
       ...(existsSync(AGENT_SETTINGS) ? ["--settings", readOnly ? READONLY_SETTINGS : AGENT_SETTINGS] : []),
+      // Not through cmd.exe (a path could read as shell syntax there): the other repos are then only named in the prompt.
+      ...(claudeBin().shell ? [] : (ctx.addDirs ?? []).flatMap((d) => ["--add-dir", d])),
       "--agent",
       agent.runAs ?? agent.name,
       "--model",
@@ -2130,23 +2231,6 @@ async function runOnce(
     });
     p.stdin.end(prompt);
   });
-}
-
-/** Parse the JSON object in a reply: a fenced json block if present, else the outermost {...}. */
-function extractJson<T>(text: string): T {
-  const fenced = /```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/.exec(text)?.[1];
-  for (const c of [fenced, text]) {
-    if (!c) continue;
-    const s = c.indexOf("{"),
-      e = c.lastIndexOf("}");
-    if (s < 0 || e < s) continue;
-    try {
-      return JSON.parse(c.slice(s, e + 1)) as T;
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  throw new Error(`no valid JSON in reply: ${text.slice(0, 200)}`);
 }
 
 /** Compare paths the way the file system does: ./a, a\b and A/B (on Windows) are the same file. */
@@ -2614,12 +2698,15 @@ function changedFiles(): string[] {
   return out.filter(Boolean);
 }
 
+const GROUP_CHECKPOINT = `${BRANCH_PREFIX}group-checkpoint-`;
+
 /** Commit what is left, keep HEAD on a side branch, and reset the current branch to `cp`. */
-function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string): string | null {
+function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string, savedAs?: string): string | null {
   commitAll(message, true); // throws if it cannot commit: never reset over uncommitted work
   if (dirtyFiles()) throw new Error("could not commit the changes; leaving the tree as is");
   if (git("rev-parse", "HEAD") === git("rev-parse", cp)) return null;
-  const saved = cp.replace("checkpoint", kind);
+  const saved =
+    savedAs ?? (cp.startsWith(GROUP_CHECKPOINT) ? `${BRANCH_PREFIX}${kind}-group-${cp.slice(GROUP_CHECKPOINT.length)}` : cp.replace("checkpoint", kind));
   git("branch", saved);
   git("reset", "-q", "--hard", cp);
   return saved;
@@ -2662,6 +2749,178 @@ function finishGit(cp: string, goal: string, passed: boolean, park: boolean, int
 }
 
 const checkpoints = () => git("branch", "--list", `${BRANCH_PREFIX}checkpoint-*`, "--format=%(refname:short)").split("\n").filter(Boolean).sort();
+
+/**
+ * `orch group-member checkpoint|park|reset|verify|has|head|drop|coordinate`: the repo-level steps of a group run (hidden;
+ * the group process holds the run lock).
+ */
+async function groupMember(args: string[], values: Record<string, string | boolean | string[] | undefined> = {}) {
+  const [action, a, b] = args;
+  if (!process.env.ORCH_GROUP_LOCK) throw new Error("orch group-member is only for a group run: ORCH_GROUP_LOCK is not set");
+  acquireRunLock("group-member");
+  const out = (o: object) => console.log(JSON.stringify(o));
+  const checkpoint = (name?: string) => {
+    if (!name?.startsWith(GROUP_CHECKPOINT) || !/^[A-Za-z0-9-]+$/.test(name.slice(GROUP_CHECKPOINT.length)))
+      throw new Error(`expected a ${GROUP_CHECKPOINT}<stamp> branch, got "${name ?? ""}"`);
+    return name;
+  };
+  // A branch (orchestrator/group-checkpoint-<stamp>) or a commit sha: it must exist and be behind HEAD, checked before anything is committed or reset.
+  const anchor = (name?: string) => {
+    const isSha = /^[0-9a-f]{7,40}$/i.test(name ?? "");
+    const ref = isSha ? name! : checkpoint(name);
+    let sha: string;
+    try {
+      sha = git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`);
+    } catch {
+      throw new Error(`${isSha ? "commit" : "checkpoint"} ${ref} does not exist in this repo`);
+    }
+    try {
+      git("merge-base", "--is-ancestor", sha, "HEAD");
+    } catch {
+      throw new Error(`${ref} is not an ancestor of the current HEAD; switch to the branch the group goal ran on first`);
+    }
+    return { ref, isSha };
+  };
+  switch (action) {
+    case "checkpoint": {
+      if (!a || !/^[A-Za-z0-9-]+$/.test(a)) throw new Error("usage: orch group-member checkpoint <stamp> (the stamp is letters, digits and dashes)");
+      if (!isGitRepo() || !hasCommits()) throw new Error("a group member must be a git repo with at least one commit");
+      const dirty = dirtyFiles();
+      if (dirty)
+        throw new Error(`working tree has uncommitted changes; commit or stash them first, or run "orch rollback" after a stopped run:
+${dirty}`);
+      git("branch", `${GROUP_CHECKPOINT}${a}`);
+      return out({ checkpoint: `${GROUP_CHECKPOINT}${a}`, head: git("rev-parse", "HEAD") });
+    }
+    case "park": {
+      if (b !== "failed" && b !== "interrupted") throw new Error("usage: orch group-member park <checkpoint> <failed|interrupted>");
+      anchor(a);
+      const leftovers = childCheckpoints(a!);
+      const parked = moveWorkAside(a!, b, `orch: group ${b} (unfinished)`);
+      for (const cp of leftovers) git("branch", "-D", cp);
+      return out({ parked });
+    }
+    case "reset": {
+      const { ref, isSha } = anchor(a);
+      if (isSha && !(b && /^[A-Za-z0-9-]+$/.test(b))) throw new Error("usage: orch group-member reset <sha> <stamp> (the stamp is letters, digits and dashes)");
+      const leftovers = childCheckpoints(ref);
+      const parked = moveWorkAside(ref, "discarded", "orch: group reset (discarded)", isSha ? `${BRANCH_PREFIX}discarded-group-${b}` : undefined);
+      for (const cp of leftovers) git("branch", "-D", cp);
+      return out({ parked });
+    }
+    case "head":
+      // `dirty`: uncommitted changes outside .orchestrator; after a group step, a sign something wrote here unasked.
+      return out({ head: git("rev-parse", "HEAD"), dirty: changedFiles() });
+    case "has": {
+      // For a rollback after a failed park or a run that never finished: is the group checkpoint still there (and behind HEAD)?
+      if (!branchExists(checkpoint(a))) return out({ exists: false });
+      anchor(a);
+      return out({ exists: true });
+    }
+    case "verify": {
+      // For a rollback, before anything is reset: a clean tree and a start commit behind HEAD. `ahead`: the commits after it;
+      // `after`: those after the commit the group run ended on (b), the person's own.
+      const { ref } = anchor(a);
+      const dirty = dirtyFiles();
+      if (dirty) throw new Error(`working tree has uncommitted changes; commit or stash them first:\n${dirty}`);
+      let after: number | undefined;
+      if (b && /^[0-9a-f]{7,40}$/i.test(b)) {
+        try {
+          git("merge-base", "--is-ancestor", b, "HEAD");
+          after = Number(git("rev-list", "--count", `${b}..HEAD`));
+        } catch {
+          /* the end commit is gone from this branch: no count */
+        }
+      }
+      return out({ ahead: Number(git("rev-list", "--count", `${ref}..HEAD`)), ...(after === undefined ? {} : { after }) });
+    }
+    case "drop":
+      git("branch", "-D", checkpoint(a));
+      return out({});
+    case "coordinate": {
+      // stdout carries exactly one JSON line: events (ORCH_EVENTS) are off and any other log line goes to stderr.
+      delete process.env.ORCH_EVENTS;
+      const log = console.log;
+      console.log = console.error;
+      let result;
+      try {
+        result = await coordinate(a, values);
+      } finally {
+        console.log = log;
+      }
+      return out(result);
+    }
+    default:
+      throw new Error(
+        "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint|sha stamp> | verify <sha> [end] | has <checkpoint> | head | drop <checkpoint> | coordinate <plan|fault> --group <name>",
+      );
+  }
+}
+
+/**
+ * The run checkpoints a group's children left behind (a failed or stopped `orch run` keeps its own): every
+ * orchestrator/checkpoint-* at or after the group checkpoint. The group checkpoint is the way back, so they go.
+ */
+function childCheckpoints(groupCp: string): string[] {
+  return checkpoints().filter((cp) => {
+    try {
+      git("merge-base", "--is-ancestor", groupCp, cp);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * `orch group-member coordinate plan|fault --group NAME`: the read-only coordinator, run in this repo with the other
+ * member readable. Stdin: {goal, contract?, report?, briefs}; stdout: one JSON line {reply, cost} (the caller parses it).
+ */
+async function coordinate(mode: string | undefined, values: Record<string, string | boolean | string[] | undefined>): Promise<{ reply: object; cost: number }> {
+  const usage = "usage: orch group-member coordinate <plan|fault> --group <name> (JSON {goal, contract?, report?, briefs} on stdin)";
+  if (mode !== "plan" && mode !== "fault") throw new Error(usage);
+  if (typeof values.group !== "string") throw new Error(usage);
+  const g = readGroup(values.group);
+  let input: { goal?: unknown; contract?: unknown; report?: unknown; briefs?: unknown };
+  try {
+    input = JSON.parse(readFileSync(0, "utf8"));
+  } catch (e) {
+    throw new Error(`coordinate: stdin must be JSON {goal, contract?, report?, briefs} (${msg(e)})`, { cause: e });
+  }
+  if (typeof input.goal !== "string" || !input.goal.trim()) throw new Error("coordinate: goal is required");
+  const briefs: Partial<Record<"backend" | "frontend", string>> = {};
+  for (const r of ["backend", "frontend"] as const) {
+    const b = (input.briefs as Record<string, unknown> | undefined)?.[r];
+    if (typeof b === "string" && b.trim()) briefs[r] = b;
+  }
+  const here = realpathSync.native(process.cwd());
+  const norm = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+  const isHere = (p: string) => norm(realpathSync.native(p)) === norm(here);
+  const other = g.repos.find((r) => !isHere(r.path));
+  if (!other || !g.repos.some((r) => isHere(r.path))) throw new Error(`coordinate: ${process.cwd()} is not a member of group "${g.name}"`);
+  const readDir = realpathSync.native(other.path);
+  if (mode === "fault" && (typeof input.contract !== "string" || typeof input.report !== "string"))
+    throw new Error("coordinate fault: contract and report are required");
+  const prompt =
+    mode === "plan"
+      ? coordinatorPlanPrompt(g, input.goal, briefs, typeof input.contract === "string" ? input.contract : g.contract)
+      : coordinatorFaultPrompt(g, input.goal, input.contract as string, redactOutput(input.report as string));
+  const o = parseOpts(values);
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  const roster = configuredRoster(cfg);
+  const agent = roster.find((a) => a.name === "coordinator")!;
+  writeBuiltins(roster);
+  writeAgentSettings(cfg, loadChecks(cfg), o.plugins, [readDir]);
+  const ctx: RunCtx = {
+    budget: { spent: 0, cap: o.maxCost, reserved: 0, launching: 0 },
+    timeoutMs: o.agentTimeoutMs,
+    usageCap: o.usageCap,
+    onLimit: o.onLimit,
+    addDirs: [readDir],
+  };
+  const r = await run(agent, modelFor(o.power, o.models, "architect", "coordinator"), prompt, ctx, true);
+  return { reply: mode === "plan" ? parseGroupPlan(r.text) : parseFaultCall(r.text), cost: round4(ctx.budget.spent) };
+}
 
 /** Undo a goal: reset the current branch to its checkpoint, keeping the discarded work on a branch. */
 function rollback(branch?: string) {
@@ -3174,6 +3433,10 @@ type Opts = {
   intake: IntakeSource[];
   /** Paths no task may change (default: .github/workflows/). */
   protect: string[];
+  /** --group-context: the file's text (other repos of the group, API contract), for architect, implementers and QA. */
+  groupContext?: string;
+  /** --read-dir: other repos of a group; agents may read them (--add-dir), never write there. Resolved, real paths. */
+  readDirs: string[];
   /** Refuse to commit known key formats, private keys and .env files. */
   secretScan: boolean;
   /** Comment on the GitHub issue a goal came from (start, done, failed, blocked). */
@@ -3294,6 +3557,7 @@ async function makePlan(
         : "") +
     (notes ? `\nNotes from earlier goals in this repo (pitfalls and decisions; follow them unless this goal says otherwise):\n${notes}\n` : "") +
     specForPrompt() +
+    (ctx.groupContext ? `\n${ctx.groupContext}\n` : "") +
     VISUAL_HINT +
     (previous ? `\n${previous}\n` : "") +
     (failures.length ? `\nPrevious QA failures to fix:\n- ${failures.join("\n- ")}\n` : "") +
@@ -3836,7 +4100,7 @@ function acceptSplit(brief: string, goals: SplitGoal[]): number[] {
 }
 
 /** A brief from --brief-file (deleted afterwards with --brief-file-temp, as the UI's backends pass it) or the words. */
-function briefFrom(values: Record<string, string | boolean | undefined>, words: string[]): string {
+function briefFrom(values: Record<string, string | boolean | string[] | undefined>, words: string[]): string {
   const file = values["brief-file"] ?? values["spec-file"];
   if (!file) return words.join(" ");
   const text = readFileSync(String(file), "utf8");
@@ -3849,7 +4113,7 @@ function briefFrom(values: Record<string, string | boolean | undefined>, words: 
  * edits it); `--accept` queues goals given on stdin as {brief, goals}; neither: both at once. `--start` then runs the
  * loop until the queue is empty.
  */
-async function split(values: Record<string, string | boolean | undefined>, words: string[]) {
+async function split(values: Record<string, string | boolean | string[] | undefined>, words: string[]) {
   const o = { ...parseOpts(values), park: true };
   if (values.accept) {
     const input = JSON.parse(readFileSync(0, "utf8")) as { brief?: unknown; goals?: unknown };
@@ -3980,7 +4244,8 @@ async function coverageCheck(o: Opts): Promise<{ queued: number; cost: number }>
 // ---------- --approve-plan: a human approves, edits or rejects each plan ----------
 type Decision = { round: number; action: "approve" | "reject"; plan?: Plan; note?: string };
 /** Agents that may get tasks, as `orch approve` sees them (it cannot know a run's --reviewers; the run checks again). */
-const taskAgents = (roster: Entry[], extra: string[] = []) => roster.filter((a) => !["architect", "critic", "reviewer", ...extra].includes(a.name));
+const taskAgents = (roster: Entry[], extra: string[] = []) =>
+  roster.filter((a) => !["architect", "critic", "reviewer", "coordinator", ...extra].includes(a.name));
 
 /** Show the plan and wait (without a time limit) for `orch approve`. `error`: why the previous answer was not usable. */
 async function awaitDecision(goal: string, round: number, plan: Plan, error?: string): Promise<Decision> {
@@ -4014,7 +4279,7 @@ async function awaitDecision(goal: string, round: number, plan: Plan, error?: st
 }
 
 /** `orch approve`: answer the waiting plan. Checks an edited plan here, so a mistake is reported at once. */
-function approve(values: Record<string, string | boolean | undefined>) {
+function approve(values: Record<string, string | boolean | string[] | undefined>) {
   if (!existsSync(PLAN_PENDING)) throw new Error("no plan is waiting for approval in this repo");
   const pending = JSON.parse(readFileSync(PLAN_PENDING, "utf8")) as { round: number };
   const d: Decision = { round: pending.round, action: values.reject !== undefined ? "reject" : "approve" };
@@ -4197,7 +4462,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const reviewerNames = o.review === null ? [] : o.review.length ? o.review : ["reviewer"];
   for (const n of reviewerNames) if (!byName.has(n)) throw new Error(`reviewer "${n}" is not an agent (known: ${[...byName.keys()].join(", ")})`);
   const swapTargets = new Set(Object.values(cfg.swap ?? {}));
-  const workers = roster.filter((a) => !["architect", "critic", "reviewer", ...reviewerNames].includes(a.name) && !swapTargets.has(a.name));
+  const workers = roster.filter((a) => !["architect", "critic", "reviewer", "coordinator", ...reviewerNames].includes(a.name) && !swapTargets.has(a.name));
   const critic = byName.get("critic");
   /** Diff reviews each round runs next to QA: the critic against the goal, the reviewers for bugs and security. */
   const diffReviewers: { agent: Entry; lens: Lens }[] = [
@@ -4207,14 +4472,14 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const skills = discoverSkills();
   writeBuiltins(roster);
   let checks = loadChecks(cfg);
-  writeAgentSettings(cfg, checks, o.plugins);
+  writeAgentSettings(cfg, checks, o.plugins, o.readDirs);
   const browserCheck = visualSetup(cfg, o);
   /** Checks come from package.json too, which the agents may create or change: read them again each round. */
   const refreshChecks = () => {
     const next = loadChecks(cfg);
     if (JSON.stringify(next) === JSON.stringify(checks)) return;
     checks = next;
-    writeAgentSettings(cfg, checks, o.plugins);
+    writeAgentSettings(cfg, checks, o.plugins, o.readDirs);
     console.log(
       `checks now: ${
         Object.entries(checks)
@@ -4255,6 +4520,9 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   ctx.resume = o.resume;
   ctx.ask = o.ask;
   ctx.commandTimeoutMs = o.commandTimeoutMs || undefined;
+  // A group's member run: the other repos are readable, and the architect sees the group section (others get it in repoContext).
+  if (o.readDirs.length) ctx.addDirs = o.readDirs;
+  if (o.groupContext) ctx.groupContext = o.groupContext;
 
   for (let round = 1; round <= o.maxRounds; round++) {
     ctx.questionRound = round;
@@ -4363,7 +4631,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       (cfg.setup
         ? `## Dependencies\nNever install packages yourself. To add one, add it to the manifest (package.json, requirements.txt, ` +
           `pyproject.toml, go.mod, ...); the orchestrator runs \`${cfg.setup}\` before the checks.\n\n`
-        : "");
+        : "") +
+      (o.groupContext ? `${o.groupContext}\n\n` : "");
     console.log(`plan: ${plan.summary}\n` + plan.tasks.map((t) => `  [${t.phase}] ${t.agent}: ${t.task.slice(0, 70)}`).join("\n"));
     const planTokens = tokenUsageDelta(ctx.budget.tokens, planTokensBefore);
     emit("plan", {
@@ -5190,7 +5459,7 @@ async function loop(o: Opts, pollSec: number, untilEmpty: boolean) {
   }
 }
 
-function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
+function parseOpts(values: Record<string, string | boolean | string[] | undefined>): Opts {
   const maxRounds = Number(values["max-rounds"]);
   if (!Number.isInteger(maxRounds) || maxRounds < 1) throw new Error(`--max-rounds must be a whole number of at least 1, got "${values["max-rounds"]}"`);
   const power = String(values.power);
@@ -5228,12 +5497,24 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const fromCfg = Array.isArray(cfg.review) ? cfg.review.map(String) : [];
   const review = named.length ? named : values.review || cfg.review === true ? [] : fromCfg.length ? fromCfg : null;
   for (const a of review ?? []) if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(a)) throw new Error(`--reviewers: "${a}" is not an agent name`);
-  const pr = !!values.pr || cfg.pr === true;
+  // A group's member run commits on the repo's current branch, with no PR, plan approval, worktrees or questions: the
+  // group owns the checkpoint, the plan approval and the end. The repo's own config for those is ignored there.
+  const groupMember = !!process.env.ORCH_GROUP_LOCK || values["group-context"] !== undefined;
+  const asked = {
+    pr: !!values.pr || cfg.pr === true,
+    branch: !!values.branch || cfg.branch === true,
+    worktrees: !values["no-worktrees"] && (!!values.worktrees || cfg.worktrees === true),
+    approvePlan: !!values["approve-plan"] || cfg.approvePlan === true,
+    ask: !values["no-ask"] && (!!values.ask || cfg.ask === true),
+  };
+  const ignored = groupMember ? Object.keys(asked).filter((k) => asked[k as keyof typeof asked]) : [];
+  if (ignored.length) console.warn(`note: a group member run ignores ${ignored.join(", ")} (the group commits on the current branch)`);
+  const pr = !groupMember && asked.pr;
   // A pull request needs a branch of its own.
-  const branch = pr || !!values.branch || cfg.branch === true;
-  const worktrees = !values["no-worktrees"] && (!!values.worktrees || cfg.worktrees === true);
-  const approvePlan = !!values["approve-plan"] || cfg.approvePlan === true;
-  const ask = !values["no-ask"] && (!!values.ask || cfg.ask === true);
+  const branch = !groupMember && (pr || asked.branch);
+  const worktrees = !groupMember && asked.worktrees;
+  const approvePlan = !groupMember && asked.approvePlan;
+  const ask = !groupMember && asked.ask;
   const commands = !values["no-commands"] && (!!values.commands || cfg.commands === "ask" || cfg.commands === true);
   const commandMinutes = Number(values["command-timeout"] ?? cfg.commandTimeout ?? 10);
   if (!(commandMinutes > 0 && commandMinutes <= 24 * 60))
@@ -5263,6 +5544,7 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
   const fast = values["no-fast"] ? false : values.fast ? true : cfg.fast !== undefined ? cfg.fast === true : !(approvePlan || critic || values["dry-run"]);
   const retries = Number(values.retries ?? cfg.retries ?? 1);
   if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
+  const { groupContext, readDirs } = memberFlags(values);
   return {
     maxRounds,
     power: power as Power,
@@ -5297,7 +5579,166 @@ function parseOpts(values: Record<string, string | boolean | undefined>): Opts {
     visual,
     strictFiles,
     maxCostTotal,
+    ...(groupContext ? { groupContext } : {}),
+    readDirs,
   };
+}
+
+/** A group's member run: --group-context names a readable file, each --read-dir an existing directory other than this repo. */
+function memberFlags(values: Record<string, string | boolean | string[] | undefined>): { groupContext?: string; readDirs: string[] } {
+  const file = values["group-context"];
+  let groupContext = "";
+  if (typeof file === "string") {
+    try {
+      groupContext = readFileSync(file, "utf8").trim();
+    } catch (e) {
+      throw new Error(`--group-context: cannot read "${file}" (${msg(e)})`, { cause: e });
+    }
+  }
+  const raw = values["read-dir"];
+  const here = realpathSync.native(process.cwd());
+  const same = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
+  const readDirs: string[] = [];
+  // The path goes into deny rules (readDenyRules), which read these characters as a pattern: such a rule could match
+  // other paths, or miss this one. A UNC path has no drive form for a rule. Spaces and parentheses are fine.
+  const glob = /[[\]*?{}!]/;
+  const unc = (p: string) => /^[\\/]{2}/.test(p);
+  for (const d of Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []) {
+    if (unc(d)) throw new Error(`--read-dir: "${d}" is a network (UNC) path; give the group a local directory`);
+    let real: string;
+    try {
+      real = realpathSync.native(resolve(d));
+    } catch {
+      throw new Error(`--read-dir: "${d}" does not exist`);
+    }
+    if (unc(real)) throw new Error(`--read-dir: "${d}" is a network (UNC) path (${real}); give the group a local directory`);
+    if (glob.test(real))
+      throw new Error(`--read-dir: "${real}" has a character that permission rules read as a pattern ([ ] * ? { } !); move or rename the repo`);
+    if (!statSync(real).isDirectory()) throw new Error(`--read-dir: "${d}" is not a directory`);
+    if (same(real, here)) throw new Error(`--read-dir: "${d}" is this repo itself`);
+    // Its deny rules would cover this repo too (or the other way round): only a separate directory makes sense.
+    const inside = (a: string, b: string) => {
+      const r = relative(process.platform === "win32" ? b.toLowerCase() : b, process.platform === "win32" ? a.toLowerCase() : a);
+      return !!r && !r.startsWith("..") && !isAbsolute(r);
+    };
+    if (inside(here, real) || inside(real, here)) throw new Error(`--read-dir: "${d}" contains this repo or lies inside it`);
+    if (!readDirs.some((x) => same(x, real))) readDirs.push(real);
+  }
+  return { ...(groupContext ? { groupContext } : {}), readDirs };
+}
+
+type GroupFlags = {
+  repo?: string[];
+  env?: string[];
+  json?: boolean;
+  "serve-command"?: string;
+  "serve-url"?: string;
+  "base-url"?: string;
+  power?: string;
+  model?: string;
+  "max-cost"?: string;
+  "max-rounds"?: string;
+  "agent-timeout"?: string;
+  "approve-plan"?: boolean;
+  fast?: boolean;
+  "no-fast"?: boolean;
+};
+
+/** `orch group run NAME "<goal>"`: exits 0 pass, 1 fail, 3 usage limit, 130 stopped. */
+async function groupRun(name: string | undefined, goal: string, values: GroupFlags): Promise<never> {
+  if (!name || !goal.trim()) throw new Error('usage: orch group run NAME "<goal>"');
+  const power = String(values.power ?? "heavy");
+  if (!Object.hasOwn(POWER, power)) throw new Error(`--power must be one of ${Object.keys(POWER).join(", ")}, got "${power}"`);
+  const agentTimeout = Number(values["agent-timeout"] ?? 30);
+  if (!(agentTimeout > 0)) throw new Error(`--agent-timeout must be a positive number of minutes, got "${values["agent-timeout"]}"`);
+  const maxRounds = Number(values["max-rounds"] ?? 5);
+  if (!Number.isInteger(maxRounds) || maxRounds < 1) throw new Error(`--max-rounds must be a whole number of at least 1, got "${values["max-rounds"]}"`);
+  let maxCost: number | undefined;
+  if (values["max-cost"] !== undefined) {
+    maxCost = Number(values["max-cost"]);
+    if (!(maxCost > 0)) throw new Error(`--max-cost must be a positive amount in USD, got "${values["max-cost"]}"`);
+  }
+  const outcome = await runGroup(
+    readGroup(name),
+    goal.trim(),
+    {
+      power,
+      agentTimeout,
+      maxRounds,
+      approvePlan: !!values["approve-plan"],
+      ...(maxCost !== undefined ? { maxCost } : {}),
+      ...(values.model ? { model: values.model } : {}),
+      ...(values["no-fast"] ? { fast: false } : values.fast ? { fast: true } : {}),
+    },
+    { acquireRunLock, releaseRunLock, writeFileAtomic },
+  );
+  return process.exit(GROUP_EXIT[outcome]);
+}
+
+async function groupCommand(args: string[], values: GroupFlags) {
+  const [sub, name] = args;
+  if (sub === "run") return groupRun(name, args.slice(2).join(" "), values);
+  if (sub === "rollback") {
+    if (!name) throw new Error("usage: orch group rollback NAME");
+    return rollbackGroup(readGroup(name), { acquireRunLock, releaseRunLock, writeFileAtomic });
+  }
+  if (sub === "stop") {
+    if (!name) throw new Error("usage: orch group stop NAME");
+    return stopGroup(name);
+  }
+  if (sub === "add") {
+    if (!name) throw new Error("usage: orch group add NAME --repo PATH:backend --repo PATH:frontend [options]");
+    const repos: GroupRepo[] = (values.repo ?? []).map((spec) => {
+      const i = spec.lastIndexOf(":"); // a Windows path has a colon too: the role follows the last one
+      if (i <= 0) throw new Error(`--repo wants PATH:ROLE (backend or frontend), got "${spec}"`);
+      return { path: resolve(spec.slice(0, i)), role: spec.slice(i + 1) } as GroupRepo; // relative to where orch runs
+    });
+    const be = repos.find((r) => r.role === "backend");
+    const fe = repos.find((r) => r.role === "frontend");
+    const url = values["serve-url"];
+    if (url) {
+      if (!be) throw new Error("--serve-url needs a backend repo");
+      be.serve = {
+        url,
+        ...(values["serve-command"] ? { command: values["serve-command"] } : {}),
+        ...(values["base-url"] ? { baseUrl: values["base-url"] } : {}),
+      };
+    } else if (values["serve-command"] || values["base-url"]) throw new Error("--serve-command and --base-url need --serve-url");
+    if (values.env?.length) {
+      if (!fe) throw new Error("--env needs a frontend repo");
+      fe.env = {};
+      for (const e of values.env) {
+        const i = e.indexOf("=");
+        if (i <= 0) throw new Error(`--env wants NAME=VALUE, got "${e}"`);
+        fe.env[e.slice(0, i)] = e.slice(i + 1);
+      }
+    }
+    // Saving over an existing group (the UI's Edit) keeps what only its file sets: the standing contract and integrationRounds.
+    let kept: Partial<GroupConfig> = {};
+    try {
+      const { contract, integrationRounds } = readGroup(name);
+      kept = { ...(contract !== undefined ? { contract } : {}), ...(integrationRounds !== undefined ? { integrationRounds } : {}) };
+    } catch {
+      /* a new group, or an unreadable one that this save replaces */
+    }
+    const g = validateGroup({ name, repos, ...kept });
+    writeGroup(g, writeFileAtomic);
+    return console.log(`group "${g.name}" saved`);
+  }
+  if (sub === "list") {
+    const groups: GroupConfig[] = listGroups();
+    // `dir`: the group's run dir (lock, stop file, pending plan); the UI backends key a group's session by it.
+    if (values.json) return console.log(JSON.stringify(groups.map((g) => ({ ...g, dir: groupDir(g.name) }))));
+    if (!groups.length) return console.log("no groups");
+    for (const g of groups) console.log(`${g.name}: ${g.repos.map((r) => `${r.role} ${r.path}`).join(", ")}`);
+    return;
+  }
+  if (sub === "remove") {
+    if (!name) throw new Error("usage: orch group remove NAME");
+    removeGroup(name);
+    return console.log(`group "${name}" removed`);
+  }
+  throw new Error('usage: orch group add NAME --repo PATH:ROLE ... | list [--json] | remove NAME | run NAME "<goal>" | stop NAME');
 }
 
 async function main() {
@@ -5326,6 +5767,7 @@ async function main() {
       "no-resume": { type: "boolean", default: false },
       critic: { type: "boolean", default: false },
       "diff-critic": { type: "boolean", default: false },
+      group: { type: "string" },
       branch: { type: "boolean", default: false },
       worktrees: { type: "boolean", default: false },
       "no-worktrees": { type: "boolean", default: false },
@@ -5365,6 +5807,13 @@ async function main() {
       details: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
       warm: { type: "boolean", default: false },
+      repo: { type: "string", multiple: true },
+      "serve-command": { type: "string" },
+      "serve-url": { type: "string" },
+      "base-url": { type: "string" },
+      env: { type: "string", multiple: true },
+      "group-context": { type: "string" },
+      "read-dir": { type: "string", multiple: true },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -5454,6 +5903,8 @@ async function main() {
       return learn(o);
     }
     case "approve":
+      if (typeof values.group === "string")
+        return approveGroup(values.group, values.reject, values["plan-stdin"] ? readFileSync(0, "utf8") : undefined, writeFileAtomic);
       return approve(values);
     case "answer":
       if (rest.length !== 1) throw new Error("usage: orch answer ID (answer on stdin)");
@@ -5578,6 +6029,10 @@ async function main() {
       console.log(b ? `browser: ${b.path} (${b.via})` : 'browser: none found; run "orch browser install" or set YAAIORCH_BROWSER');
       return console.log(`profile for this repo: ${profileDir()}`);
     }
+    case "group":
+      return groupCommand(rest, values);
+    case "group-member":
+      return groupMember(rest, values);
     case "rollback":
       acquireRunLock("rollback");
       return rollback(rest[0]);
@@ -5610,6 +6065,26 @@ export {
   TRANSIENT_RE,
   saveAgent,
   activityReader,
+  validateGroup,
+  readGroup,
+  writeGroup,
+  listGroups,
+  removeGroup,
+  memberOf,
+  backendBaseUrl,
+  groupEnv,
+  groupServe,
+  groupsDir,
+  groupSection,
+  coordinatorPlanPrompt,
+  coordinatorFaultPrompt,
+  parseGroupPlan,
+  parseFaultCall,
+  childShare,
+  groupCostArgs,
+  readDenyRules,
+  acquireRunLock,
+  releaseRunLock,
 };
 
 if (!process.env.ORCH_NO_MAIN)

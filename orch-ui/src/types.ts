@@ -45,7 +45,26 @@ export type LastRun = {
 } | null;
 export type Running = { pid: number; label: string; startedAt: number } | null;
 /** One repo's state. `queued`: a start is waiting (for a free slot, the usage limit or the daily budget); `waitReason` says which. */
-export type State = { repo: string; running: Running; queued?: boolean; waitReason?: string; queue: Item[]; lastRun: LastRun };
+export type State = {
+  repo: string;
+  running: Running;
+  queued?: boolean;
+  waitReason?: string;
+  queue: Item[];
+  lastRun: LastRun;
+  /** A repo group's session (keyed by the group's run dir): its config. Absent for a repo. */
+  group?: GroupConfig;
+  /** A repo whose group runs (or waits to start): the group's name. Its own starts are refused meanwhile. */
+  inGroup?: string;
+};
+/** One repo of a group (`orch group list --json`). `serve`: how the group starts the backend; `env`: the frontend's. */
+export type GroupRepoConfig = {
+  path: string;
+  role: GroupRole;
+  serve?: { command?: string; url: string; baseUrl?: string; timeout?: number };
+  env?: Record<string, string>;
+};
+export type GroupConfig = { name: string; repos: GroupRepoConfig[]; contract?: string; integrationRounds?: number; dir: string };
 /** Shared by all repos: the usage-limit hold and the daily budget. */
 export type UsageWindow = "fiveHour" | "week";
 export type Global = {
@@ -166,6 +185,40 @@ export type RunView = {
   tokens?: TokenUsage;
   startedAt: number;
   rounds: RoundView[];
+  /** `orch group run`: the group's own events (`group_start` … `group_end`, `group_rollback`). */
+  group?: GroupView;
+};
+
+export type GroupRole = "backend" | "frontend";
+/** A repo group's run, folded from its `group_*` events; the members' own events go to their repos' sessions. */
+export type GroupView = {
+  name: string;
+  goal: string;
+  repos: { path: string; role: GroupRole }[];
+  /** The coordinator's API contract (`group_plan`; a revised one replaces it) and one goal per repo. */
+  contract?: string;
+  goals?: Partial<Record<GroupRole, string>>;
+  /** The latest `group_step`: build, integration or fix, the member it started (a role) and the round. */
+  step?: "build" | "integration" | "fix";
+  stepRepo?: GroupRole;
+  round?: number;
+  skipped?: string;
+  failed?: string;
+  /** Integration ran against a backend the group did not start (no serve command). */
+  external?: boolean;
+  /** The latest `group_fault`: who the coordinator blamed for a failed integration and their fix goals. */
+  fault?: { side: GroupRole | "both"; goals: Partial<Record<GroupRole, string>> };
+  /** `group_end`: ok, why it failed, and where each member's work was parked (null: nothing to park). */
+  ok?: boolean;
+  reason?: string;
+  parked?: Partial<Record<GroupRole, string | null>>;
+  /** `group_end`: members whose park failed; their group checkpoint is kept and `orch group rollback` resets them to it. */
+  kept?: Partial<Record<GroupRole, string>>;
+  /** --approve-plan: the coordinator's plan waiting for an answer (`group_approval_wait`), cleared by `group_approval`. */
+  approval?: { round: number; contract: string; goals: Partial<Record<GroupRole, string>> };
+  /** `group_rollback`: the members were reset to the run's start; their later work is on these branches. */
+  rolledBack?: boolean;
+  rolledBackParked?: Partial<Record<GroupRole, string | null>>;
 };
 
 /** Agent M: a shell command an agent asked to run (--commands). `decision` once answered: allow, always, deny, timeout or cancelled. */

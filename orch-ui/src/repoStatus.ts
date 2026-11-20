@@ -11,7 +11,8 @@ export function repoStatus(s: Session, now = Date.now()): { tone: string; label:
   if (s.state.running && s.run?.waitingUntil && s.run.waitingUntil > now)
     return { tone: "warn", label: s.run.waitingReason === "usage_cap" ? "paused at your usage cap" : "waiting for the usage limit" };
   if (s.state.running && s.state.queue.some((i) => i.note?.startsWith("usage limit"))) return { tone: "warn", label: "waiting for the usage limit" };
-  if (s.state.running && s.run?.approval) return { tone: "warn", label: "waiting for your plan approval" };
+  if (s.state.running && (s.run?.approval || s.run?.group?.approval)) return { tone: "warn", label: "waiting for your plan approval" };
+  if (s.state.inGroup && !s.state.running) return { tone: "running", label: `in group ${s.state.inGroup}` };
   if (s.state.running) return { tone: "running", label: s.state.running.label };
   if (s.state.queued) return { tone: "warn", label: `waiting: ${s.state.waitReason ?? "free slot"}` };
   const last = s.run?.status ?? s.state.lastRun?.status;

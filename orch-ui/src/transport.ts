@@ -70,7 +70,22 @@ export interface Transport {
   agentMAsk(question: string, session?: string): Promise<AgentMReply>;
   /** Agent M: gather the machine status in the background so the first question is quick (fire and forget). */
   agentMWarm(): Promise<void>;
+  /** Create a repo group, or save over one of that name (`orch group add`). */
+  saveGroup(g: GroupForm): Promise<void>;
+  /** Delete a repo group's config (refused while it runs); its repos are not touched. */
+  removeGroup(name: string): Promise<void>;
 }
+
+/** A repo group as the form edits it: absolute folders, the backend's serve, the frontend's env ({backend}: its URL). */
+export type GroupForm = {
+  name: string;
+  backend: string;
+  frontend: string;
+  serveUrl?: string;
+  serveCommand?: string;
+  baseUrl?: string;
+  env?: Record<string, string>;
+};
 
 // ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
 // Every /api call carries the server's session token (see refuse() in server.ts); a restarted server has a
@@ -216,6 +231,8 @@ const web: Transport = {
   swapAgent: (repo, role, target) => post("agents/swap", { repo, role, target }),
   agentMAsk: (question, session) => post("agent-m/ask", { question, session }),
   agentMWarm: () => post("agent-m/warm", {}),
+  saveGroup: (g) => post("group-save", g),
+  removeGroup: (name) => post("group-remove", { name }),
 };
 
 // ---------- desktop: Tauri commands + events ----------
@@ -306,6 +323,8 @@ const tauri: Transport = {
   swapAgent: (repo, role, target) => tauriInvoke("swap_agent", { repo, role, target }),
   agentMAsk: (question, session) => tauriInvoke<AgentMReply>("agent_m_ask", { question, session }),
   agentMWarm: () => tauriInvoke("agent_m_warm"),
+  saveGroup: (g) => tauriInvoke("save_group", g),
+  removeGroup: (name) => tauriInvoke("remove_group", { name }),
 };
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

@@ -115,6 +115,14 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Worktree per build task** (`--worktrees`, `"worktrees": true`, or **Isolate build tasks**): parallel build agents start from the same round snapshot. Orch applies each task's changes back after it finishes; a merge conflict keeps that task's worktree and reports its path. Opt-in; requires Git.
 - [x] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri; the browser's in
   browser mode; **Notify** in the header).
+- [x] **Repo groups in the UI**: a group page per group (define, start, approve, stop through `orch group stop`,
+  roll back; contract, goals, step and outcome), events `group_approval_wait` / `group_approval`, member repos marked
+  busy (`inGroup`) and refusing their own starts, a group start refused while a member runs.
+- [ ] **Repo groups: more than two repos and other roles** (several backends, a shared library, a mobile app).
+- [ ] **Repo groups: `--on-limit wait`.** A usage limit parks both repos as interrupted and exits 3; waiting for the
+  reset and resuming the parked work is not built.
+- [ ] **Repo groups: PR mode** (a branch and pull request per repo, linked to each other).
+- [ ] **Repo groups: evals** (cases with a backend and a frontend repo, graded by hidden tests on both).
 
 ## Greenfield
 

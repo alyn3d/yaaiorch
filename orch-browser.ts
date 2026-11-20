@@ -310,7 +310,11 @@ export class DevServer {
   private out = "";
   private discoveredUrl?: string;
   private startError?: string;
-  constructor(readonly cfg: ServeConfig) {}
+  /** `cwd`: where the command runs (default: this process's cwd, the repo of a plain run). */
+  constructor(
+    readonly cfg: ServeConfig,
+    private readonly opts: { cwd?: string } = {},
+  ) {}
 
   get url(): string {
     return this.discoveredUrl ?? this.cfg.url;
@@ -359,6 +363,22 @@ export class DevServer {
     this.proc = undefined;
   }
 
+  /** Whether this server started a process that is still running (a URL that answers may be someone else's). */
+  get running(): boolean {
+    return !!this.proc && this.proc.exitCode === null && this.proc.signalCode === null;
+  }
+
+  /** Whether anything answers at the URL right now, started by this server or not. */
+  answering(): Promise<boolean> {
+    return this.url === "auto" ? Promise.resolve(false) : answers(this.url);
+  }
+
+  /** Stop, then wait (up to 5 s) until the URL no longer answers, so a later start does not find the old process. */
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    for (let i = 0; i < 20 && (await this.answering()); i++) await sleep(250);
+  }
+
   private start() {
     console.log(`starting the dev server: ${this.cfg.command}`);
     this.out = "";
@@ -371,7 +391,7 @@ export class DevServer {
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, BROWSER: "none", FORCE_COLOR: "0" },
-      cwd: this.cfg.auto ? join(process.cwd(), this.cfg.auto.directory) : process.cwd(),
+      cwd: this.cfg.auto ? join(this.opts.cwd ?? process.cwd(), this.cfg.auto.directory) : (this.opts.cwd ?? process.cwd()),
     });
     const keep = (d: Buffer) => (this.out = (this.out + d.toString()).slice(-8000));
     p.stdout?.on("data", keep);
@@ -380,7 +400,8 @@ export class DevServer {
     this.proc = p;
   }
 
-  private tail() {
+  /** The server's last output, for a failure report. */
+  tail() {
     return this.out.trim().slice(-1500) || "(no output)";
   }
 }

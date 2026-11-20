@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 alyn3d and contributors
 // SPDX-License-Identifier: GPL-3.0-only
 
-import type { OrchEvent, RoundView, RunView, TaskView, TokenUsage } from "./types";
+import type { GroupView, OrchEvent, RoundView, RunView, TaskView, TokenUsage } from "./types";
 import { isActivity } from "./runProgress";
 
 const addTokens = (a?: TokenUsage, b?: TokenUsage): TokenUsage | undefined => {
@@ -24,9 +24,57 @@ const updTask = (r: RoundView, id: number, fn: (t: TaskView) => TaskView): Round
   tasks: r.tasks.map((t) => (t.id === id ? fn(t) : t)),
 });
 
+/** Without the keys whose value is undefined: a step's skipped/failed must not linger from the step before. */
+const defined = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
+const updGroup = (run: RunView | null, fn: (g: GroupView) => GroupView): RunView | null => (run && run.group ? { ...run, group: fn(run.group) } : run);
+
 /** Fold one structured orchestrator event into the run view. */
 export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
   switch (ev.type) {
+    case "group_child": {
+      // A member's own event, wrapped by `orch group run`: the backends route it to that repo's session; here only
+      // when no session has that repo. The group's view survives a child's goal_start.
+      if (!ev.event || typeof ev.event !== "object" || typeof ev.event.type !== "string") return run;
+      const next = reduce(run, ev.event as OrchEvent);
+      return next && run?.group && next.group !== run.group ? { ...next, group: run.group } : next;
+    }
+    case "group_start":
+      return {
+        goal: ev.goal,
+        maxRounds: ev.maxRounds ?? 0,
+        dryRun: false,
+        status: "running",
+        startedAt: ev.t,
+        rounds: [],
+        cost: 0,
+        group: { name: ev.group, goal: ev.goal, repos: Array.isArray(ev.repos) ? ev.repos : [] },
+      };
+    case "group_plan":
+      return run?.group
+        ? updGroup({ ...run, cost: run.cost + (ev.cost ?? 0) }, (g) => ({ ...g, contract: ev.contract, ...(ev.revised ? {} : { goals: ev.goals }) }))
+        : run;
+    case "group_approval_wait":
+      return updGroup(run, (g) => ({ ...g, approval: { round: ev.round, contract: ev.contract ?? "", goals: ev.goals ?? {} } }));
+    case "group_approval":
+      return updGroup(run, (g) => defined({ ...g, approval: undefined }));
+    case "group_step":
+      return updGroup(run, (g) =>
+        defined({ ...g, step: ev.step, stepRepo: ev.repo, round: ev.round, skipped: ev.skipped, failed: ev.failed, external: ev.external }),
+      );
+    case "group_fault":
+      return run?.group ? updGroup({ ...run, cost: run.cost + (ev.cost ?? 0) }, (g) => ({ ...g, fault: { side: ev.fault, goals: ev.goals ?? {} } })) : run;
+    case "group_end":
+      return run?.group
+        ? updGroup({ ...run, status: ev.ok ? "passed" : "failed", endedAt: ev.t, error: ev.reason }, (g) => ({
+            ...g,
+            ok: !!ev.ok,
+            reason: ev.reason,
+            parked: ev.parked,
+            kept: ev.kept,
+          }))
+        : run;
+    case "group_rollback":
+      return updGroup(run, (g) => ({ ...g, rolledBack: true, rolledBackParked: ev.parked }));
     case "goal_start":
       return {
         goal: ev.goal,

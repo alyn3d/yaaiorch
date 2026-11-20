@@ -408,6 +408,14 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
     for (const e of [{ type: "task_end" }, { type: "plan" }, { type: "goal_end", passed: false, usageLimit: true }, { type: "loop_stop", reason: "requested" }])
       assert.equal(n("shop", "g", e), null, e.type);
   });
+  test("a group goal that passed or failed, a group plan waiting", () => {
+    assert.deepEqual(n("shop", "orders", { type: "group_end", ok: true }), { title: "shop: group goal passed", body: "orders" });
+    assert.deepEqual(n("shop", "orders", { type: "group_end", ok: false, reason: "integration failed" }), {
+      title: "shop: group goal failed",
+      body: "orders\nintegration failed",
+    });
+    assert.equal(n("shop", "orders", { type: "group_approval_wait", round: 1 }).title, "shop: group plan waiting for you");
+  });
 });
 
 describe("per-repo run settings", () => {
@@ -884,6 +892,89 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     assert.equal(run.pr.url, "https://example.com/pr/1");
     assert.equal(reduce(null, { type: "plan", round: 1, tasks: [], t: 1 }), null, "nothing to fold into before goal_start");
     assert.equal(reduce(run, { type: "something_new", t: 1 }), run, "unknown events change nothing");
+  });
+
+  test("group_child folds its inner event like a bare one", () => {
+    const bare = fold([...start, { type: "task_start", round: 1, id: 0 }]);
+    const wrapped = fold([...start, { type: "group_child", repo: "/r/api", role: "backend", event: { type: "task_start", round: 1, id: 0, t: 1003 } }]);
+    assert.equal(wrapped.rounds[0].tasks[0].status, "running");
+    assert.deepEqual(wrapped, bare);
+    assert.equal(reduce(null, { type: "group_child", repo: "/r/api", t: 1, event: { type: "plan", round: 1, tasks: [], t: 1 } }), null);
+    assert.equal(reduce(bare, { type: "group_child", t: 1 }), bare, "a group_child without an event changes nothing");
+  });
+
+  test("group events fill run.group: start, plan, steps, fault, end and rollback", () => {
+    const repos = [
+      { path: "/r/api", role: "backend" },
+      { path: "/r/web", role: "frontend" },
+    ];
+    let run = fold([
+      { type: "group_start", group: "shop", goal: "checkout", repos },
+      { type: "group_plan", contract: "POST /orders", goals: { backend: "b", frontend: "f" }, cost: 0.25 },
+      { type: "group_step", step: "build", repo: "backend", round: 1 },
+    ]);
+    assert.equal(run.goal, "checkout");
+    assert.equal(run.status, "running");
+    assert.equal(run.cost, 0.25);
+    assert.deepEqual(run.group, {
+      name: "shop",
+      goal: "checkout",
+      repos,
+      contract: "POST /orders",
+      goals: { backend: "b", frontend: "f" },
+      step: "build",
+      stepRepo: "backend",
+      round: 1,
+    });
+    // A wrapped child goal_start must not drop the group (fallback: no session for that repo).
+    run = reduce(run, { type: "group_child", repo: "/r/api", role: "backend", t: 5, event: { type: "goal_start", goal: "b", maxRounds: 2, t: 5 } });
+    assert.equal(run.group.name, "shop");
+    run = reduce(run, { type: "group_step", step: "integration", repo: "frontend", round: 1, external: true, t: 6 });
+    assert.equal(run.group.external, true);
+    run = reduce(run, { type: "group_step", step: "integration", round: 1, failed: "the backend did not come up", t: 6 });
+    assert.equal(run.group.external, undefined, "external does not linger from the step before");
+    assert.equal(run.group.step, "integration");
+    assert.equal(run.group.stepRepo, undefined);
+    assert.equal(run.group.failed, "the backend did not come up");
+    run = reduce(run, { type: "group_fault", fault: "frontend", goals: { frontend: "fix" }, cost: 0.1, revised: true, t: 7 });
+    run = reduce(run, { type: "group_plan", contract: "POST /orders v2", goals: { frontend: "fix" }, cost: 0, revised: true, t: 8 });
+    assert.deepEqual(run.group.fault, { side: "frontend", goals: { frontend: "fix" } });
+    assert.equal(run.group.contract, "POST /orders v2");
+    assert.deepEqual(run.group.goals, { backend: "b", frontend: "f" }, "a revised contract keeps the plan's goals");
+    run = reduce(run, {
+      type: "group_end",
+      ok: false,
+      reason: "integration failed",
+      parked: { backend: "orchestrator/failed-1", frontend: null },
+      kept: { frontend: "orchestrator/group-checkpoint-1" },
+      t: 9,
+    });
+    assert.deepEqual(run.group.kept, { frontend: "orchestrator/group-checkpoint-1" });
+    assert.equal(run.status, "failed");
+    assert.equal(run.endedAt, 9);
+    assert.equal(run.error, "integration failed");
+    assert.equal(run.group.ok, false);
+    assert.deepEqual(run.group.parked, { backend: "orchestrator/failed-1", frontend: null });
+    run = reduce(run, { type: "group_rollback", group: "shop", parked: { backend: "orchestrator/discarded-1" }, t: 10 });
+    assert.equal(run.group.rolledBack, true);
+    assert.deepEqual(run.group.rolledBackParked, { backend: "orchestrator/discarded-1" });
+    const passed = reduce(fold([{ type: "group_start", group: "shop", goal: "g", repos }]), { type: "group_end", ok: true, t: 20 });
+    assert.equal(passed.status, "passed");
+    assert.equal(passed.group.ok, true);
+    assert.equal(reduce(null, { type: "group_plan", contract: "c", goals: {}, t: 1 }), null);
+    let waiting = reduce(fold([{ type: "group_start", group: "shop", goal: "g", repos }]), {
+      type: "group_approval_wait",
+      round: 2,
+      contract: "GET /items",
+      goals: { backend: "b" },
+      t: 21,
+    });
+    assert.deepEqual(waiting.group.approval, { round: 2, contract: "GET /items", goals: { backend: "b" } });
+    waiting = reduce(waiting, { type: "group_approval", round: 2, action: "approve", t: 22 });
+    assert.equal("approval" in waiting.group, false, "an answer clears the waiting plan");
+    const plain = fold(start);
+    for (const type of ["group_plan", "group_fault", "group_end", "group_step", "group_rollback", "group_approval_wait", "group_approval"])
+      assert.equal(reduce(plain, { type, cost: 1, ok: true, t: 1 }), plain, `${type} leaves a run without a group alone`);
   });
 });
 
