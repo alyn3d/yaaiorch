@@ -62,8 +62,19 @@ const MAX_LOG = 5000;
 
 type Item = { id: number; goal: string; status: string; note?: string };
 type Running = { pid: number; label: string; startedAt: number };
+/** A repo group (`orch group list --json`); `dir` is its run dir, which keys its session. */
+type GroupCfg = {
+  name: string;
+  dir: string;
+  repos: { path: string; role: string; serve?: unknown; env?: unknown }[];
+  contract?: string;
+  integrationRounds?: number;
+};
 type Session = {
+  /** A repo's folder, or a group's run dir. */
   repo: string;
+  /** Set on a repo group's session: its config. Its process is `orch group run|rollback NAME`. */
+  group?: GroupCfg;
   child: ChildProcess | null;
   running: Running | null;
   /** A start waiting for a free slot under maxParallel. */
@@ -135,7 +146,10 @@ const keyOf = (repo: string) => (process.platform === "win32" ? resolve(repo).to
 function saveSettings() {
   try {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
-    writeFileSync(SETTINGS_FILE, JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap }, null, 2));
+    writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({ repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap }, null, 2),
+    );
   } catch {
     /* not fatal: the list just is not remembered */
   }
@@ -145,10 +159,17 @@ const send = (event: string, data: unknown) => {
   for (const c of clients) c.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 };
 
+/** The running (or waiting) group that has this repo as a member, if any. */
+const busyGroupOf = (repo: string) =>
+  [...sessions.values()].find((g) => g.group && (g.child || g.pending) && g.group.repos.some((r) => keyOf(r.path) === keyOf(repo)));
+/** The open sessions of a group's member repos. */
+const membersOf = (g: Session) => (g.group?.repos ?? []).map((r) => sessions.get(keyOf(r.path))).filter((m): m is Session => !!m);
+
 function snapshot(s: Session) {
   const dir = join(s.repo, ".orchestrator");
   return {
     repo: s.repo,
+    ...(s.group ? { group: s.group } : { inGroup: busyGroupOf(s.repo)?.group?.name }),
     running: s.running,
     queued: !!s.pending,
     /** Why a queued start waits: a free slot, the usage limit or the budget. */
@@ -162,7 +183,11 @@ const initPayload = () => ({
   maxParallel,
   global: globalState(),
 });
-const sendSession = (s: Session) => send("session", snapshot(s));
+/** A group's members show "in group" while it runs or waits: their state changes with the group's. */
+const sendSession = (s: Session) => {
+  send("session", snapshot(s));
+  if (s.group) for (const m of membersOf(s)) send("session", snapshot(m));
+};
 const sendInit = () => send("init", initPayload());
 const sendGlobal = () => {
   send("global", globalState());
@@ -233,8 +258,6 @@ function pushLine(s: Session, line: string) {
  * One structured event from `s`'s process. A group member's wrapped event goes to the session of that member's repo
  * as if its own process had printed it; without such a session, or while that session has its own run (live or waiting
  * to start), it stays with `s` (the group's), still wrapped, so it never mixes into that run.
- * Gap (TODO.md): nothing yet marks member sessions busy while a group runs; the UI plan that starts groups must refuse
- * a member's own start during a group run, and a group start while a member runs or waits to start.
  */
 function pushEvent(s: Session, ev: OrchEvent) {
   const { repo, ev: inner } = unwrapGroupEvent(ev);
@@ -268,7 +291,11 @@ const runningCount = () => [...sessions.values()].filter((s) => s.child).length;
 
 /** Start now if a slot is free and nothing holds new runs, else queue the start. One run per repo. */
 function requestStart(s: Session, args: string[], label: string) {
-  if (s.child || s.pending) throw new Error("this repo already has a run (or one waiting to start)");
+  if (s.child || s.pending) throw new Error(`this ${s.group ? "group" : "repo"} already has a run (or one waiting to start)`);
+  const inGroup = s.group ? undefined : busyGroupOf(s.repo);
+  if (inGroup) throw new Error(`this repo is busy in group "${inGroup.group!.name}"; stop the group first`);
+  const busy = s.group ? membersOf(s).find((m) => m.child || m.pending) : undefined;
+  if (busy) throw new Error(`${busy.repo} has a run of its own (or one waiting to start); stop it first`);
   const held = gate();
   if (!held && runningCount() < maxParallel) return startNow(s, args, label);
   s.pending = { args, label };
@@ -292,6 +319,16 @@ function startNext() {
  * at most what is left today (their own --max-cost, if lower).
  */
 function withBudget(args: string[]): string[] {
+  if (args[0] === "group" && args[1] === "run") {
+    // `orch group run` takes no usage caps (the holds still stop new starts); it gets the day's budget left as --max-cost,
+    // before its goal, which comes last.
+    const left = budgetLeft();
+    if (left === undefined) return args;
+    const i = args.indexOf("--max-cost");
+    const own = i >= 0 ? Number(args[i + 1]) : Infinity;
+    const rest = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
+    return [...rest.slice(0, -1), "--max-cost", Math.min(own, left).toFixed(2), rest.at(-1)!];
+  }
   if (!["run", "loop", "learn", "share", "split", "new"].includes(args[0])) return args;
   const caps = (["fiveHour", "week"] as Window[]).filter((w) => usageCap[w] !== null).map((w) => `${WINDOW_CLI[w]}=${usageCap[w]}`);
   if (caps.length && !args.includes("--usage-cap")) args = [...args, "--usage-cap", caps.join(",")];
@@ -353,7 +390,76 @@ function stop(s: Session) {
     pushLine(s, "-- start cancelled --");
     sendSession(s);
   }
-  if (s.child?.pid) killTree(s.child.pid);
+  if (!s.child?.pid) return;
+  if (s.group && s.running?.label.startsWith("group:")) {
+    // The group parks both repos when asked through `orch group stop`; killing its tree would leave them unparked.
+    // Only when the ask fails (it has not taken its locks yet, or orch cannot start) is the tree killed.
+    const pid = s.child.pid;
+    pushLine(s, "-- stopping: the group parks both repos' work --");
+    execFile(process.execPath, [TSX_CLI, ORCH, "group", "stop", s.group.name], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err) => {
+      if (err && s.child?.pid === pid) killTree(pid);
+    });
+    return;
+  }
+  killTree(s.child.pid);
+}
+
+/** `orch group list --json`: one session per group (keyed by its run dir), added, updated or (when idle) dropped. */
+async function syncGroups() {
+  const out = await orchOutput(homedir(), ["group", "list", "--json"]);
+  const list = JSON.parse(out.trim().split(/\r?\n/).pop() || "[]") as GroupCfg[];
+  const seen = new Set<string>();
+  for (const g of list) {
+    if (typeof g?.dir !== "string" || !g.name) continue;
+    mkdirSync(g.dir, { recursive: true });
+    const key = keyOf(g.dir);
+    seen.add(key);
+    const s = sessions.get(key);
+    if (s) s.group = g;
+    else sessions.set(key, { repo: resolve(g.dir), group: g, child: null, running: null, pending: null, log: [], events: [] });
+  }
+  for (const [key, s] of sessions) if (s.group && !seen.has(key) && !s.child && !s.pending) sessions.delete(key);
+  sendInit();
+}
+
+const GROUP_NAME = /^[a-z0-9-]+$/;
+const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+/** `orch group add` from the group form: a name, two absolute folders, the backend's serve, the frontend's env (NAME: value). */
+export function groupAddArgs(b: Record<string, unknown>): string[] {
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const name = str(b.name);
+  if (!GROUP_NAME.test(name)) throw new Error("group name: lowercase letters, digits and dashes");
+  const be = str(b.backend),
+    fe = str(b.frontend);
+  if (!isAbsolute(be) || !isAbsolute(fe)) throw new Error("the backend and frontend folders must be absolute paths");
+  const args = ["group", "add", name, "--repo", `${resolve(be)}:backend`, "--repo", `${resolve(fe)}:frontend`];
+  if (str(b.serveUrl)) args.push("--serve-url", str(b.serveUrl));
+  if (str(b.serveCommand)) args.push("--serve-command", str(b.serveCommand).slice(0, 500));
+  if (str(b.baseUrl)) args.push("--base-url", str(b.baseUrl));
+  const env = b.env && typeof b.env === "object" && !Array.isArray(b.env) ? (b.env as Record<string, unknown>) : {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!ENV_NAME.test(k) || typeof v !== "string") throw new Error(`env ${k}: a NAME in capitals and a text value`);
+    args.push("--env", `${k}=${v}`);
+  }
+  return args;
+}
+
+/** `orch group run NAME <goal>` with the options a group run takes; the goal comes last. */
+export function groupRunArgs(name: string, b: Record<string, unknown>): string[] {
+  return [
+    "group",
+    "run",
+    name,
+    "--power",
+    typeof b.power === "string" && /^[a-z]+$/.test(b.power) ? b.power : "heavy",
+    "--max-rounds",
+    String(Math.min(20, Math.max(1, Math.round(Number(b.maxRounds)) || 5))),
+    ...(typeof b.maxCost === "number" && b.maxCost > 0 ? ["--max-cost", String(b.maxCost)] : []),
+    ...(typeof b.models === "string" && MODEL_SPEC.test(b.models) ? ["--model", b.models] : []),
+    ...(b.approvePlan ? ["--approve-plan"] : []),
+    ...(b.fast === true ? ["--fast"] : b.fast === false ? ["--no-fast"] : []),
+    String(b.goal).trim(),
+  ];
 }
 
 /** Model spec ("architect=opus,be=sonnet"): only key=value pairs of safe characters reach orch. */
@@ -479,7 +585,10 @@ const acceptSplit = (s: Session, b: { brief?: unknown; goals?: unknown }) =>
 /** `orch approve` for a run waiting with --approve-plan: an edited plan goes on stdin, never on the command line. */
 const approvePlan = (s: Session, b: { plan?: unknown; reject?: string }) =>
   new Promise<void>((ok, fail) => {
-    const args = typeof b.reject === "string" ? ["--reject", b.reject.slice(0, 4000)] : b.plan ? ["--plan-stdin"] : [];
+    const args = [
+      ...(typeof b.reject === "string" ? ["--reject", b.reject.slice(0, 4000)] : b.plan ? ["--plan-stdin"] : []),
+      ...(s.group ? ["--group", s.group.name] : []),
+    ];
     const child = execFile(process.execPath, [TSX_CLI, ORCH, "approve", ...args], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     );
@@ -526,7 +635,7 @@ function addSpent(cost: number) {
 /** Agent M chat: `orch chat` with the question and every open repo (it reads their status); its cost counts toward the daily budget. */
 const askAgentM = (question: string, session?: string) =>
   new Promise<{ answer: string; session?: string; cost: number }>((ok, fail) => {
-    const list = [...sessions.values()];
+    const list = [...sessions.values()].filter((s) => !s.group);
     const input = JSON.stringify({ question, session, repos: list.map((s) => s.repo), running: list.filter((s) => s.child).map((s) => s.repo) });
     const child = execFile(
       process.execPath,
@@ -554,7 +663,7 @@ const warmAgentM = () => {
   const child = execFile(process.execPath, [TSX_CLI, ORCH, "chat", "--warm"], { cwd: homedir(), encoding: "utf8", windowsHide: true, timeout: 180_000 }, () => {
     warming = false;
   });
-  child.stdin?.end(JSON.stringify({ repos: [...sessions.values()].map((s) => s.repo) }));
+  child.stdin?.end(JSON.stringify({ repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo) }));
 };
 
 const body = (req: http.IncomingMessage) =>
@@ -627,6 +736,7 @@ for (const r of [...(stored.repos ?? []), ...fromEnv]) {
   }
 }
 saveSettings();
+syncGroups().catch((e) => console.error(`could not list repo groups: ${(e as Error).message}`));
 
 http
   .createServer(async (req, res) => {
@@ -784,6 +894,20 @@ http
           if (b.session !== undefined && (typeof b.session !== "string" || !/^[\w-]{1,100}$/.test(b.session))) return json(400, { error: "invalid session" });
           return json(200, await askAgentM(b.question, b.session));
         }
+        if (url.pathname === "/api/group-save") {
+          await orchOutput(homedir(), groupAddArgs(b));
+          await syncGroups();
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/group-remove") {
+          const g = [...sessions.values()].find((s) => s.group && s.group.name === b.name);
+          if (!g) return json(400, { error: `unknown group: ${String(b.name)}` });
+          if (g.child || g.pending) return json(409, { error: "stop this group's run before removing it" });
+          await orchOutput(homedir(), ["group", "remove", g.group!.name]);
+          sessions.delete(keyOf(g.repo));
+          await syncGroups();
+          return json(200, { ok: true });
+        }
         if (url.pathname === "/api/clear-limit") {
           // "Try now": lift the usage-limit hold early, and forget readings over a cap; a run that hits
           // the limit (or reads usage over a cap) again sets it again.
@@ -794,6 +918,8 @@ http
           return json(200, { ok: true });
         }
         const s = mustGet(b.repo);
+        if (s.group && !["/api/run", "/api/approve", "/api/rollback", "/api/stop", "/api/clear-log", "/api/reveal"].includes(url.pathname))
+          return json(400, { error: "not available for a repo group" });
         if (url.pathname === "/api/browser") {
           if (s.child || s.pending) return json(409, { error: "wait until this repo is idle" });
           if (b.action === "login") {
@@ -815,6 +941,7 @@ http
         }
         if (url.pathname === "/api/remove-repo") {
           if (s.child || s.pending) return json(409, { error: "stop this repo's run before closing it" });
+          if (busyGroupOf(s.repo)) return json(409, { error: "this repo is busy in a group run; stop the group first" });
           sessions.delete(keyOf(s.repo));
           saveSettings();
           sendInit();
@@ -831,6 +958,18 @@ http
           const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
           child.on("error", () => {}); // explorer.exe exits 1 even when it worked; a missing xdg-open has nothing to report to
           child.unref();
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/run" && s.group) {
+          if (typeof b.goal !== "string" || !b.goal.trim()) return json(400, { error: "goal required" });
+          // The members open as tabs first, so their own events show there.
+          const before = sessions.size;
+          for (const r of s.group.repos) addRepo(r.path);
+          if (sessions.size !== before) {
+            saveSettings();
+            sendInit();
+          }
+          requestStart(s, groupRunArgs(s.group.name, b), `group: ${b.goal.trim().slice(0, 60)}`);
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/run") {
@@ -927,7 +1066,7 @@ http
         }
         if (url.pathname === "/api/rollback") {
           // Runs as a normal orch process: one per repo, output streams to that repo's log.
-          requestStart(s, ["rollback"], "rollback");
+          requestStart(s, s.group ? ["group", "rollback", s.group.name] : ["rollback"], "rollback");
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/stop-after") {

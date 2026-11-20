@@ -408,6 +408,14 @@ describe("notification texts (orch-ui/src/notifyText.ts)", () => {
     for (const e of [{ type: "task_end" }, { type: "plan" }, { type: "goal_end", passed: false, usageLimit: true }, { type: "loop_stop", reason: "requested" }])
       assert.equal(n("shop", "g", e), null, e.type);
   });
+  test("a group goal that passed or failed, a group plan waiting", () => {
+    assert.deepEqual(n("shop", "orders", { type: "group_end", ok: true }), { title: "shop: group goal passed", body: "orders" });
+    assert.deepEqual(n("shop", "orders", { type: "group_end", ok: false, reason: "integration failed" }), {
+      title: "shop: group goal failed",
+      body: "orders\nintegration failed",
+    });
+    assert.equal(n("shop", "orders", { type: "group_approval_wait", round: 1 }).title, "shop: group plan waiting for you");
+  });
 });
 
 describe("per-repo run settings", () => {
@@ -954,8 +962,18 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     assert.equal(passed.status, "passed");
     assert.equal(passed.group.ok, true);
     assert.equal(reduce(null, { type: "group_plan", contract: "c", goals: {}, t: 1 }), null);
+    let waiting = reduce(fold([{ type: "group_start", group: "shop", goal: "g", repos }]), {
+      type: "group_approval_wait",
+      round: 2,
+      contract: "GET /items",
+      goals: { backend: "b" },
+      t: 21,
+    });
+    assert.deepEqual(waiting.group.approval, { round: 2, contract: "GET /items", goals: { backend: "b" } });
+    waiting = reduce(waiting, { type: "group_approval", round: 2, action: "approve", t: 22 });
+    assert.equal("approval" in waiting.group, false, "an answer clears the waiting plan");
     const plain = fold(start);
-    for (const type of ["group_plan", "group_fault", "group_end", "group_step", "group_rollback"])
+    for (const type of ["group_plan", "group_fault", "group_end", "group_step", "group_rollback", "group_approval_wait", "group_approval"])
       assert.equal(reduce(plain, { type, cost: 1, ok: true, t: 1 }), plain, `${type} leaves a run without a group alone`);
   });
 });

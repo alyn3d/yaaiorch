@@ -158,8 +158,11 @@ not mean the PR is approved or merged. Select a card to open its repo.
 
 ### Repo groups (backend and frontend)
 
-A group runs one goal across a backend repo and a frontend repo. Today it is CLI only (the UI shows the events
-of a group run, but cannot start one yet). Version 1 is exactly one backend and one frontend.
+A group runs one goal across a backend repo and a frontend repo. Version 1 is exactly one backend and one frontend.
+In the app, **+ New group** creates one (the two folders, the backend's URL and start command, the frontend's env);
+its page starts a goal, shows the contract, each repo's goal and the step, answers **Approve plan**, stops (both repos
+are parked) and rolls back. While a group runs, its repos show "in group" in their own tabs, with their part of the
+work, and refuse their own runs. On the command line:
 
 ```
 orch group add shop --repo /work/shop-api:backend --repo /work/shop-web:frontend \

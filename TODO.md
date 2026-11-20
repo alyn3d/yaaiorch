@@ -115,14 +115,9 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Worktree per build task** (`--worktrees`, `"worktrees": true`, or **Isolate build tasks**): parallel build agents start from the same round snapshot. Orch applies each task's changes back after it finishes; a merge conflict keeps that task's worktree and reports its path. Opt-in; requires Git.
 - [x] **Notifications** when a goal finishes, fails or waits (desktop notification in Tauri; the browser's in
   browser mode; **Notify** in the header).
-- [ ] **Repo groups in the UI: member sessions busy during a group run.** The backends route a member's events to its
-  session only while that session has no run of its own (else they stay wrapped in the group's session); starting groups
-  from the UI must refuse a member's own start during a group run, and a group start while a member runs or waits to start.
-- [ ] **Repo groups in the UI.** A group page to define, start, approve and stop groups, show the contract and the two
-  repos' progress; needs an approval-wait event for group plans (the plan only waits in `plan-pending.json` now), and
-  member sessions that show a synthetic "stopped" after a reload (the group's events replay only in the group's session).
-  Stop must go through `orch group stop NAME` (the group then parks both repos): killing the process tree
-  (`taskkill /T /F`) leaves the repos unparked.
+- [x] **Repo groups in the UI**: a group page per group (define, start, approve, stop through `orch group stop`,
+  roll back; contract, goals, step and outcome), events `group_approval_wait` / `group_approval`, member repos marked
+  busy (`inGroup`) and refusing their own starts, a group start refused while a member runs.
 - [ ] **Repo groups: more than two repos and other roles** (several backends, a shared library, a mobile app).
 - [ ] **Repo groups: `--on-limit wait`.** A usage limit parks both repos as interrupted and exits 3; waiting for the
   reset and resuming the parked work is not built.

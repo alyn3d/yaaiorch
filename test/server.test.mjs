@@ -334,3 +334,158 @@ describe("browser-mode server: group events", { timeout: 60_000 }, () => {
     await until(member, (m) => !m.state.running);
   });
 });
+
+// Repo groups as sessions: the server lists groups through `orch group list --json` and keys each by its run dir. While
+// a group runs, its members report `inGroup` and refuse their own starts; Stop asks `orch group stop` instead of killing.
+describe("browser-mode server: group sessions", { timeout: 60_000 }, () => {
+  let be, fe, gdir, calls, headers;
+  before(async () => {
+    port = await freePort();
+    home = mkdtempSync(join(tmpdir(), "yaaiorch-server-gsess-"));
+    be = join(home, "api");
+    fe = join(home, "web");
+    gdir = join(home, "groups", "shop");
+    calls = join(home, "calls.txt");
+    mkdirSync(be);
+    mkdirSync(fe);
+    const fakeOrch = join(home, "fake-orch.mjs");
+    const list = [
+      {
+        name: "shop",
+        dir: gdir,
+        repos: [
+          { path: be, role: "backend" },
+          { path: fe, role: "frontend" },
+        ],
+      },
+    ];
+    // Every call is logged; `group run` holds until `group stop` writes the stop file, then ends like a stopped group.
+    writeFileSync(
+      fakeOrch,
+      `import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + String.fromCharCode(10));
+const stop = ${JSON.stringify(join(home, "stop"))};
+if (args[0] === "group" && args[1] === "list") console.log(${JSON.stringify(JSON.stringify(list))});
+else if (args[0] === "group" && args[1] === "stop") writeFileSync(stop, "1");
+else if (args[0] === "group" && args[1] === "run") {
+  console.log("@@ORCH@@ " + JSON.stringify({ type: "group_start", t: 1, group: "shop", goal: args.at(-1), repos: [] }));
+  const t = setInterval(() => {
+    if (!existsSync(stop)) return;
+    clearInterval(t);
+    console.log("@@ORCH@@ " + JSON.stringify({ type: "group_end", t: 2, ok: false, reason: "Stopped" }));
+    process.exit(130);
+  }, 100);
+}
+`,
+    );
+    child = spawn(process.execPath, [TSX, "server.ts"], {
+      cwd: ui,
+      env: { ...process.env, PORT: String(port), HOME: home, USERPROFILE: home, ORCH_REPO: "", ORCH_REPOS: "", ORCH_PATH: fakeOrch },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await new Promise((ok, fail) => {
+      const t = setTimeout(() => fail(new Error("server did not start")), 30_000);
+      child.stdout.on("data", (d) => String(d).includes(`localhost:${port}`) && (clearTimeout(t), ok()));
+      child.on("exit", (c) => fail(new Error(`server exited ${c}`)));
+    });
+    headers = { "x-orch-token": (await request("/api/token")).json().token, "content-type": "application/json" };
+  });
+  after(async () => {
+    writeFileSync(join(home, "stop"), "1");
+    await new Promise((r) => setTimeout(r, 300));
+    child?.kill();
+    if (home) rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  const stateOf = async () => (await request("/api/state", { headers })).json();
+  const sessionOf = (state, repo) => state.sessions.find((s) => s.state.repo === repo);
+  const until = async (done) => {
+    let state;
+    for (let i = 0; i < 200; i++) {
+      state = await stateOf();
+      if (done(state)) return state;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return state;
+  };
+  const called = () =>
+    readFileSync(calls, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+  const post = (path, body) => request(`/api/${path}`, { method: "POST", headers, body });
+
+  test("a group gets a session keyed by its run dir, not remembered as a repo", async () => {
+    const state = await until((s) => sessionOf(s, gdir));
+    assert.equal(sessionOf(state, gdir).state.group.name, "shop");
+    assert.equal(JSON.parse(readFileSync(join(home, ".yaaiorch", "ui.json"), "utf8")).repos.length, 0);
+    assert.equal((await post("loop", { repo: gdir })).status, 400, "a group has no queue");
+  });
+
+  test("the form becomes orch group add, checked first", async () => {
+    const bad = await post("group-save", { name: "Shop", backend: be, frontend: fe });
+    assert.equal(bad.status, 500);
+    assert.match(bad.text, /group name/);
+    const ok = await post("group-save", { name: "shop", backend: be, frontend: fe, serveUrl: "http://localhost:3999", env: { API_URL: "{backend}" } });
+    assert.equal(ok.status, 200, ok.text);
+    const add = called().find((a) => a[1] === "add");
+    assert.deepEqual(add, [
+      "group",
+      "add",
+      "shop",
+      "--repo",
+      `${be}:backend`,
+      "--repo",
+      `${fe}:frontend`,
+      "--serve-url",
+      "http://localhost:3999",
+      "--env",
+      "API_URL={backend}",
+    ]);
+  });
+
+  test("a run opens the members, marks them busy, refuses their starts, and Stop asks the group", async () => {
+    const started = await post("run", { repo: gdir, goal: "checkout", power: "economy", maxRounds: 2, approvePlan: true });
+    assert.equal(started.status, 200, started.text);
+    let state = await until((s) => sessionOf(s, gdir)?.state.running && sessionOf(s, be)?.state.inGroup);
+    assert.equal(sessionOf(state, be).state.inGroup, "shop");
+    assert.equal(sessionOf(state, fe).state.inGroup, "shop");
+    await until(() => called().some((a) => a[1] === "run"));
+    assert.deepEqual(
+      called().find((a) => a[1] === "run"),
+      ["group", "run", "shop", "--power", "economy", "--max-rounds", "2", "--approve-plan", "checkout"],
+    );
+    const own = await post("run", { repo: be, goal: "x" });
+    assert.equal(own.status, 500);
+    assert.match(own.json().error, /busy in group "shop"/);
+    assert.equal((await post("remove-repo", { repo: fe })).status, 409);
+    assert.equal((await post("group-remove", { name: "shop" })).status, 409);
+    assert.equal((await post("stop", { repo: gdir })).status, 200);
+    state = await until((s) => !sessionOf(s, gdir).state.running);
+    assert.ok(
+      called().some((a) => a[1] === "stop" && a[2] === "shop"),
+      "stopped through orch group stop",
+    );
+    assert.deepEqual(
+      sessionOf(state, gdir).events.map((e) => e.type),
+      ["group_start", "group_end"],
+      "the group ended on its own, after parking",
+    );
+    assert.equal(sessionOf(state, be).state.inGroup, undefined);
+  });
+
+  test("approve and rollback name the group", async () => {
+    await post("approve", { repo: gdir, reject: "smaller" });
+    assert.deepEqual(
+      called().find((a) => a[0] === "approve"),
+      ["approve", "--reject", "smaller", "--group", "shop"],
+    );
+    assert.equal((await post("rollback", { repo: gdir })).status, 200);
+    await until(() => called().some((a) => a[1] === "rollback"));
+    assert.deepEqual(
+      called().find((a) => a[1] === "rollback"),
+      ["group", "rollback", "shop"],
+    );
+  });
+});

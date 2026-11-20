@@ -47,7 +47,7 @@ import {
   type GroupConfig,
   type GroupRepo,
 } from "./orch-group";
-import { approveGroup, childShare, costArgs as groupCostArgs, GROUP_EXIT, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
+import { approveGroup, childShare, costArgs as groupCostArgs, GROUP_EXIT, groupDir, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
@@ -5713,13 +5713,22 @@ async function groupCommand(args: string[], values: GroupFlags) {
         fe.env[e.slice(0, i)] = e.slice(i + 1);
       }
     }
-    const g = validateGroup({ name, repos });
+    // Saving over an existing group (the UI's Edit) keeps what only its file sets: the standing contract and integrationRounds.
+    let kept: Partial<GroupConfig> = {};
+    try {
+      const { contract, integrationRounds } = readGroup(name);
+      kept = { ...(contract !== undefined ? { contract } : {}), ...(integrationRounds !== undefined ? { integrationRounds } : {}) };
+    } catch {
+      /* a new group, or an unreadable one that this save replaces */
+    }
+    const g = validateGroup({ name, repos, ...kept });
     writeGroup(g, writeFileAtomic);
     return console.log(`group "${g.name}" saved`);
   }
   if (sub === "list") {
     const groups: GroupConfig[] = listGroups();
-    if (values.json) return console.log(JSON.stringify(groups));
+    // `dir`: the group's run dir (lock, stop file, pending plan); the UI backends key a group's session by it.
+    if (values.json) return console.log(JSON.stringify(groups.map((g) => ({ ...g, dir: groupDir(g.name) }))));
     if (!groups.length) return console.log("no groups");
     for (const g of groups) console.log(`${g.name}: ${g.repos.map((r) => `${r.role} ${r.path}`).join(", ")}`);
     return;

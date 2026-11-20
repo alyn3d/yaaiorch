@@ -151,7 +151,15 @@ describe("orch group", () => {
       assert.deepEqual(saved.repos[1], { path: fe, role: "frontend", env: { VITE_API_URL: "{backend}" } });
       const list = run(home, "list", "--json");
       assert.equal(list.code, 0, list.out);
-      assert.deepEqual(JSON.parse(list.stdout), [saved]);
+      assert.deepEqual(JSON.parse(list.stdout), [{ ...saved, dir: join(home, "groups", "shop") }]);
+      // Saving again (the UI's Edit) keeps what only the file sets.
+      writeFileSync(file, JSON.stringify({ ...saved, contract: "GET /items", integrationRounds: 3 }));
+      const again = run(home, "add", "shop", "--repo", `${be}:backend`, "--repo", `${fe}:frontend`);
+      assert.equal(again.code, 0, again.out);
+      const resaved = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(resaved.contract, "GET /items");
+      assert.equal(resaved.integrationRounds, 3);
+      assert.equal(resaved.repos[0].serve, undefined, "the repos come from the new flags");
       const rm = run(home, "remove", "shop");
       assert.equal(rm.code, 0, rm.out);
       assert.equal(existsSync(file), false);
@@ -1175,6 +1183,22 @@ describe("orch group run", { timeout: 600_000 }, () => {
       assert.equal(code, 0, out);
       assert.equal(existsSync(pending), false);
       assert.equal(run.events().filter((e) => e.type === "group_plan").length, 2);
+      const waits = run.events().filter((e) => e.type === "group_approval_wait");
+      assert.deepEqual(
+        waits.map((e) => e.round),
+        [1, 2],
+      );
+      assert.equal(waits[0].contract, "GET /api/items → Item[]");
+      assert.deepEqual(
+        run
+          .events()
+          .filter((e) => e.type === "group_approval")
+          .map((e) => [e.round, e.action]),
+        [
+          [1, "reject"],
+          [2, "approve"],
+        ],
+      );
       assert.equal(run.events().at(-1).type, "group_end");
     } finally {
       if (run.child.exitCode === null) run.child.kill();

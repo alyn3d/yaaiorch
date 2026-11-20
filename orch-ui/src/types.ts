@@ -45,7 +45,26 @@ export type LastRun = {
 } | null;
 export type Running = { pid: number; label: string; startedAt: number } | null;
 /** One repo's state. `queued`: a start is waiting (for a free slot, the usage limit or the daily budget); `waitReason` says which. */
-export type State = { repo: string; running: Running; queued?: boolean; waitReason?: string; queue: Item[]; lastRun: LastRun };
+export type State = {
+  repo: string;
+  running: Running;
+  queued?: boolean;
+  waitReason?: string;
+  queue: Item[];
+  lastRun: LastRun;
+  /** A repo group's session (keyed by the group's run dir): its config. Absent for a repo. */
+  group?: GroupConfig;
+  /** A repo whose group runs (or waits to start): the group's name. Its own starts are refused meanwhile. */
+  inGroup?: string;
+};
+/** One repo of a group (`orch group list --json`). `serve`: how the group starts the backend; `env`: the frontend's. */
+export type GroupRepoConfig = {
+  path: string;
+  role: GroupRole;
+  serve?: { command?: string; url: string; baseUrl?: string; timeout?: number };
+  env?: Record<string, string>;
+};
+export type GroupConfig = { name: string; repos: GroupRepoConfig[]; contract?: string; integrationRounds?: number; dir: string };
 /** Shared by all repos: the usage-limit hold and the daily budget. */
 export type UsageWindow = "fiveHour" | "week";
 export type Global = {
@@ -195,6 +214,8 @@ export type GroupView = {
   parked?: Partial<Record<GroupRole, string | null>>;
   /** `group_end`: members whose park failed; their group checkpoint is kept and `orch group rollback` resets them to it. */
   kept?: Partial<Record<GroupRole, string>>;
+  /** --approve-plan: the coordinator's plan waiting for an answer (`group_approval_wait`), cleared by `group_approval`. */
+  approval?: { round: number; contract: string; goals: Partial<Record<GroupRole, string>> };
   /** `group_rollback`: the members were reset to the run's start; their later work is on these branches. */
   rolledBack?: boolean;
   rolledBackParked?: Partial<Record<GroupRole, string | null>>;

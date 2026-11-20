@@ -53,6 +53,10 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
       return run?.group
         ? updGroup({ ...run, cost: run.cost + (ev.cost ?? 0) }, (g) => ({ ...g, contract: ev.contract, ...(ev.revised ? {} : { goals: ev.goals }) }))
         : run;
+    case "group_approval_wait":
+      return updGroup(run, (g) => ({ ...g, approval: { round: ev.round, contract: ev.contract ?? "", goals: ev.goals ?? {} } }));
+    case "group_approval":
+      return updGroup(run, (g) => defined({ ...g, approval: undefined }));
     case "group_step":
       return updGroup(run, (g) =>
         defined({ ...g, step: ev.step, stepRepo: ev.repo, round: ev.round, skipped: ev.skipped, failed: ev.failed, external: ev.external }),

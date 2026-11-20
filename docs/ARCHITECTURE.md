@@ -213,6 +213,8 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `waiting` | reason (`usage_limit` between goals, or `usage_cap` before an agent call, with `window`), until |
 | `group_start` | group, goal, repos[] ({path, role}): `orch group run` began |
 | `group_plan` | contract, goals ({backend?, frontend?}), cost, revised? (a fault call corrected the contract), edited? (a human edited it) |
+| `group_approval_wait` | round, contract, goals: `--approve-plan`, the group plan waits for `orch approve --group NAME` |
+| `group_approval` | round, action (`approve`, `reject`), edited? |
 | `group_step` | step (`build`, `integration`, `fix`), repo? (role), round, skipped? (`no serve`), failed? (reason), external? (a backend the group did not start) |
 | `group_child` | repo (path), role, event: a member run's own event, wrapped |
 | `group_fault` | fault (`backend`, `frontend`, `both`), goals, cost, revised?: the coordinator's call after a failed integration |

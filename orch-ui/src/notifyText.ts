@@ -14,6 +14,15 @@ export function notificationFor(repo: string, goal: string | undefined, e: Ev): 
       return e.passed
         ? { title: `${repo}: goal passed`, body: what || "QA passed." }
         : { title: `${repo}: goal failed`, body: [what, typeof e.error === "string" ? e.error : ""].filter(Boolean).join("\n") || "QA did not pass." };
+    case "group_end":
+      return e.ok
+        ? { title: `${repo}: group goal passed`, body: what || "Both repos built and the integration passed." }
+        : {
+            title: `${repo}: group goal failed`,
+            body: [what, typeof e.reason === "string" ? e.reason : ""].filter(Boolean).join("\n") || "The group run failed.",
+          };
+    case "group_approval_wait":
+      return { title: `${repo}: group plan waiting for you`, body: "The coordinator's contract and goals: build them, edit them or send them back." };
     case "approval_wait":
       return { title: `${repo}: plan waiting for you`, body: typeof e.summary === "string" && e.summary ? e.summary : "Build it, edit it or send it back." };
     case "question_wait":

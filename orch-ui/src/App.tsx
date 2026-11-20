@@ -14,6 +14,8 @@ import { AgentsPage } from "./Agents";
 import { AgentMPanel, commandsOf, useAgentMChat } from "./AgentM";
 import { About } from "./About";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { GroupDialog, GroupView } from "./GroupView";
+import type { GroupConfig } from "./types";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
@@ -21,7 +23,11 @@ const OVERVIEW = "*overview";
 const AGENTS = "*agents";
 const AGENT_M = "*agent-m";
 export function App() {
-  const { sessions, order, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
+  const { sessions, order, groups, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
+  /** The group form: a new group (no `initial`) or an edit. */
+  const [groupDialog, setGroupDialog] = useState<{ initial?: GroupConfig } | null>(null);
+  /** A group just saved: shown once its session arrives. */
+  const [savedGroup, setSavedGroup] = useState("");
   const [notifyOn, setNotifyOnState] = useState(notifyOnSaved);
   const [newProject, setNewProject] = useState(false);
   const [about, setAbout] = useState(false);
@@ -54,9 +60,17 @@ export function App() {
       ? AGENTS
       : active === AGENT_M
         ? AGENT_M
-        : order.includes(active) || (active === OVERVIEW && showOverview)
+        : order.includes(active) || groups.includes(active) || (active === OVERVIEW && showOverview)
           ? active
           : (order[0] ?? "");
+  useEffect(() => {
+    if (!savedGroup) return;
+    const dir = groups.find((g) => sessions[g]?.state.group?.name === savedGroup);
+    if (dir) {
+      setActive(dir);
+      setSavedGroup("");
+    }
+  }, [savedGroup, groups, sessions]);
   useEffect(() => {
     if (!order.includes(agentRepo)) setAgentRepo(order.includes(active) ? active : (order[0] ?? ""));
   }, [order, active, agentRepo]);
@@ -151,7 +165,7 @@ export function App() {
             const s = sessions[repo];
             if (!s) return null;
             const st = repoStatus(s, now);
-            const busy = !!s.state.running || !!s.state.queued;
+            const busy = !!s.state.running || !!s.state.queued || !!s.state.inGroup;
             return (
               <div key={repo} className={`nav-item repo-item ${repo === current ? "active" : ""}`} title={`${repo}\n${st.label}`}>
                 <button className="nav-main" aria-current={repo === current ? "page" : undefined} onClick={() => setActive(repo)}>
@@ -174,6 +188,28 @@ export function App() {
             );
           })}
           {!order.length && <p className="nav-empty">No repo open yet</p>}
+          {groups.length > 0 && <p className="nav-section">Groups</p>}
+          {groups.map((dir) => {
+            const s = sessions[dir];
+            const g = s?.state.group;
+            if (!s || !g) return null;
+            const st = repoStatus(s, now);
+            return (
+              <div
+                key={dir}
+                className={`nav-item repo-item ${dir === current ? "active" : ""}`}
+                title={[...g.repos.map((r) => `${r.role}: ${r.path}`), st.label].join("\n")}
+              >
+                <button className="nav-main" aria-current={dir === current ? "page" : undefined} onClick={() => setActive(dir)}>
+                  <span className={`status ${st.tone}`} aria-hidden />
+                  <span className="nav-text">
+                    <span className="nav-label">{g.name}</span>
+                    <span className="nav-sub">{st.label}</span>
+                  </span>
+                </button>
+              </div>
+            );
+          })}
           {canPickRepo || !adding ? (
             <div className="nav-actions">
               <button className="ghost" onClick={() => (canPickRepo ? addRepo() : setAdding(true))} title="Open another repo">
@@ -181,6 +217,9 @@ export function App() {
               </button>
               <button className="ghost" onClick={() => setNewProject(true)} title="Start a project from a spec in a new folder">
                 + New project
+              </button>
+              <button className="ghost" onClick={() => setGroupDialog({})} title="One goal across a backend and a frontend repo">
+                + New group
               </button>
             </div>
           ) : (
@@ -266,6 +305,17 @@ export function App() {
               {error}
             </p>
           )}
+          {groupDialog && (
+            <GroupDialog
+              initial={groupDialog.initial}
+              repos={order}
+              onClose={() => setGroupDialog(null)}
+              onSaved={(name) => {
+                setGroupDialog(null);
+                setSavedGroup(name);
+              }}
+            />
+          )}
           {newProject && (
             <NewProjectDialog
               onClose={() => setNewProject(false)}
@@ -323,7 +373,7 @@ export function App() {
             </section>
           )}
 
-          {order.length === 0 && !newProject && current !== AGENT_M && (
+          {order.length === 0 && !newProject && current !== AGENT_M && !groups.includes(current) && (
             <section className="empty-state">
               <img src="/logo-64.png" alt="" width={48} height={48} />
               <h2>No repo open</h2>
@@ -355,6 +405,19 @@ export function App() {
           )}
 
           {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
+          {groups.map(
+            (dir) =>
+              sessions[dir]?.state.group && (
+                <GroupView
+                  key={dir}
+                  session={sessions[dir]}
+                  sessions={sessions}
+                  hidden={dir !== current}
+                  onOpenRepo={setActive}
+                  onEdit={(initial) => setGroupDialog({ initial })}
+                />
+              ),
+          )}
         </ErrorBoundary>
       </main>
     </div>

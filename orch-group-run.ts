@@ -356,6 +356,7 @@ async function awaitGroupDecision(s: Run, round: number, plan: GroupPlan): Promi
   const decision = join(s.dir, DECISION);
   rmSync(decision, { force: true });
   s.deps.writeFileAtomic(pending, JSON.stringify({ goal: s.goal, round, contract: plan.contract, goals: plan.goals }, null, 2));
+  emit("group_approval_wait", { round, contract: plan.contract, goals: plan.goals });
   console.log(
     `\nwaiting for your approval of the group plan (round ${round}).\n` +
       `  build it: orch approve --group ${s.g.name}   edit it: change ${pending}, then orch approve --group ${s.g.name} --plan-stdin < ${pending}\n` +
@@ -373,7 +374,10 @@ async function awaitGroupDecision(s: Run, round: number, plan: GroupPlan): Promi
         }
         if (d) {
           rmSync(decision, { force: true });
-          if (d.round === round) return d;
+          if (d.round === round) {
+            emit("group_approval", { round, action: d.action, ...(d.plan ? { edited: true } : {}) });
+            return d;
+          }
         }
       }
       await sleep(300);

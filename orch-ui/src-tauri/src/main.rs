@@ -31,7 +31,11 @@ struct Running {
 }
 
 struct Session {
+    /// A repo's folder, or a repo group's run dir.
     repo: PathBuf,
+    /// Set on a repo group's session: its config from `orch group list --json` (name, dir, repos). Its process is
+    /// `orch group run|rollback NAME`.
+    group: Option<Value>,
     running: Option<Running>,
     /// A start waiting for a free slot: (args, label).
     pending: Option<(Vec<String>, String)>,
@@ -83,6 +87,28 @@ impl Inner {
     }
     fn running_count(&self) -> usize {
         self.sessions.iter().filter(|s| s.running.is_some()).count()
+    }
+    /// The group that has `repo` as a member and runs (or waits to start), if any: its name.
+    fn busy_group_of(&self, repo: &Path) -> Option<String> {
+        let key = key_of(repo);
+        self.sessions
+            .iter()
+            .filter(|g| g.running.is_some() || g.pending.is_some())
+            .filter_map(|g| g.group.as_ref())
+            .find(|g| group_paths(g).iter().any(|p| key_of(Path::new(p)) == key))
+            .map(|g| g["name"].as_str().unwrap_or_default().to_string())
+    }
+    /// The keys of a group session's member repos that are open.
+    fn members_of(&self, i: usize) -> Vec<String> {
+        self.sessions[i]
+            .group
+            .as_ref()
+            .map(group_paths)
+            .unwrap_or_default()
+            .iter()
+            .map(|p| key_of(Path::new(p)))
+            .filter(|k| self.find(k).is_some())
+            .collect()
     }
     /// Why new runs may not start right now, or None.
     fn gate(&self) -> Option<String> {
@@ -146,22 +172,41 @@ fn read_json(path: PathBuf, fallback: Value) -> Value {
     fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(fallback)
 }
 
-fn session_value(s: &Session, gate: Option<&str>) -> Value {
+/// The member repo paths of a group config.
+fn group_paths(g: &Value) -> Vec<String> {
+    g["repos"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["path"].as_str().map(str::to_string))
+        .collect()
+}
+
+fn session_value(g: &Inner, s: &Session, gate: Option<&str>) -> Value {
     let dir = s.repo.join(".orchestrator");
-    json!({
+    let mut v = json!({
         "repo": s.repo.to_string_lossy(),
         "running": s.running.as_ref().map(|r| json!({ "pid": r.pid, "label": r.label, "startedAt": r.started_at })),
         "queued": s.pending.is_some(),
         "waitReason": s.pending.as_ref().map(|_| gate.unwrap_or("free slot")),
         "queue": read_json(dir.join("queue.json"), json!([])),
         "lastRun": read_json(dir.join("last-run.json"), Value::Null),
-    })
+    });
+    match &s.group {
+        Some(cfg) => v["group"] = cfg.clone(),
+        None => {
+            if let Some(name) = g.busy_group_of(&s.repo) {
+                v["inGroup"] = name.into();
+            }
+        }
+    }
+    v
 }
 
 fn init_value(g: &Inner) -> Value {
     let gate = g.gate();
     json!({
-        "sessions": g.sessions.iter().map(|s| json!({ "state": session_value(s, gate.as_deref()), "log": s.log, "events": s.events })).collect::<Vec<_>>(),
+        "sessions": g.sessions.iter().map(|s| json!({ "state": session_value(g, s, gate.as_deref()), "log": s.log, "events": s.events })).collect::<Vec<_>>(),
         "maxParallel": g.max_parallel,
         "global": g.global_value(),
     })
@@ -177,7 +222,7 @@ fn emit_global<R: Runtime>(app: &AppHandle<R>) {
             .sessions
             .iter()
             .filter(|s| s.pending.is_some())
-            .map(|s| session_value(s, gate.as_deref()))
+            .map(|s| session_value(&g, s, gate.as_deref()))
             .collect();
         (g.global_value(), waiting)
     };
@@ -290,14 +335,21 @@ fn emit_init<R: Runtime>(app: &AppHandle<R>) {
     let _ = app.emit("orch-init", v);
 }
 
+/// One session's state; a group's members too, since they show "in group" while it runs or waits.
 fn emit_session<R: Runtime>(app: &AppHandle<R>, key: &str) {
-    let v = {
+    let values: Vec<Value> = {
         let st = app.state::<AppState>();
         let g = st.0.lock().unwrap();
         let gate = g.gate();
-        g.find(key).map(|i| session_value(&g.sessions[i], gate.as_deref()))
+        match g.find(key) {
+            Some(i) => std::iter::once(i)
+                .chain(g.members_of(i).iter().filter_map(|k| g.find(k)))
+                .map(|j| session_value(&g, &g.sessions[j], gate.as_deref()))
+                .collect(),
+            None => Vec::new(),
+        }
     };
-    if let Some(v) = v {
+    for v in values {
         let _ = app.emit("orch-session", v);
     }
 }
@@ -313,8 +365,6 @@ fn routes_to(g: &Inner, from: &str, member: &str) -> bool {
 /// One structured event from the process of session `key`. A group member's wrapped event goes to the session of that
 /// member's repo as if its own process had printed it; without such a session, or while that session has its own run,
 /// it stays here (the group's), still wrapped.
-/// Gap (TODO.md): nothing yet marks member sessions busy while a group runs; the UI plan that starts groups must refuse
-/// a member's own start during a group run, and a group start while a member runs or waits to start.
 fn push_event<R: Runtime>(app: &AppHandle<R>, key: &str, ev: Value) {
     if let (Some(member), inner) = unwrap_group_event(&ev) {
         let member = key_of(Path::new(&member));
@@ -368,7 +418,7 @@ fn persist<R: Runtime>(app: &AppHandle<R>) {
         let st = app.state::<AppState>();
         let g = st.0.lock().unwrap();
         json!({
-            "repos": g.sessions.iter().map(|s| s.repo.to_string_lossy()).collect::<Vec<_>>(),
+            "repos": g.sessions.iter().filter(|s| s.group.is_none()).map(|s| s.repo.to_string_lossy()).collect::<Vec<_>>(),
             "maxParallel": g.max_parallel,
             "dailyBudget": g.daily_budget,
             "usageCap": { "fiveHour": g.usage_cap[0], "week": g.usage_cap[1] },
@@ -458,8 +508,29 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
         let st = app.state::<AppState>();
         let mut g = st.0.lock().unwrap();
         let i = g.find(&key).ok_or_else(|| format!("unknown repo: {repo}"))?;
+        let is_group = g.sessions[i].group.is_some();
         if g.sessions[i].running.is_some() || g.sessions[i].pending.is_some() {
-            return Err("this repo already has a run (or one waiting to start)".into());
+            return Err(format!(
+                "this {} already has a run (or one waiting to start)",
+                if is_group { "group" } else { "repo" }
+            ));
+        }
+        if is_group && args.first().map(String::as_str) != Some("group") {
+            return Err("not available for a repo group".into());
+        }
+        if let Some(name) = g.busy_group_of(&g.sessions[i].repo).filter(|_| !is_group) {
+            return Err(format!("this repo is busy in group \"{name}\"; stop the group first"));
+        }
+        if let Some(busy) = g
+            .members_of(i)
+            .iter()
+            .filter_map(|k| g.find(k))
+            .find(|&j| g.sessions[j].running.is_some() || g.sessions[j].pending.is_some())
+        {
+            return Err(format!(
+                "{} has a run of its own (or one waiting to start); stop it first",
+                g.sessions[busy].repo.display()
+            ));
         }
         let held = g.gate();
         if held.is_none() && g.running_count() < g.max_parallel {
@@ -483,6 +554,24 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
 /// Run and loop get the global limits: --usage-cap from the caps (`caps`, "" for none), and with a daily
 /// budget a --max-cost of at most what is left today (their own --max-cost, if lower).
 fn with_budget(mut args: Vec<String>, left: Option<f64>, caps: &str) -> Vec<String> {
+    if args.len() > 2 && args[0] == "group" && args[1] == "run" {
+        // `orch group run` takes no usage caps (the holds still stop new starts); it gets the day's budget left as
+        // --max-cost, before its goal, which comes last.
+        let Some(left) = left else { return args };
+        let goal = args.pop().unwrap_or_default();
+        let mut own = f64::INFINITY;
+        let mut out = Vec::with_capacity(args.len() + 3);
+        let mut it = args.into_iter();
+        while let Some(a) = it.next() {
+            if a == "--max-cost" {
+                own = it.next().and_then(|v| v.parse().ok()).unwrap_or(f64::INFINITY);
+            } else {
+                out.push(a);
+            }
+        }
+        out.extend(["--max-cost".into(), format!("{:.2}", own.min(left)), goal]);
+        return out;
+    }
     if !matches!(args.first().map(String::as_str), Some("run" | "loop" | "learn" | "share" | "split" | "new")) {
         return args;
     }
@@ -775,6 +864,7 @@ fn add_session(g: &mut Inner, path: &Path) -> Result<String, String> {
     if g.find(&key).is_none() {
         g.sessions.push(Session {
             repo: path.to_path_buf(),
+            group: None,
             running: None,
             pending: None,
             log: Vec::new(),
@@ -782,6 +872,166 @@ fn add_session(g: &mut Inner, path: &Path) -> Result<String, String> {
         });
     }
     Ok(key)
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// `orch <args>` in the home folder (group commands need no repo); its stdout, or the last line of stderr.
+fn orch_home<R: Runtime>(app: &AppHandle<R>, args: &[String]) -> Result<String, String> {
+    let out = node_cmd(app, &home_dir(), args)?.output().map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().lines().last().unwrap_or("orch failed").to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// One session per repo group (`orch group list --json`), keyed by its run dir: added, updated, or (when idle) dropped.
+fn apply_groups(g: &mut Inner, list: &[Value]) {
+    let mut seen = Vec::new();
+    for cfg in list {
+        let (Some(dir), Some(_)) = (cfg["dir"].as_str(), cfg["name"].as_str()) else {
+            continue;
+        };
+        let dir = PathBuf::from(dir);
+        let _ = fs::create_dir_all(&dir);
+        let key = key_of(&dir);
+        match g.find(&key) {
+            Some(i) => g.sessions[i].group = Some(cfg.clone()),
+            None => g.sessions.push(Session {
+                repo: dir,
+                group: Some(cfg.clone()),
+                running: None,
+                pending: None,
+                log: Vec::new(),
+                events: Vec::new(),
+            }),
+        }
+        seen.push(key);
+    }
+    g.sessions
+        .retain(|s| s.group.is_none() || seen.contains(&key_of(&s.repo)) || s.running.is_some() || s.pending.is_some());
+}
+
+fn sync_groups<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let out = orch_home(app, &["group".into(), "list".into(), "--json".into()])?;
+    let list: Vec<Value> = out
+        .lines()
+        .rev()
+        .find_map(|l| serde_json::from_str(l.trim()).ok())
+        .ok_or("orch group list returned no list")?;
+    apply_groups(&mut app.state::<AppState>().0.lock().unwrap(), &list);
+    emit_init(app);
+    Ok(())
+}
+
+/// A group name: lowercase letters, digits and dashes (orch checks it again).
+fn valid_group_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// `orch group add` from the group form: a name, two absolute folders, the backend's serve, the frontend's env.
+#[allow(clippy::too_many_arguments)]
+fn group_add_args(
+    name: &str,
+    backend: &str,
+    frontend: &str,
+    serve_url: Option<&str>,
+    serve_command: Option<&str>,
+    base_url: Option<&str>,
+    env: &serde_json::Map<String, Value>,
+) -> Result<Vec<String>, String> {
+    if !valid_group_name(name) {
+        return Err("group name: lowercase letters, digits and dashes".into());
+    }
+    let (be, fe) = (Path::new(backend.trim()), Path::new(frontend.trim()));
+    if !be.is_absolute() || !fe.is_absolute() {
+        return Err("the backend and frontend folders must be absolute paths".into());
+    }
+    let mut args: Vec<String> = vec![
+        "group".into(),
+        "add".into(),
+        name.into(),
+        "--repo".into(),
+        format!("{}:backend", be.display()),
+        "--repo".into(),
+        format!("{}:frontend", fe.display()),
+    ];
+    let some = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    if let Some(u) = some(serve_url) {
+        args.extend(["--serve-url".into(), u]);
+    }
+    if let Some(c) = some(serve_command) {
+        args.extend(["--serve-command".into(), c.chars().take(500).collect()]);
+    }
+    if let Some(u) = some(base_url) {
+        args.extend(["--base-url".into(), u]);
+    }
+    for (k, v) in env {
+        let ok =
+            k.chars().next().is_some_and(|c| c.is_ascii_uppercase() || c == '_') && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        let Some(v) = v.as_str().filter(|_| ok) else {
+            return Err(format!("env {k}: a NAME in capitals and a text value"));
+        };
+        args.extend(["--env".into(), format!("{k}={v}")]);
+    }
+    Ok(args)
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+fn save_group(
+    app: AppHandle,
+    name: String,
+    backend: String,
+    frontend: String,
+    serve_url: Option<String>,
+    serve_command: Option<String>,
+    base_url: Option<String>,
+    env: Option<serde_json::Map<String, Value>>,
+) -> Result<(), String> {
+    let args = group_add_args(
+        &name,
+        &backend,
+        &frontend,
+        serve_url.as_deref(),
+        serve_command.as_deref(),
+        base_url.as_deref(),
+        &env.unwrap_or_default(),
+    )?;
+    orch_home(&app, &args)?;
+    sync_groups(&app)
+}
+
+#[tauri::command(async)]
+fn remove_group(app: AppHandle, name: String) -> Result<(), String> {
+    {
+        let st = app.state::<AppState>();
+        let mut g = st.0.lock().unwrap();
+        let i = g
+            .sessions
+            .iter()
+            .position(|s| s.group.as_ref().is_some_and(|c| c["name"] == name.as_str()))
+            .ok_or_else(|| format!("unknown group: {name}"))?;
+        if g.sessions[i].running.is_some() || g.sessions[i].pending.is_some() {
+            return Err("stop this group's run before removing it".into());
+        }
+        g.sessions.remove(i);
+    }
+    orch_home(&app, &["group".into(), "remove".into(), name])?;
+    sync_groups(&app)
+}
+
+/// The group's name when `key` is a group session.
+fn group_name<R: Runtime>(app: &AppHandle<R>, key: &str) -> Option<String> {
+    let st = app.state::<AppState>();
+    let g = st.0.lock().unwrap();
+    g.find(key)
+        .and_then(|i| g.sessions[i].group.as_ref())
+        .and_then(|c| c["name"].as_str().map(str::to_string))
 }
 
 #[tauri::command]
@@ -874,8 +1124,14 @@ fn remove_repo(app: AppHandle, state: State<AppState>, repo: String) -> Result<(
     {
         let mut g = state.0.lock().unwrap();
         let i = g.find(&key_of(Path::new(&repo))).ok_or_else(|| format!("unknown repo: {repo}"))?;
+        if g.sessions[i].group.is_some() {
+            return Err("a group is removed with remove_group".into());
+        }
         if g.sessions[i].running.is_some() || g.sessions[i].pending.is_some() {
             return Err("stop this repo's run before closing it".into());
+        }
+        if g.busy_group_of(&g.sessions[i].repo).is_some() {
+            return Err("this repo is busy in a group run; stop the group first".into());
         }
         g.sessions.remove(i);
     }
@@ -965,6 +1221,42 @@ fn run_goal(
 ) -> Result<(), String> {
     if goal.trim().is_empty() {
         return Err("goal required".into());
+    }
+    let key = key_of(Path::new(&repo));
+    if let Some(name) = group_name(&app, &key) {
+        // A group's goal: its members open as tabs first, so their own events show there.
+        let members = {
+            let st = app.state::<AppState>();
+            let mut g = st.0.lock().unwrap();
+            let paths = g.find(&key).and_then(|i| g.sessions[i].group.as_ref()).map(group_paths).unwrap_or_default();
+            let before = g.sessions.len();
+            for p in paths {
+                let _ = add_session(&mut g, Path::new(&p));
+            }
+            g.sessions.len() != before
+        };
+        if members {
+            persist(&app);
+            emit_init(&app);
+        }
+        let goal = goal.trim().to_string();
+        let mut args: Vec<String> = vec!["group".into(), "run".into(), name];
+        args.extend(["--power".into(), power, "--max-rounds".into(), max_rounds.clamp(1, 20).to_string()]);
+        if let Some(c) = max_cost.filter(|c| *c > 0.0) {
+            args.extend(["--max-cost".into(), c.to_string()]);
+        }
+        if let Some(m) = models.as_deref().filter(|m| valid_model_spec(m)) {
+            args.extend(["--model".into(), m.into()]);
+        }
+        if approve_plan.unwrap_or(false) {
+            args.push("--approve-plan".into());
+        }
+        if let Some(fast) = fast {
+            args.push(if fast { "--fast" } else { "--no-fast" }.into());
+        }
+        let label = format!("group: {}", goal.chars().take(60).collect::<String>());
+        args.push(goal);
+        return request_start(&app, &repo, args, label);
     }
     // One goal: no loop budget, nothing to pull in.
     let extra = Extra {
@@ -1312,12 +1604,16 @@ fn accept_split(app: AppHandle, repo: String, brief: String, goals: Vec<String>)
 #[tauri::command(async)]
 fn approve_plan(app: AppHandle, repo: String, plan: Option<Value>, reject: Option<String>) -> Result<(), String> {
     use std::io::Write;
-    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let key = key_of(Path::new(&repo));
+    let dir = repo_of(&app, &key)?;
     let mut args = vec!["approve".to_string()];
     match (&reject, &plan) {
         (Some(r), _) => args.extend(["--reject".into(), r.chars().take(4000).collect()]),
         (None, Some(_)) => args.push("--plan-stdin".into()),
         _ => {}
+    }
+    if let Some(name) = group_name(&app, &key) {
+        args.extend(["--group".into(), name]);
     }
     let mut child = node_cmd(&app, &dir, &args)?
         .stdin(Stdio::piped())
@@ -1356,7 +1652,7 @@ fn agent_m_warm(app: AppHandle) {
             let repos: Vec<String> = {
                 let st = app.state::<AppState>();
                 let g = st.0.lock().unwrap();
-                g.sessions.iter().map(|s| s.repo.display().to_string()).collect()
+                g.sessions.iter().filter(|s| s.group.is_none()).map(|s| s.repo.display().to_string()).collect()
             };
             let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                 .map(PathBuf::from)
@@ -1394,11 +1690,11 @@ fn agent_m_ask(app: AppHandle, question: String, session: Option<String>) -> Res
     let (repos, running): (Vec<String>, Vec<String>) = {
         let st = app.state::<AppState>();
         let g = st.0.lock().unwrap();
-        let repos = g.sessions.iter().map(|s| s.repo.display().to_string()).collect();
+        let repos = g.sessions.iter().filter(|s| s.group.is_none()).map(|s| s.repo.display().to_string()).collect();
         let running = g
             .sessions
             .iter()
-            .filter(|s| s.running.is_some())
+            .filter(|s| s.group.is_none() && s.running.is_some())
             .map(|s| s.repo.display().to_string())
             .collect();
         (repos, running)
@@ -1514,7 +1810,11 @@ fn share_repo(
 /// Runs as a normal orch process: one per repo, output streams to that repo's log.
 #[tauri::command]
 fn rollback(app: AppHandle, repo: String) -> Result<(), String> {
-    request_start(&app, &repo, vec!["rollback".into()], "rollback".into())
+    let args = match group_name(&app, &key_of(Path::new(&repo))) {
+        Some(name) => vec!["group".into(), "rollback".into(), name],
+        None => vec!["rollback".into()],
+    };
+    request_start(&app, &repo, args, "rollback".into())
 }
 
 /// `orch plugins --json --details` in a repo: the user's Claude Code plugins with their token cost.
@@ -1613,23 +1913,46 @@ fn stop_after(app: AppHandle, state: State<AppState>, repo: String) -> Result<()
 #[tauri::command]
 fn stop(app: AppHandle, state: State<AppState>, repo: String) {
     let key = key_of(Path::new(&repo));
-    let (pid, cancelled) = {
+    let (pid, cancelled, group_run) = {
         let mut g = state.0.lock().unwrap();
         match g.find(&key) {
             Some(i) => {
                 let cancelled = g.sessions[i].pending.take().is_some();
-                (g.sessions[i].running.as_ref().map(|r| r.pid), cancelled)
+                let s = &g.sessions[i];
+                let group_run = s.group.as_ref().filter(|_| s.running.as_ref().is_some_and(|r| r.label.starts_with("group:")));
+                (
+                    s.running.as_ref().map(|r| r.pid),
+                    cancelled,
+                    group_run.and_then(|c| c["name"].as_str().map(str::to_string)),
+                )
             }
-            None => (None, false),
+            None => (None, false, None),
         }
     };
     if cancelled {
         push_line(&app, &key, "-- start cancelled --".into());
         emit_session(&app, &key);
     }
-    if let Some(pid) = pid {
-        kill_tree(pid);
+    let Some(pid) = pid else { return };
+    if let Some(name) = group_run {
+        // The group parks both repos when asked through `orch group stop`; killing its tree would leave them unparked.
+        // Only when the ask fails (it has not taken its locks yet, or orch cannot start) is the tree killed.
+        push_line(&app, &key, "-- stopping: the group parks both repos' work --".into());
+        std::thread::spawn(move || {
+            if orch_home(&app, &["group".into(), "stop".into(), name]).is_err() {
+                let same = {
+                    let st = app.state::<AppState>();
+                    let g = st.0.lock().unwrap();
+                    g.find(&key).is_some_and(|i| g.sessions[i].running.as_ref().is_some_and(|r| r.pid == pid))
+                };
+                if same {
+                    kill_tree(pid);
+                }
+            }
+        });
+        return;
     }
+    kill_tree(pid);
 }
 
 #[tauri::command]
@@ -1734,6 +2057,13 @@ fn main() {
                     let _ = add_session(&mut g, Path::new(&r));
                 }
             }
+            // The repo groups (one node call): in the background, so the window opens at once.
+            let groups = app.handle().clone();
+            std::thread::spawn(move || {
+                if let Err(e) = sync_groups(&groups) {
+                    eprintln!("could not list repo groups: {e}");
+                }
+            });
             // Lift an expired usage-limit hold and start a new budget day, then start what waits.
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
@@ -1797,6 +2127,8 @@ fn main() {
             decide_command,
             agent_m_ask,
             agent_m_warm,
+            save_group,
+            remove_group,
             split_brief,
             accept_split,
             stop_after,
@@ -1831,9 +2163,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn group_sessions_mark_their_members_busy() {
+        let cfg =
+            json!({ "name": "shop", "dir": "/h/groups/shop", "repos": [{ "path": "/w/api", "role": "backend" }, { "path": "/w/web", "role": "frontend" }] });
+        let mut g = Inner::default();
+        add_session(&mut g, &std::env::temp_dir()).unwrap();
+        g.sessions[0].repo = PathBuf::from("/w/api");
+        apply_groups(&mut g, std::slice::from_ref(&cfg));
+        assert_eq!(g.sessions.len(), 2, "one session per group, keyed by its dir");
+        let gi = g.find(&key_of(Path::new("/h/groups/shop"))).unwrap();
+        assert_eq!(g.members_of(gi), vec![key_of(Path::new("/w/api"))], "only open members");
+        assert_eq!(g.busy_group_of(Path::new("/w/api")), None, "an idle group marks nothing");
+        g.sessions[gi].pending = Some((vec!["group".into()], "group: x".into()));
+        assert_eq!(g.busy_group_of(Path::new("/w/api")).as_deref(), Some("shop"));
+        let v = session_value(&g, &g.sessions[0], None);
+        assert_eq!(v["inGroup"], "shop");
+        assert_eq!(session_value(&g, &g.sessions[gi], None)["group"]["name"], "shop");
+        apply_groups(&mut g, &[]);
+        assert_eq!(g.sessions.len(), 2, "a removed group's session stays while it runs or waits");
+        g.sessions[gi].pending = None;
+        apply_groups(&mut g, &[]);
+        assert_eq!(g.sessions.len(), 1, "and goes once idle");
+    }
+
+    #[test]
+    fn group_form_becomes_group_add_args() {
+        let mut env = serde_json::Map::new();
+        env.insert("API_URL".into(), json!("{backend}"));
+        let abs = |p: &str| if cfg!(windows) { format!("C:{p}") } else { p.to_string() };
+        let args = group_add_args(
+            "shop",
+            &abs("/w/api"),
+            &abs("/w/web"),
+            Some("http://localhost:3999"),
+            Some(" node s.js "),
+            None,
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            [
+                "group".to_string(),
+                "add".into(),
+                "shop".into(),
+                "--repo".into(),
+                format!("{}:backend", abs("/w/api")),
+                "--repo".into(),
+                format!("{}:frontend", abs("/w/web")),
+                "--serve-url".into(),
+                "http://localhost:3999".into(),
+                "--serve-command".into(),
+                "node s.js".into(),
+                "--env".into(),
+                "API_URL={backend}".into()
+            ]
+        );
+        assert!(group_add_args("Shop", &abs("/a"), &abs("/b"), None, None, None, &env).is_err());
+        assert!(group_add_args("shop", "rel", &abs("/b"), None, None, None, &env).is_err());
+        env.insert("lower".into(), json!("x"));
+        assert!(group_add_args("shop", &abs("/a"), &abs("/b"), None, None, None, &env).is_err());
+    }
+
+    #[test]
     fn routes_group_events_only_to_idle_member_sessions() {
         let session = |repo: &str| Session {
             repo: PathBuf::from(repo),
+            group: None,
             running: None,
             pending: None,
             log: Vec::new(),
@@ -1904,6 +2300,15 @@ mod tests {
         );
         assert_eq!(with_budget(v(&["new", "."]), Some(2.0), ""), v(&["new", ".", "--max-cost", "2.00"]));
         assert_eq!(with_budget(v(&["run", "g"]), None, ""), v(&["run", "g"]));
+        assert_eq!(
+            with_budget(v(&["group", "run", "shop", "--max-cost", "5", "--power", "heavy", "goal"]), Some(2.0), "5h=80"),
+            v(&["group", "run", "shop", "--power", "heavy", "--max-cost", "2.00", "goal"]),
+            "a group run gets the budget left before its goal, and no usage caps"
+        );
+        assert_eq!(
+            with_budget(v(&["group", "run", "shop", "goal"]), None, "5h=80"),
+            v(&["group", "run", "shop", "goal"])
+        );
         assert_eq!(with_budget(v(&["rollback"]), Some(1.0), "5h=80"), v(&["rollback"]));
         assert_eq!(
             with_budget(v(&["run", "g"]), None, "5h=80,week=90"),
@@ -2107,7 +2512,7 @@ mod tests {
             assert_eq!(end["type"], "goal_end");
             assert_eq!(end["passed"], true);
             assert!(s.log.iter().any(|l| l.starts_with("-- exited (0)")), "log: {:?}", s.log);
-            assert!(session_value(s, None)["queue"].is_array());
+            assert!(session_value(&g, s, None)["queue"].is_array());
             let list = node_cmd(&h, &s.repo, &["history".into(), "--json".into()]).unwrap().output().unwrap();
             assert!(list.status.success(), "{}", String::from_utf8_lossy(&list.stderr));
             let entries: Value = serde_json::from_slice(&list.stdout).unwrap();
