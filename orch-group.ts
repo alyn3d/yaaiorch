@@ -272,8 +272,10 @@ export function coordinatorFaultPrompt(g: GroupConfig, goal: string, contract: s
     COORDINATOR_PREAMBLE +
     repoLines(g) +
     `\n\nGoal for the whole group:\n${goal}\n\nAPI contract both sides build against:\n${contract.trim()}\n\n` +
-    `Integration failed: the frontend was checked in a browser against the running backend, and this is what was found:\n${report.trim()}\n\n` +
-    `Read both repos and decide which side deviates from the contract (or whether the contract itself is wrong), then give the fix goal for each side at fault. ${GOALS_NOTE}` +
+    `Integration failed: the frontend was checked against the running backend (live calls to it, and a browser check when the frontend has one), and this is what was found:\n${report.trim()}\n\n` +
+    `Read both repos and decide which side deviates from the contract (or whether the contract itself is wrong), then give the fix goal for each side at fault. ` +
+    `Blame a side only for behaviour the report shows. A check that could not run is no evidence against either side's code: when the backend did not answer, ` +
+    `that is the backend's fault (it must start and answer at its URL); when a check was simply not run, give the frontend the goal of running it. ${GOALS_NOTE}` +
     FAULT_FORMAT
   );
 }

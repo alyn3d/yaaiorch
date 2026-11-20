@@ -541,6 +541,20 @@ function childrenPassed(s: Run, ends: ChildEnd[], what: string) {
  * the step (it would not be the code just built). Without one the person runs the backend: an answering server is used
  * (`external`), and a backend fix fails the group, since the group cannot restart that server to check the fix.
  */
+/**
+ * The integration child's goal. Its agents get the probe tool (`--probe`) for the running backend: every contract case
+ * must be checked live through it, and a check that could not run is a failure, so integration never passes on code
+ * reading alone.
+ */
+export function integrationGoal(base: string): string {
+  return (
+    `Verify the frontend works against the running backend at ${base} for this contract; fix the frontend if it does not. ` +
+    `Call the backend with the mcp__probe__request tool (it reaches only that backend) for every endpoint and case the frontend relies on, ` +
+    `and compare each status and body with the contract and with what the frontend expects. ` +
+    `Report each call you made and what came back. A case you could not check live is a failure, not a pass.`
+  );
+}
+
 async function integrationStep(s: Run): Promise<void> {
   if (!s.serve) {
     console.warn("warning: no serve configured for the backend (in the group or the backend repo's config): integration skipped");
@@ -582,14 +596,14 @@ async function integrationStep(s: Run): Promise<void> {
         report = `The backend did not come up, so the frontend was not checked against it:\n${clip(down)}`;
       } else {
         const base = s.serve.baseUrl ?? new URL(server.url).origin;
-        const goal = `Verify the frontend works against the running backend at ${base} for this contract; fix the frontend if it does not.`;
+        const goal = integrationGoal(base);
         const findings: Findings = { failures: [], checks: [], problems: [] };
         const ends = await runChildren(
           s,
           "integration",
           round,
           { frontend: goal },
-          ["--no-fast"],
+          ["--no-fast", "--probe", base],
           (_, e) => noteFinding(findings, e),
           external ? { external: true } : {},
         );

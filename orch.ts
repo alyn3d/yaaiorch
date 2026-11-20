@@ -1146,6 +1146,8 @@ type RunCtx = {
   addDirs?: string[];
   /** --group-context: the group section (other repos, API contract) for the architect; implementers and QA get it in repoContext. */
   groupContext?: string;
+  /** --probe: a repo group's running backend (local URL); every agent gets the `mcp__probe__request` tool for it (probeServer). */
+  probe?: string;
 };
 
 // ---------- subscription usage: read from the CLI's rate_limit_event (stream-json) ----------
@@ -2086,6 +2088,143 @@ async function permitServer() {
   process.exit(0);
 }
 
+// ---------- --probe: a repo group's running backend, callable by the integration agents ----------
+// Headless agents have no shell (curl needs approval), so on their own they cannot check a frontend against the running
+// backend, and integration passed on code reading alone. With --probe every agent call gets an MCP server (`orch probe`,
+// started by claude) with one tool, `request`, that sends an HTTP request to that backend's origin only.
+const PROBE_TOOL = "mcp__probe__request";
+const PROBE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+const PROBE_BODY_MAX = 20_000;
+
+/** The --mcp-config file that gives one agent call the probe tool for `base`, removed by `cleanup`. */
+function probeConfig(base: string, cwd?: string) {
+  const name = `probe-${process.pid}-${++permitSeq}.json`;
+  const dir = join(cwd ?? ".", DIR);
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, name);
+  const args = [...process.execArgv, resolve(process.argv[1] ?? ""), "probe"];
+  writeFileSync(file, JSON.stringify({ mcpServers: { probe: { type: "stdio", command: process.execPath, args, env: { ORCH_PROBE_BASE: base } } } }, null, 2));
+  permitFiles.add(file);
+  return {
+    arg: `${DIR}/${name}`,
+    cleanup: () => {
+      rmSync(file, { force: true });
+      permitFiles.delete(file);
+    },
+  };
+}
+
+/** One probe request: the URL it goes to (same origin as `base` only), or why it is refused. */
+function probeTarget(base: string, method: unknown, path: unknown): { url: string; method: string } | { error: string } {
+  const m = typeof method === "string" ? method.toUpperCase() : "GET";
+  if (!PROBE_METHODS.includes(m)) return { error: `method must be one of ${PROBE_METHODS.join(", ")}` };
+  if (typeof path !== "string" || !path) return { error: "path is required, e.g. /api/items?max=10" };
+  let url: URL;
+  try {
+    url = new URL(path, base);
+  } catch {
+    return { error: `not a path or URL: ${path}` };
+  }
+  if (url.origin !== new URL(base).origin) return { error: `only the backend at ${new URL(base).origin} can be called, not ${url.origin}` };
+  return { url: url.href, method: m };
+}
+
+/** `orch probe`: the MCP server for --probe. Its tool sends one request to the backend and reports status, type and body. */
+async function probeServer() {
+  const base = process.env.ORCH_PROBE_BASE;
+  if (!base || !isLocalUrl(base)) throw new Error("orch probe is started by claude for runs with --probe");
+  const request = async (a: Record<string, unknown>) => {
+    const t = probeTarget(base, a.method, a.path);
+    if ("error" in t) return { text: t.error, isError: true };
+    const headers: Record<string, string> = {};
+    if (a.headers && typeof a.headers === "object")
+      for (const [k, v] of Object.entries(a.headers as Record<string, unknown>)) if (typeof v === "string") headers[k] = v;
+    const body = typeof a.body === "string" && t.method !== "GET" && t.method !== "HEAD" ? a.body : undefined;
+    try {
+      const r = await fetch(t.url, { method: t.method, headers, body, redirect: "manual", signal: AbortSignal.timeout(15_000) });
+      const text = t.method === "HEAD" ? "" : await r.text();
+      const clipped = text.length > PROBE_BODY_MAX ? `${text.slice(0, PROBE_BODY_MAX)}\n[... ${text.length - PROBE_BODY_MAX} more characters]` : text;
+      const kept = ["content-type", "location", "access-control-allow-origin"].filter((h) => r.headers.has(h)).map((h) => `${h}: ${r.headers.get(h)}`);
+      return { text: `${t.method} ${t.url}\nHTTP ${r.status} ${r.statusText}\n${kept.join("\n")}\n\n${clipped}` };
+    } catch (e) {
+      // Unreachable is a finding about the backend, not a blocked tool: say so plainly.
+      return { text: `${t.method} ${t.url}\nthe backend did not answer: ${msg(e)}`, isError: true };
+    }
+  };
+  await serveMcp("probe", [
+    {
+      name: "request",
+      description:
+        `Sends one HTTP request to the running backend at ${base} and returns the status, content type and body. ` +
+        "Use it to check the API contract live (every case you claim works). Only that backend's origin can be called.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          method: { type: "string", enum: PROBE_METHODS, description: "Default GET" },
+          path: { type: "string", description: "Path with query, e.g. /api/items?max=10 (relative to the backend)" },
+          headers: { type: "object", additionalProperties: { type: "string" } },
+          body: { type: "string", description: "Request body, e.g. JSON text (not for GET or HEAD)" },
+        },
+        required: ["path"],
+      },
+      call: request,
+    },
+  ]);
+}
+
+/** A minimal MCP server over stdio (JSON-RPC, one message per line): `tools`, each answering with text. Never prints anything else on stdout. */
+async function serveMcp(
+  name: string,
+  tools: { name: string; description: string; inputSchema: unknown; call: (args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }> }[],
+) {
+  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => process.exit(0));
+  const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
+  const handle = async (m: { id?: string | number; method?: string; params?: Record<string, unknown> }) => {
+    const reply = (result: unknown) => send({ jsonrpc: "2.0", id: m.id, result });
+    if (m.id === undefined || m.id === null) return; // a notification
+    switch (m.method) {
+      case "initialize":
+        return reply({
+          protocolVersion: typeof m.params?.protocolVersion === "string" ? m.params.protocolVersion : "2025-06-18",
+          capabilities: { tools: {} },
+          serverInfo: { name, version: "1" },
+        });
+      case "ping":
+        return reply({});
+      case "tools/list":
+        return reply({ tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
+      case "tools/call": {
+        const tool = tools.find((t) => t.name === m.params?.name);
+        if (!tool) return send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: `unknown tool ${String(m.params?.name)}` } });
+        const out = await tool.call((m.params?.arguments ?? {}) as Record<string, unknown>);
+        return reply({ content: [{ type: "text", text: out.text }], ...(out.isError ? { isError: true } : {}) });
+      }
+      default:
+        return send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: `method not found: ${String(m.method)}` } });
+    }
+  };
+  process.stdin.setEncoding("utf8");
+  let buf = "";
+  process.stdin.on("data", (chunk: string) => {
+    buf += chunk;
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let m: { id?: string | number; method?: string; params?: Record<string, unknown> };
+      try {
+        m = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      handle(m).catch((e) => m.id !== undefined && send({ jsonrpc: "2.0", id: m.id, error: { code: -32603, message: msg(e) } }));
+    }
+  });
+  await new Promise<void>((done) => process.stdin.on("end", done));
+  process.exit(0);
+}
+
 async function runWithRetry(
   agent: Entry,
   model: string,
@@ -2157,10 +2296,18 @@ async function runOnce(
   };
   // --commands: shell commands go to Agent M (permitServer) instead of being refused. Never for read-only roles.
   const permit = ctx.commandTimeoutMs && !readOnly ? permitConfig(agent.name, ctx.questionRound, taskId, ctx.commandTimeoutMs, cwd) : undefined;
+  // --probe: every role (QA too) may call the group's running backend through the probe tool, allowed up front.
+  const probe = ctx.probe ? probeConfig(ctx.probe, cwd) : undefined;
+  const cleanup = () => {
+    permit?.cleanup();
+    probe?.cleanup();
+  };
   return new Promise((resolve, reject) => {
     const args = [
       "-p",
-      ...(permit ? ["--mcp-config", permit.arg, "--permission-prompt-tool", PERMIT_TOOL] : []),
+      ...(permit || probe ? ["--mcp-config", ...[permit?.arg, probe?.arg].filter((a): a is string => !!a)] : []),
+      ...(permit ? ["--permission-prompt-tool", PERMIT_TOOL] : []),
+      ...(probe ? ["--allowedTools", PROBE_TOOL] : []),
       ...(agent.builtin ? ["--agents", BUILTIN_FILE] : []),
       ...(existsSync(AGENT_SETTINGS) ? ["--settings", readOnly ? READONLY_SETTINGS : AGENT_SETTINGS] : []),
       // Not through cmd.exe (a path could read as shell syntax there): the other repos are then only named in the prompt.
@@ -2185,7 +2332,7 @@ async function runOnce(
       p = spawnClaude(args, { ...(cwd ? { cwd } : {}), stdio: ["pipe", "pipe", "inherit"] }) as typeof p;
     } catch (e) {
       settle(0);
-      permit?.cleanup();
+      cleanup();
       return reject(e);
     }
     let timedOut = false;
@@ -2206,10 +2353,10 @@ async function runOnce(
       out += d;
       readActivity?.(d);
     });
-    p.on("error", (e) => (clearTimeout(timer), settle(0), permit?.cleanup(), reject(e)));
+    p.on("error", (e) => (clearTimeout(timer), settle(0), cleanup(), reject(e)));
     p.on("close", (code) => {
       clearTimeout(timer);
-      permit?.cleanup();
+      cleanup();
       const r = parseCliOutput(out);
       // Count the cost even when the call failed: the money is spent either way.
       const cost = typeof r?.total_cost_usd === "number" ? r.total_cost_usd : 0;
@@ -3437,6 +3584,8 @@ type Opts = {
   groupContext?: string;
   /** --read-dir: other repos of a group; agents may read them (--add-dir), never write there. Resolved, real paths. */
   readDirs: string[];
+  /** --probe: a group's running backend, which agents may call through the probe tool (local URLs only). */
+  probe?: string;
   /** Refuse to commit known key formats, private keys and .env files. */
   secretScan: boolean;
   /** Comment on the GitHub issue a goal came from (start, done, failed, blocked). */
@@ -4523,6 +4672,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   // A group's member run: the other repos are readable, and the architect sees the group section (others get it in repoContext).
   if (o.readDirs.length) ctx.addDirs = o.readDirs;
   if (o.groupContext) ctx.groupContext = o.groupContext;
+  if (o.probe) ctx.probe = o.probe;
 
   for (let round = 1; round <= o.maxRounds; round++) {
     ctx.questionRound = round;
@@ -5545,6 +5695,7 @@ function parseOpts(values: Record<string, string | boolean | string[] | undefine
   const retries = Number(values.retries ?? cfg.retries ?? 1);
   if (!Number.isInteger(retries) || retries < 0 || retries > 3) throw new Error(`--retries must be 0 to 3, got "${values.retries ?? cfg.retries}"`);
   const { groupContext, readDirs } = memberFlags(values);
+  const probe = probeFlag(values.probe);
   return {
     maxRounds,
     power: power as Power,
@@ -5581,7 +5732,15 @@ function parseOpts(values: Record<string, string | boolean | string[] | undefine
     maxCostTotal,
     ...(groupContext ? { groupContext } : {}),
     readDirs,
+    ...(probe ? { probe } : {}),
   };
+}
+
+/** --probe URL: a running backend on this machine (localhost only), as given; undefined without the flag. */
+function probeFlag(v: unknown): string | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "string" || !isLocalUrl(v)) throw new Error(`--probe must be a local URL (localhost, 127.0.0.1, [::1] or *.localhost), got "${String(v)}"`);
+  return v;
 }
 
 /** A group's member run: --group-context names a readable file, each --read-dir an existing directory other than this repo. */
@@ -5813,6 +5972,7 @@ async function main() {
       "base-url": { type: "string" },
       env: { type: "string", multiple: true },
       "group-context": { type: "string" },
+      probe: { type: "string" },
       "read-dir": { type: "string", multiple: true },
     },
   });
@@ -5914,6 +6074,8 @@ async function main() {
       return decideCommand(rest[0], rest[1]);
     case "permit":
       return permitServer();
+    case "probe":
+      return probeServer();
     case "chat":
       return chat(!!values.warm);
     case "intake": {
@@ -6050,6 +6212,7 @@ async function main() {
 export {
   priorityOf,
   alwaysBlocked,
+  probeTarget,
   protectRe,
   protectedBy,
   SECRETS,

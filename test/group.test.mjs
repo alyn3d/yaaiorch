@@ -1391,6 +1391,44 @@ describe("orch group run", { timeout: 600_000 }, () => {
     }
   });
 
+  test("integration agents call the running backend through the probe tool, and only that backend", async () => {
+    const s = await setupServe();
+    try {
+      // QA asks the backend; the frontend implementer tries another origin. Build children have no probe tool.
+      const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"], { FAKE_PROBE: "qa=/api/items?max=10;fe=http://example.com/x" });
+      assert.equal(r.code, 0, r.out);
+      const log = readFileSync(join(s.home, "fake.log"), "utf8").split("\n");
+      const probes = log.filter((l) => /: probe /.test(l));
+      assert.ok(
+        probes.some(
+          (l) => l.startsWith("qa: probe allowed=mcp__probe__request GET") && l.includes(`${s.url}/api/items?max=10 | HTTP 200`) && l.endsWith("| ok"),
+        ),
+        probes.join("\n"),
+      );
+      assert.ok(
+        probes.some((l) => l.startsWith("fe: probe allowed=mcp__probe__request error only the backend at")),
+        probes.join("\n"),
+      );
+      assert.ok(
+        probes.some((l) => l === "qa: probe none"),
+        "the build step's QA has no probe tool",
+      );
+      // The integration goal asks for live checks through the tool.
+      const integ = r.events.find(
+        (e) => e.type === "group_child" && e.repo === s.fe && e.event.type === "goal_start" && /Verify the frontend/.test(e.event.goal),
+      );
+      assert.match(integ.event.goal, /mcp__probe__request/);
+      assert.match(integ.event.goal, /could not check live is a failure/);
+      assert.deepEqual(
+        readdirSync(join(s.fe, ".orchestrator")).filter((f) => f.startsWith("probe-")),
+        [],
+        "the per-call MCP config files are removed",
+      );
+    } finally {
+      clean(s);
+    }
+  });
+
   test("backend fault then pass", async () => {
     const s = await setupServe();
     try {

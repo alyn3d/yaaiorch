@@ -35,6 +35,8 @@
 //                            "<agent>: command=<cmd> behavior=<allow|deny> message=<why>"; FAKE_COMMAND_TOOL picks the tool
 //                            FAKE_COMMAND_CRASH=1: the agent dies hard (with the MCP server) while its command waits;
 //                            FAKE_COMMAND_DESC=<text>: the reason it gives (demos)
+//   FAKE_PROBE=<agent>=<path>[;<agent>=<path>]   with a "probe" server in --mcp-config (orch run --probe), that agent
+//                            calls its request tool with GET <path> and logs "<agent>: probe allowed=<--allowedTools> <reply>"
 //   FAKE_CHAT_REPLY=<text>   orch chat (Agent M) answers with this text (demos)
 //   FAKE_REVIEW_REJECT=a,b   these agents reject a diff review (--diff-critic, --review); others approve
 //   FAKE_TIDY=bad            the notes tidy call returns no usable notes
@@ -291,6 +293,44 @@ if (permitTool && wanted) {
   const answer = JSON.parse(res.result.content[0].text);
   log(`${agent}: command=${command} behavior=${answer.behavior} message=${answer.message ?? ""}`);
   child.stdin.end();
+}
+
+// --probe: call the probe tool (orch probe, an MCP server from one of the --mcp-config files) like the real CLI would.
+const probeWanted = (env.FAKE_PROBE ?? "")
+  .split(";")
+  .map((x) => x.split("="))
+  .find(([a]) => a === agent);
+if (probeWanted) {
+  const at = args.indexOf("--mcp-config");
+  const files = at < 0 ? [] : args.slice(at + 1).filter((a, i, all) => !all.slice(0, i + 1).some((x) => x.startsWith("--")));
+  const server = files.map((f) => JSON.parse(readFileSync(f, "utf8")).mcpServers?.probe).find(Boolean);
+  if (!server) log(`${agent}: probe none`);
+  else {
+    const child = spawn(server.command, server.args, { env: { ...process.env, ...server.env }, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+    const replies = new Map();
+    let buf = "";
+    child.stdout.setEncoding("utf8").on("data", (d) => {
+      buf += d;
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const m = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        replies.get(m.id)?.(m);
+      }
+    });
+    let next = 0;
+    const rpc = (method, params) =>
+      new Promise((resolve) => {
+        const id = ++next;
+        replies.set(id, resolve);
+        child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      });
+    await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-claude", version: "0" } });
+    const res = await rpc("tools/call", { name: "request", arguments: { path: probeWanted.slice(1).join("=") } });
+    const text = res.result.content[0].text.split("\n").filter(Boolean).join(" | ");
+    log(`${agent}: probe allowed=${opt("--allowedTools")} ${res.result.isError ? "error " : ""}${text}`);
+    child.stdin.end();
+  }
 }
 
 const questionFlag = `.orchestrator/fake-question-${agent}`;

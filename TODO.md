@@ -118,6 +118,9 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Repo groups in the UI**: a group page per group (define, start, approve, stop through `orch group stop`,
   roll back; contract, goals, step and outcome), events `group_approval_wait` / `group_approval`, member repos marked
   busy (`inGroup`) and refusing their own starts, a group start refused while a member runs.
+- [x] **Repo groups: integration checks the backend live.** A demo run passed integration without any live call (no
+  shell for curl). Integration agents now get a probe tool for the running backend (`--probe`), the goal requires live
+  checks, and the fault call blames a side only for what the report shows.
 - [ ] **Repo groups: more than two repos and other roles** (several backends, a shared library, a mobile app).
 - [ ] **Repo groups: `--on-limit wait`.** A usage limit parks both repos as interrupted and exits 3; waiting for the
   reset and resuming the parked work is not built.

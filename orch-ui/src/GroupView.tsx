@@ -352,7 +352,7 @@ function GroupRunCard({
       {group.failed && <p className="error">Integration failed: {group.failed}</p>}
       {group.external && <p className="muted">Checked against a backend that was already running (no serve command).</p>}
       {group.approval && running && <GroupApproval key={group.approval.round} a={group.approval} onAnswer={onAnswer} />}
-      {group.goals && (
+      {group.goals && !(group.approval && running) && (
         <ul className="group-goals">
           {ROLES.filter((r) => group.goals?.[r]).map((role) => (
             <li key={role}>
@@ -366,7 +366,22 @@ function GroupRunCard({
           ))}
         </ul>
       )}
-      {group.fault && (
+      {group.fault && group.ok && (
+        <details className="disclosure">
+          <summary>
+            Fixed along the way: integration failed once, and the coordinator sent the{" "}
+            {group.fault.side === "both" ? "backend and the frontend" : group.fault.side} a fix
+          </summary>
+          <ul className="failures muted">
+            {ROLES.filter((r) => group.fault!.goals[r]).map((r) => (
+              <li key={r}>
+                {r} fix: {group.fault!.goals[r]}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {group.fault && !group.ok && (
         <aside className="failure-summary">
           <strong>Integration failed: the coordinator blames the {group.fault.side === "both" ? "backend and the frontend" : group.fault.side}</strong>
           <ul className="failures">
@@ -412,7 +427,7 @@ function GroupRunCard({
         </p>
       )}
       {group.contract && (
-        <details className="disclosure" open={!!group.approval}>
+        <details className="disclosure" hidden={!!group.approval && running}>
           <summary>API contract</summary>
           <pre className="contract">{group.contract}</pre>
         </details>

@@ -201,7 +201,9 @@ What a run does:
    and `--strict-files`. The repo's own `branch`, `pr`, `approvePlan`, `worktrees` and `ask` settings are ignored in a group.
    After every step both repos must be clean: an uncommitted change (say, a script that wrote into the other repo)
    fails the group and names the files.
-3. The backend is started in its repo with `serve.command`, and the frontend is checked against it in the browser. If
+3. The backend is started in its repo with `serve.command`, and the frontend is checked against it: its agents call the
+   running backend through a probe tool (that backend only), every case the frontend relies on must be checked live,
+   and the browser check runs too when the frontend has a `serve`. If
    something already answers at the URL, the group stops there (stop it, so the group can start the backend it just
    built). Without a `command` you run the backend yourself: the group uses the one answering, with a warning, and a
    backend fix fails the group (restart your backend and rerun). On a failure the coordinator says which side is at

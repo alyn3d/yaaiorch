@@ -978,6 +978,19 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
   });
 });
 
+describe("probe tool (orch run --probe)", () => {
+  test("requests reach the backend's origin only, with a known method", () => {
+    const base = "http://localhost:3999/api";
+    assert.deepEqual(o.probeTarget(base, undefined, "/api/items?max=10"), { url: "http://localhost:3999/api/items?max=10", method: "GET" });
+    assert.deepEqual(o.probeTarget(base, "post", "http://localhost:3999/x"), { url: "http://localhost:3999/x", method: "POST" });
+    assert.match(o.probeTarget(base, "GET", "http://example.com/").error, /only the backend at http:\/\/localhost:3999/);
+    assert.match(o.probeTarget(base, "GET", "http://localhost:4000/").error, /only the backend/, "another port is another origin");
+    assert.match(o.probeTarget(base, "GET", "//evil.example/x").error, /only the backend/, "a protocol-relative path");
+    assert.match(o.probeTarget(base, "TRACE", "/").error, /method must be one of/);
+    assert.match(o.probeTarget(base, "GET", "").error, /path is required/);
+  });
+});
+
 describe("protected paths and secret formats", () => {
   test("protect patterns", () => {
     const hit = (p, f) => o.protectRe(p).test(f);

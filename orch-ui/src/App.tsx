@@ -82,8 +82,9 @@ export function App() {
     }
   }, [current]);
 
-  const running = order.filter((r) => sessions[r]?.state.running).length;
-  const waiting = order.filter((r) => sessions[r]?.state.queued).length;
+  // A group run takes a parallel slot like a repo's run.
+  const running = [...order, ...groups].filter((r) => sessions[r]?.state.running).length;
+  const waiting = [...order, ...groups].filter((r) => sessions[r]?.state.queued).length;
 
   const guard = async (fn: () => Promise<void>) => {
     setError("");
