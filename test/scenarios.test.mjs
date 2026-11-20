@@ -173,6 +173,58 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.match(builtin.out, /swap target "critic" for "qa" must be a user or project agent, not a built-in/);
   });
 
+  test("a skill or custom agent turned off in a repo is left out of the plan and hidden from every agent", () => {
+    const dir = repo();
+    for (const name of ["keep-skill", "off-skill"]) {
+      mkdirSync(join(dir, ".claude", "skills", name), { recursive: true });
+      writeFileSync(join(dir, ".claude", "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: The ${name}\n---\n\nDo it.\n`);
+    }
+    mkdirSync(join(dir, ".claude", "agents"), { recursive: true });
+    for (const name of ["helper", "spare"])
+      writeFileSync(join(dir, ".claude", "agents", `${name}.md`), `---\nname: ${name}\ndescription: The ${name} agent\n---\n\nHelp.\n`);
+    git(dir, "add", ".claude");
+    git(dir, "commit", "-m", "skills and agents");
+
+    // Refused: an unknown skill, a built-in agent, and an agent a swap uses.
+    assert.match(orch(dir, ["agents", "--disable-skill", "nope"]).out, /no skill "nope"/);
+    assert.match(orch(dir, ["agents", "--disable-agent", "qa"]).out, /built-in agent/);
+    assert.equal(orch(dir, ["agents", "--swap", "qa=spare"]).code, 0);
+    assert.match(orch(dir, ["agents", "--disable-agent", "spare"]).out, /used in the qa role; unswap it first/);
+
+    for (const args of [
+      ["--disable-skill", "off-skill"],
+      ["--disable-agent", "helper"],
+    ]) {
+      const r = orch(dir, ["agents", ...args]);
+      assert.equal(r.code, 0, r.out);
+    }
+    const listed = JSON.parse(orch(dir, ["agents", "--json"]).out.trim().split("\n").pop());
+    assert.deepEqual(listed.disabled, { skills: ["off-skill"], agents: ["helper"] });
+
+    const prompts = join(dir, ".orchestrator", "prompts");
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--no-fast"], { FAKE_QA: "pass", FAKE_PROMPTS: prompts });
+    assert.equal(r.code, 0, r.out);
+    const architect = readdirSync(prompts)
+      .filter((f) => f.endsWith("-architect.txt"))
+      .map((f) => readFileSync(join(prompts, f), "utf8"))[0];
+    assert.match(architect, /- keep-skill: /);
+    assert.doesNotMatch(architect, /off-skill/);
+    assert.doesNotMatch(architect, /- helper: /);
+    for (const file of ["agent-settings.json", "readonly-settings.json"]) {
+      const settings = JSON.parse(readFileSync(join(dir, ".orchestrator", file), "utf8"));
+      assert.deepEqual(settings.skillOverrides, { "off-skill": "off" }, file);
+      assert.ok(settings.permissions.deny.includes("Skill(off-skill)"), file);
+    }
+
+    // Turned back on: gone from the config, and the settings no longer hide it.
+    assert.equal(orch(dir, ["agents", "--enable-skill", "off-skill"]).code, 0);
+    assert.equal(orch(dir, ["agents", "--enable-agent", "helper"]).code, 0);
+    const cfg = JSON.parse(readFileSync(join(dir, ".orchestrator", "config.json"), "utf8"));
+    assert.equal(cfg.skills, undefined);
+    assert.equal(cfg.agents, undefined);
+    assert.equal(cfg.swap.qa, "spare", "other settings are kept");
+  });
+
   test("browser setup requires selecting the current script and preserves existing settings", () => {
     const dir = repo();
     mkdirSync(join(dir, "web"));

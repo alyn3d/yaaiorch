@@ -76,7 +76,9 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
   orch status           show queue
   orch history [ID] --json   list recorded goal attempts, or read one attempt's events
   orch agents [--json] [--swap ROLE=AGENT | --unswap ROLE]
-                        list agents + skills, or use a custom agent in a built-in role
+              [--disable-skill NAME | --enable-skill NAME | --disable-agent NAME | --enable-agent NAME]
+                        list agents + skills, use a custom agent in a built-in role, or turn a skill or
+                        custom agent off in this repo (config skills.disable / agents.disable)
   orch doctor [--json]  check node, claude (installed, logged in), git and the repo
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
@@ -749,6 +751,10 @@ type Config = {
   onLimit?: "wait" | "stop";
   usageCap?: { "5h"?: number; week?: number };
   plugins?: { off?: boolean; disable?: string[]; hooks?: boolean };
+  /** Skills turned off in this repo: left out of the architect's list, and "off" in every agent's skillOverrides. */
+  skills?: { disable?: string[] };
+  /** Custom agents turned off in this repo: left out of the roster (a swap target stays usable in its role). */
+  agents?: { disable?: string[] };
   brief?: boolean;
   strictFiles?: boolean;
   maxCostTotal?: number;
@@ -820,8 +826,49 @@ function applyAgentSwaps(roster: Entry[], swap: Config["swap"]): Entry[] {
   });
 }
 
+/** The names this repo turned off (config skills.disable / agents.disable), ignoring anything that is not a plain name. */
+function disabledNames(cfg: Config, kind: "skills" | "agents"): Set<string> {
+  const list = cfg[kind]?.disable;
+  return new Set(Array.isArray(list) ? list.filter((n): n is string => typeof n === "string" && AGENT_NAME_RE.test(n)) : []);
+}
+
+/** Agents for this repo: discovered ones without the custom agents it turned off (a swap target is kept), then the swaps. */
 function configuredRoster(cfg: Config): Entry[] {
-  return applyAgentSwaps(discoverAgents(), cfg.swap);
+  const off = disabledNames(cfg, "agents");
+  const swapTargets = new Set(Object.values(cfg.swap ?? {}));
+  const agents = discoverAgents().filter((a) => a.source === "builtin" || !off.has(a.name) || swapTargets.has(a.name));
+  return applyAgentSwaps(agents, cfg.swap);
+}
+
+/** Skills for this repo's architect: discovered ones without those it turned off. */
+function configuredSkills(cfg: Config): Entry[] {
+  const off = disabledNames(cfg, "skills");
+  return discoverSkills().filter((s) => !off.has(s.name));
+}
+
+/**
+ * `orch agents --disable-skill|--enable-skill|--disable-agent|--enable-agent NAME`: turn a skill or a custom agent off (or
+ * back on) in this repo. Built-in agents cannot be turned off, nor an agent a swap uses; enabling always works, so a
+ * name that no longer exists can be cleared.
+ */
+function setDisabled(kind: "skills" | "agents", name: string, off: boolean) {
+  if (!AGENT_NAME_RE.test(name)) throw new Error(`not a ${kind === "skills" ? "skill" : "agent"} name: "${name}"`);
+  const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+  if (off && kind === "skills" && !discoverSkills().some((s) => s.name === name)) throw new Error(`no skill "${name}" in this repo or your user folder`);
+  if (off && kind === "agents") {
+    const agent = discoverAgents().find((a) => a.name === name);
+    if (!agent) throw new Error(`no agent "${name}"`);
+    if (agent.source === "builtin") throw new Error(`"${name}" is a built-in agent; swap it for a custom one instead of turning it off`);
+    const role = Object.entries(cfg.swap ?? {}).find(([, target]) => target === name)?.[0];
+    if (role) throw new Error(`"${name}" is used in the ${role} role; unswap it first`);
+  }
+  const list = new Set(disabledNames(cfg, kind));
+  if (off) list.add(name);
+  else list.delete(name);
+  if (list.size) cfg[kind] = { ...(cfg[kind] ?? {}), disable: [...list].sort() };
+  else delete cfg[kind];
+  writeFileAtomic(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  return { ok: true, kind, name, enabled: !off };
 }
 
 function saveAgentSwap(spec: string | undefined, unswap: string | undefined) {
@@ -862,12 +909,14 @@ function loadChecks(cfg: Config): Record<string, string> {
 function writeAgentSettings(cfg: Config, checks: Record<string, string>, plugins: PluginChoice, readDirs: string[] = []) {
   const cmds = [...Object.values(checks), ...(checks.test ? ["npm test"] : []), "git status", "git diff", "git log", "git show"];
   const allow = [...cmds.flatMap((c) => [`Bash(${c}:*)`, `PowerShell(${c}:*)`]), ...(cfg.allow ?? [])];
-  const extra = pluginSettings(plugins);
-  const denyRead = readDenyRules(readDirs);
-  writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow, ...(denyRead.length ? { deny: denyRead } : {}) }, ...extra }, null, 2));
+  const extra = { ...pluginSettings(plugins), ...skillSettings(cfg) };
+  // A skill turned off is hidden from the model (skillOverrides) and its Skill tool call denied, should it be named anyway.
+  const denySkills = [...disabledNames(cfg, "skills")].map((n) => `Skill(${n})`);
+  const deny = [...readDenyRules(readDirs), ...denySkills];
+  writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow, ...(deny.length ? { deny } : {}) }, ...extra }, null, 2));
   writeFileSync(
     READONLY_SETTINGS,
-    JSON.stringify({ permissions: { allow, deny: ["Edit", "Write", "MultiEdit", "NotebookEdit", ...denyRead] }, ...extra }, null, 2),
+    JSON.stringify({ permissions: { allow, deny: ["Edit", "Write", "MultiEdit", "NotebookEdit", ...deny] }, ...extra }, null, 2),
   );
 }
 
@@ -923,6 +972,12 @@ async function pluginTokens(plugins: Plugin[]): Promise<void> {
 }
 
 /** Settings for the agents' --settings file: plugins switched off and/or hooks disabled. */
+/** Claude Code's skillOverrides for the skills this repo turned off ("off": neither listed nor invocable). */
+function skillSettings(cfg: Config): { skillOverrides?: Record<string, "off"> } {
+  const off = [...disabledNames(cfg, "skills")];
+  return off.length ? { skillOverrides: Object.fromEntries(off.map((n) => [n, "off" as const])) } : {};
+}
+
 function pluginSettings(c: PluginChoice): { enabledPlugins?: Record<string, false>; disableAllHooks?: true } {
   const ids = c.off
     ? listPlugins()
@@ -4618,7 +4673,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     ...(o.diffCritic && critic ? [{ agent: critic, lens: "goal" as Lens }] : []),
     ...reviewerNames.map((n) => ({ agent: byName.get(n)!, lens: "bugs" as Lens })),
   ];
-  const skills = discoverSkills();
+  const skills = configuredSkills(cfg);
   writeBuiltins(roster);
   let checks = loadChecks(cfg);
   writeAgentSettings(cfg, checks, o.plugins, o.readDirs);
@@ -5957,6 +6012,10 @@ async function main() {
       "save-agent": { type: "string" },
       swap: { type: "string" },
       unswap: { type: "string" },
+      "disable-skill": { type: "string" },
+      "enable-skill": { type: "string" },
+      "disable-agent": { type: "string" },
+      "enable-agent": { type: "string" },
       github: { type: "string" },
       backlog: { type: "string" },
       setup: { type: "string" },
@@ -6032,9 +6091,25 @@ async function main() {
         return console.log(JSON.stringify({ ok: true, path }));
       }
       if (typeof values.swap === "string" || typeof values.unswap === "string") return console.log(JSON.stringify(saveAgentSwap(values.swap, values.unswap)));
+      for (const [flag, kind, off] of [
+        ["disable-skill", "skills", true],
+        ["enable-skill", "skills", false],
+        ["disable-agent", "agents", true],
+        ["enable-agent", "agents", false],
+      ] as const) {
+        const name = values[flag];
+        if (typeof name === "string") return console.log(JSON.stringify(setDisabled(kind, name, off)));
+      }
       if (values.json) {
         const cfg = readJsonFile<Config>(CONFIG_FILE, {});
-        return console.log(JSON.stringify({ agents: discoverAgents(), skills: discoverSkills(), swap: cfg.swap ?? {} }));
+        return console.log(
+          JSON.stringify({
+            agents: discoverAgents(),
+            skills: discoverSkills(),
+            swap: cfg.swap ?? {},
+            disabled: { skills: [...disabledNames(cfg, "skills")], agents: [...disabledNames(cfg, "agents")] },
+          }),
+        );
       }
       console.log(
         "agents:\n" +

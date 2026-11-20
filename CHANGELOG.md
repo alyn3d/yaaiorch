@@ -5,16 +5,18 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
-### Added
-- Repo groups: one goal across a backend and a frontend repo (`orch group add|run|stop|rollback`, and a group page in the app: **+ New group**, run, approve the plan, stop, roll back; member repos show their part and refuse their own runs meanwhile). A coordinator writes the API contract and a goal per repo, both repos build in parallel against it, then the frontend is checked in a browser against the running backend; a failure goes back to the side at fault. On failure both repos are reset and their work parked; `orch group rollback` undoes a passed goal in both.
+## [0.6.0] - 2026-11-20
 
+### Added
+- Repo groups: one goal across a backend and a frontend repo (`orch group add|run|stop|rollback`, and a group page in the app: **+ New group**, run, approve the plan, stop, roll back; member repos show their part and refuse their own runs meanwhile). A coordinator writes the API contract and a goal per repo, both repos build in parallel against it, then the frontend is checked against the running backend (live calls to every case it relies on, and a browser check when the frontend has a `serve`); a failure goes back to the side at fault. On failure both repos are reset and their work parked; `orch group rollback` undoes a passed goal in both.
 - Repo groups: the integration check's agents call the running backend through a probe tool (`orch run --probe URL`, an MCP server limited to that backend), and a contract case that was not checked live fails the check. Before, agents had no way to reach the backend (no shell), and integration could pass on code reading alone.
+- Skills and custom agents can be turned off per repo (switches on the **Agents** page, `orch agents --disable-skill` / `--disable-agent`): a skill turned off is hidden from every agent and never offered to the architect, an agent turned off never gets a task.
 - Events `group_approval_wait` and `group_approval` for a group plan waiting with `--approve-plan`; `orch group list --json` names each group's run `dir`.
 
 ### Changed
 - `orch group add` over an existing group keeps its `contract` and `integrationRounds`.
 - A user agent named `coordinator` is now treated as the repo-group coordinator and left out of plans.
-- The landing page has a fourth screenshot, a repo group waiting for plan approval (two demo repos).
+- The landing page has a fourth screenshot (a repo group waiting for plan approval, on two demo repos) and a repo groups feature card, and lists macOS with the desktop app.
 - The landing page screenshots rotate every four seconds with a progress bar, pausing for interaction or reduced-motion preferences.
 - Added source and release license notices and guidance to distinguish unofficial forks from YAAIORCH.
 
@@ -418,7 +420,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.5.6...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/alyn3d/yaaiorch/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/alyn3d/yaaiorch/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/alyn3d/yaaiorch/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/alyn3d/yaaiorch/compare/v0.5.3...v0.5.4

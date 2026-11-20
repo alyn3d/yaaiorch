@@ -13,7 +13,8 @@ Conductor, Claude Squad and Vibe Kanban), YAAIORCH's distinct strengths are:
 - the loop is deterministic code, not an LLM coordinating other LLMs;
 - success is decided by exit codes, diffs and hidden-test evals with a false-pass count;
 - it never loses work, and has a budget, timeouts, stuck escalation and usage-limit waiting;
-- read-only planner and QA, and a Windows desktop app.
+- read-only planner and QA, and a Windows desktop app;
+- one goal across a backend and a frontend repo, built against a shared contract and checked live together.
 
 Its remaining gaps: no sandbox for untrusted repos (more pressing now that agents can run commands you approve),
 Claude Code as the only agent runtime, and eval cases hard enough to need more than one round. The first eval
@@ -95,7 +96,23 @@ Still open, moved on:
 - Running the issue and CI flows against real GitHub, and measuring all of 0.3 to 0.5 on the evals. The fast path is
   measured; memory, resume and the critics need harder cases first (today's all pass in round 1).
 
-## 0.6: product and packaging
+## 0.6: repo groups (released 0.6.0)
+
+One goal across more than one repo.
+
+Shipped in 0.6.0: repo groups of one backend and one frontend repo. A coordinator writes the API contract and a goal
+per repo, both repos build in parallel against it (the other repo readable, never writable), then the frontend is
+checked against the running backend: its agents call the backend through a probe tool limited to it, and a case not
+checked live fails the check. A failed integration goes back to the side at fault; on failure both repos are reset and
+the work parked, and a passed goal can be rolled back in both. Groups have a page in the app (define, run, approve the
+contract, stop, roll back), and member repos show their part. Skills and custom agents can be turned off per repo.
+
+Still open, moved on:
+
+- More than two repos and other roles (several backends, a shared library, a mobile app).
+- Waiting out a usage limit inside a group, a branch and pull request per repo, and group eval cases.
+
+## 0.7: product and packaging
 
 - Run history and replay, per-task output, diff viewer, token counts, agent roster editor.
 - One backend instead of two in sync.

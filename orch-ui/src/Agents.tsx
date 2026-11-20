@@ -53,6 +53,22 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
   const agent = roster?.agents.find((a) => a.name === selected);
   const customAgents = roster?.agents.filter((item) => item.source !== "builtin") ?? [];
   const swap = roster?.swap?.[agent?.name ?? ""];
+  const offSkills = new Set(roster?.disabled?.skills ?? []);
+  const offAgents = new Set(roster?.disabled?.agents ?? []);
+  /** The built-in role a custom agent stands in for, if any: it cannot be turned off while swapped in. */
+  const roleOf = (name: string) => Object.entries(roster?.swap ?? {}).find(([, target]) => target === name)?.[0];
+  const toggle = async (kind: "skill" | "agent", name: string, enabled: boolean) => {
+    setSaving(true);
+    setError("");
+    try {
+      await transport.toggleRoster(repo, kind, name, enabled);
+      setRefresh((n) => n + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
   const startEdit = (entry?: RosterEntry) => {
     setError("");
     if (!entry) setSelected("");
@@ -104,7 +120,7 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
       <header className="page-head">
         <div className="page-title">
           <h2>Agent roster</h2>
-          <p className="muted">Agents and skills available to this repo’s architect.</p>
+          <p className="muted">Agents and skills available to this repo’s architect. Turn custom agents and skills off per repo.</p>
         </div>
         <label>
           Repo
@@ -155,6 +171,7 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
                   >
                     <span className="agent-choice-head">
                       <strong>{item.name}</strong>
+                      {offAgents.has(item.name) && <span className="badge failed">off</span>}
                       <span className={`badge ${item.source === "project" ? "done" : ""}`}>{sourceLabel(item.source)}</span>
                     </span>
                     <span className="muted">{item.description || "No description"}</span>
@@ -197,6 +214,25 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
                       <button onClick={() => startEdit(agent)}>{agent.source === "project" ? "Edit" : "Create project override"}</button>
                     </div>
                     <p className="muted">{agent.description || "No description"}</p>
+                    {agent.source !== "builtin" && (
+                      <label
+                        className="check switch agent-enabled"
+                        title={
+                          roleOf(agent.name)
+                            ? `Used in the ${roleOf(agent.name)} role; unswap it first`
+                            : "Off: the architect never gives this agent a task in this repo"
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={!offAgents.has(agent.name)}
+                          disabled={saving || (!!roleOf(agent.name) && !offAgents.has(agent.name))}
+                          onChange={(e) => toggle("agent", agent.name, e.target.checked)}
+                        />{" "}
+                        Use in this repo
+                      </label>
+                    )}
                     {agent.source === "builtin" && (
                       <div className="agent-swap">
                         <label>
@@ -239,17 +275,34 @@ export function AgentsPage({ repos, repo, onRepoChange }: { repos: string[]; rep
           <section className="card">
             <div className="card-head">
               <h3>Discovered skills</h3>
-              <span className="count">{roster.skills.length}</span>
+              <span className="count">
+                {offSkills.size
+                  ? `${roster.skills.length - roster.skills.filter((x) => offSkills.has(x.name)).length} of ${roster.skills.length} on`
+                  : roster.skills.length}
+              </span>
             </div>
+            <p className="muted">
+              A skill turned off is hidden from every agent in this repo and never offered to the architect. Plugin skills follow their plugin (Run settings).
+            </p>
             {roster.skills.length ? (
               <ul className="roster-skills">
                 {roster.skills.map((skill) => (
-                  <li key={skill.name}>
+                  <li key={skill.name} className={offSkills.has(skill.name) ? "off" : undefined}>
                     <div>
                       <strong>{skill.name}</strong>
                       <p className="muted">{skill.description || "No description"}</p>
                     </div>
                     <span className={`badge ${skill.source === "project" ? "done" : ""}`}>{skill.source === "project" ? "Project" : "User-level"}</span>
+                    <label className="check switch" title={offSkills.has(skill.name) ? "Off in this repo" : "On in this repo"}>
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        aria-label={`Use ${skill.name} in this repo`}
+                        checked={!offSkills.has(skill.name)}
+                        disabled={saving}
+                        onChange={(e) => toggle("skill", skill.name, e.target.checked)}
+                      />
+                    </label>
                   </li>
                 ))}
               </ul>

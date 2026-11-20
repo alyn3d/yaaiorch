@@ -187,7 +187,7 @@ Each item should show its effect in the evals before it becomes the default.
   their cost by default.
 - [ ] **Baseline**: capture the checkpoint's pages too, so observations that predate the goal are labelled as such.
 
-## 0.6: product and packaging
+## 0.7: product and packaging
 
 - [x] **Run history**: append events to `.orchestrator/runs/<id>.jsonl`, list and replay past runs.
 - [x] **Per-task output** on the task cards (truncated report in `task_end`), and a diff viewer per round.

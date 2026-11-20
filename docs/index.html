@@ -507,6 +507,10 @@
         gap: 16px;
       }
 
+      .feature-wide {
+        grid-column: 1 / -1;
+      }
+
       .feature {
         min-height: 205px;
         padding: 25px;
@@ -813,7 +817,7 @@
           </div>
           <p class="download-meta" id="download-meta" hidden></p>
           <p class="requirements">
-            Desktop app for Windows and Linux; macOS arrives in 0.6. The CLI runs wherever Node.js 20+ does. Needs
+            Desktop app for Windows, macOS and Linux. The CLI runs wherever Node.js 20+ does. Needs
             Claude Code (installed and logged in) and git; the desktop app brings its own Node.js.
           </p>
         </div>
@@ -987,8 +991,19 @@
               review the pull request before merging.
             </p>
           </article>
-          <article class="feature">
+          <article class="feature feature-wide">
             <span class="feature-mark" aria-hidden="true">07</span>
+            <h3>One goal across your backend and frontend</h3>
+            <p>
+              Group a backend repo with a frontend repo and give them one goal. A coordinator writes the API contract and
+              a goal for each side, both repos build in parallel against it, then the frontend is checked against the
+              running backend with live calls to every case it relies on. A failure goes back to the side at fault; if
+              it still fails, both repos are reset and the work is kept on a branch. Approve the contract first, stop
+              at any time, or roll back both repos in one step.
+            </p>
+          </article>
+          <article class="feature">
+            <span class="feature-mark" aria-hidden="true">08</span>
             <h3>See what happened</h3>
             <p>
               Follow each round's phases, see parallel tasks overlap, and watch recent tool-request categories as agents
@@ -997,16 +1012,17 @@
             </p>
           </article>
           <article class="feature">
-            <span class="feature-mark" aria-hidden="true">08</span>
+            <span class="feature-mark" aria-hidden="true">09</span>
             <h3>Know your agents</h3>
             <p>
               Browse built-in, user and project agents alongside discovered skills. Edit project agents or save a
               repo-local override without changing your global Claude Code definitions. Put a differently named
-              specialist in any built-in role from the Agents page, while keeping the role's permissions and model.
+              specialist in any built-in role from the Agents page, while keeping the role's permissions and model,
+              and turn skills or custom agents off for a repo that should not use them.
             </p>
           </article>
           <article class="feature">
-            <span class="feature-mark" aria-hidden="true">09</span>
+            <span class="feature-mark" aria-hidden="true">10</span>
             <h3>Agent M: you approve every command</h3>
             <p>
               Turn it on and agents can ask to install a dependency or run a generator. Each command waits on the Agent M
@@ -1015,7 +1031,7 @@
             </p>
           </article>
           <article class="feature">
-            <span class="feature-mark" aria-hidden="true">10</span>
+            <span class="feature-mark" aria-hidden="true">11</span>
             <h3>Measured in the open</h3>
             <p>
               Real runs are graded by hidden tests the agents never see, counting false passes too. The

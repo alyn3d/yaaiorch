@@ -244,6 +244,12 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   on the **Agents** page. Undo it with `orch agents --unswap be` or **Use built-in**. Plans and events
   still use the role name (`be`), while the Claude call uses `backend-builder`; role permissions and
   model selection stay unchanged.
+- **Skills and agents per repo.** Every discovered skill and custom agent is on by default. Turn one off in a
+  repo with the switches on the **Agents** page, or `orch agents --disable-skill NAME` / `--disable-agent NAME`
+  (`--enable-…` undoes it; saved as `skills.disable` / `agents.disable` in `.orchestrator/config.json`). A skill
+  turned off is never offered to the architect and is hidden from every agent (Claude Code's `skillOverrides`,
+  plus a `Skill(NAME)` deny rule); an agent turned off never gets a task. Built-in agents and an agent swapped into
+  a role stay on. Plugin skills follow their plugin.
 - **Plans** are JSON: tasks with a phase (`foundation`, `build`, `verify`) and the files each task owns.
   No file is owned twice, which is what makes parallel builds in one working tree safe.
 - **Models.** Each power tier maps the roles (architect, implementers, heavy tasks, QA, fast-path agent)

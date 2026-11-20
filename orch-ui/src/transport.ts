@@ -66,6 +66,8 @@ export interface Transport {
   saveAgent(repo: string, name: string, content: string): Promise<void>;
   /** Use a custom agent in a built-in role, or undo the mapping when `target` is omitted. */
   swapAgent(repo: string, role: string, target?: string): Promise<void>;
+  /** Turn a skill or a custom agent on or off in this repo (config skills.disable / agents.disable). */
+  toggleRoster(repo: string, kind: "skill" | "agent", name: string, enabled: boolean): Promise<void>;
   /** Agent M: ask about the setup and the open repos (Haiku, read-only); `session` continues a conversation. */
   agentMAsk(question: string, session?: string): Promise<AgentMReply>;
   /** Agent M: gather the machine status in the background so the first question is quick (fire and forget). */
@@ -229,6 +231,7 @@ const web: Transport = {
   },
   saveAgent: (repo, name, content) => post("agents", { repo, name, content }),
   swapAgent: (repo, role, target) => post("agents/swap", { repo, role, target }),
+  toggleRoster: (repo, kind, name, enabled) => post("agents/toggle", { repo, kind, name, enabled }),
   agentMAsk: (question, session) => post("agent-m/ask", { question, session }),
   agentMWarm: () => post("agent-m/warm", {}),
   saveGroup: (g) => post("group-save", g),
@@ -321,6 +324,7 @@ const tauri: Transport = {
   },
   saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
   swapAgent: (repo, role, target) => tauriInvoke("swap_agent", { repo, role, target }),
+  toggleRoster: (repo, kind, name, enabled) => tauriInvoke("toggle_roster", { repo, kind, name, enabled }),
   agentMAsk: (question, session) => tauriInvoke<AgentMReply>("agent_m_ask", { question, session }),
   agentMWarm: () => tauriInvoke("agent_m_warm"),
   saveGroup: (g) => tauriInvoke("save_group", g),

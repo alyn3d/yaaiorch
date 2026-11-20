@@ -1501,6 +1501,37 @@ fn swap_agent(app: AppHandle, repo: String, role: String, target: Option<String>
     }
 }
 
+/// The `orch agents` flag that turns a skill or custom agent on or off in a repo, or None for an unknown kind.
+fn toggle_flag(kind: &str, enabled: bool) -> Option<&'static str> {
+    match (kind, enabled) {
+        ("skill", true) => Some("--enable-skill"),
+        ("skill", false) => Some("--disable-skill"),
+        ("agent", true) => Some("--enable-agent"),
+        ("agent", false) => Some("--disable-agent"),
+        _ => None,
+    }
+}
+
+/// Turn a skill or custom agent on or off in this repo (`orch agents --disable-skill NAME` and the like).
+#[tauri::command(async)]
+fn toggle_roster(app: AppHandle, repo: String, kind: String, name: String, enabled: bool) -> Result<(), String> {
+    let flag = toggle_flag(&kind, enabled).ok_or("kind must be skill or agent")?;
+    let dir = repo_of(&app, &key_of(Path::new(&repo)))?;
+    let out = node_cmd(&app, &dir, &["agents".into(), flag.into(), name])?
+        .output()
+        .map_err(|e| format!("{NODE_HINT}: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("orch agents failed")
+            .to_string())
+    }
+}
+
 /// `orch learn`: a read-only pass that writes the project brief. A run like any other (slot, budget, log).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -2117,6 +2148,7 @@ fn main() {
             visual_image,
             save_agent,
             swap_agent,
+            toggle_roster,
             stop,
             clear_log,
             rollback,
@@ -2184,6 +2216,15 @@ mod tests {
         g.sessions[gi].pending = None;
         apply_groups(&mut g, &[]);
         assert_eq!(g.sessions.len(), 1, "and goes once idle");
+    }
+
+    #[test]
+    fn toggle_flags() {
+        assert_eq!(toggle_flag("skill", false), Some("--disable-skill"));
+        assert_eq!(toggle_flag("skill", true), Some("--enable-skill"));
+        assert_eq!(toggle_flag("agent", false), Some("--disable-agent"));
+        assert_eq!(toggle_flag("agent", true), Some("--enable-agent"));
+        assert_eq!(toggle_flag("plugin", true), None);
     }
 
     #[test]

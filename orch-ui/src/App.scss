@@ -2144,3 +2144,17 @@ pre.contract {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+// Agents page: skills and custom agents turned off in a repo.
+.roster-skills > li {
+  > div {
+    flex: 1;
+    min-width: 0;
+  }
+  &.off > div {
+    opacity: 0.55;
+  }
+}
+.agent-enabled {
+  margin: 4px 0 8px;
+}

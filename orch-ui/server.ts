@@ -826,6 +826,14 @@ http
           const args = typeof b.target === "string" ? ["agents", "--swap", `${b.role}=${b.target}`] : ["agents", "--unswap", b.role];
           return json(200, JSON.parse(await orchOutput(s.repo, args)));
         }
+        if (url.pathname === "/api/agents/toggle") {
+          // Turn a skill or custom agent on or off in this repo (orch checks the name and refuses built-ins and swap targets).
+          const s = mustGet(typeof b.repo === "string" ? b.repo : null);
+          const flag = { skill: ["--disable-skill", "--enable-skill"], agent: ["--disable-agent", "--enable-agent"] }[b.kind as "skill" | "agent"];
+          if (!flag || typeof b.name !== "string" || typeof b.enabled !== "boolean")
+            return json(400, { error: "kind (skill or agent), name and enabled are required" });
+          return json(200, JSON.parse(await orchOutput(s.repo, ["agents", flag[b.enabled ? 1 : 0], b.name])));
+        }
         if (url.pathname === "/api/add-repo") {
           if (typeof b.path !== "string" || !b.path.trim()) return json(400, { error: "path required" });
           const s = addRepo(b.path.trim());
