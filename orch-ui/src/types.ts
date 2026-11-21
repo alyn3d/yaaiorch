@@ -131,7 +131,10 @@ export type RoundView = {
   architectTokens?: TokenUsage;
   summary: string;
   tasks: TaskView[];
-  checks?: { name: string; command: string; ok: boolean; code: number | null; ms: number }[];
+  /** `gate`: a gate check (config gateChecks), which agents cannot run. */
+  checks?: { name: string; command: string; ok: boolean; code: number | null; ms: number; gate?: boolean }[];
+  /** Gate checks not run this round because an ordinary check failed. */
+  gateSkipped?: string[];
   checksStarted?: boolean;
   visualStarted?: boolean;
   passed?: boolean;

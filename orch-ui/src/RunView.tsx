@@ -552,14 +552,23 @@ export function RunPanel({
               <p className="phase">Checks</p>
               {r.checks.length ? (
                 r.checks.map((c) => (
-                  <span key={c.name} className={`badge ${c.ok ? "done" : "failed"}`} title={`${c.command} (${fmt(c.ms)})`}>
-                    {c.name}
+                  <span
+                    key={c.name}
+                    className={`badge ${c.ok ? "done" : "failed"}`}
+                    title={`${c.gate ? "Gate check (agents cannot run it): " : ""}${c.command} (${fmt(c.ms)})`}
+                  >
+                    {c.gate ? `gate · ${c.name}` : c.name}
                     {c.ok ? "" : ` exit ${c.code}`}
                   </span>
                 ))
               ) : (
                 <span className="muted">none configured</span>
               )}
+              {r.gateSkipped?.map((name) => (
+                <span key={`gate-${name}`} className="badge" title="Gate check not run: an earlier check failed">
+                  gate · {name} skipped
+                </span>
+              ))}
             </div>
           )}
           {r.visual && (

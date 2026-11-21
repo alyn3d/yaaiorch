@@ -404,6 +404,16 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   { "checks": { "test": "python -m unittest discover -s tests -t ." }, "allow": ["Bash(make lint:*)"] }
   ```
 
+- **Gate checks** (optional): slow suites you want judged but not run by the agents, like end-to-end or
+  performance tests that would otherwise only run in CI. YAAIORCH runs them after the ordinary checks pass, and a
+  failure fails the round like any check; agents are told their names, never their commands, and may not run them.
+  Give each a command that does not start with an ordinary check's (`orch doctor` warns if one does, since the
+  agents' permission for the check would cover it too):
+
+  ```json
+  { "checks": { "test": "npm test" }, "gateChecks": { "e2e": "node scripts/e2e.mjs" } }
+  ```
+
 - **Browser checks** (optional; a web app with a dev server). In **Run settings → Browser checks**, YAAIORCH
   detects common web apps in the repo root or an immediate child folder. Choose an app and approve its displayed
   command and lifecycle scripts; the actual localhost URL is discovered when the server starts. If the scripts

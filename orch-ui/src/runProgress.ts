@@ -119,7 +119,7 @@ export function failureSummary(run: RunView): { round: number; issues: string[];
                   ? [`${t.agent}: ${t.status.toLowerCase()}`]
                   : [],
           ),
-          ...(r.checks ?? []).filter((c) => !c.ok).map((c) => `Check "${c.name}" failed (exit ${c.code ?? "unknown"}).`),
+          ...(r.checks ?? []).filter((c) => !c.ok).map((c) => `${c.gate ? "Gate check" : "Check"} "${c.name}" failed (exit ${c.code ?? "unknown"}).`),
           ...(r.visual?.problems ?? []).map((p) => `Browser check: ${p}`),
           ...(r.reviews ?? []).filter((review) => !review.approved).flatMap((review) => review.issues.map((issue) => `${review.agent}: ${issue}`)),
         ];

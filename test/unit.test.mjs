@@ -560,6 +560,19 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     ({ overviewBoard } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "overviewBoard.ts")).href, import.meta.url));
   });
   const fold = (events) => events.reduce((run, e, i) => reduce(run, { t: 1000 + i, ...e }), null);
+  test("gate checks keep their gate flag, and skipped gates are recorded on the round", () => {
+    const run = fold([
+      { type: "goal_start", goal: "g", maxRounds: 2 },
+      { type: "round_start", round: 1, power: "economy" },
+      { type: "checks", round: 1, results: [{ name: "unit", command: "u", ok: false, code: 1, ms: 1 }], gateSkipped: ["e2e"] },
+      { type: "round_start", round: 2, power: "economy" },
+      { type: "checks", round: 2, results: [{ name: "perf", command: "p", ok: false, code: 1, ms: 1, gate: true }] },
+    ]);
+    assert.deepEqual(run.rounds[0].gateSkipped, ["e2e"]);
+    assert.equal(run.rounds[1].checks[0].gate, true);
+    assert.equal(run.rounds[1].gateSkipped, undefined);
+    assert.deepEqual(failureSummary(run).issues, ['Gate check "perf" failed (exit 1).']);
+  });
   test("questions remain independently answered in the replay", () => {
     const run = fold([
       { type: "goal_start", goal: "g", maxRounds: 1 },
