@@ -5,8 +5,9 @@ import { defuse, toCsv } from "./csv.js";
 const EXPORT_COLUMNS = ["id", "title", "priority", "status", "assignee", "createdAt"];
 
 function sendCsv(res, text) {
-  res.writeHead(200, { "content-type": "text/csv; charset=utf-8" });
-  res.end(text);
+  // A BOM so Excel reads UTF-8; a download named tickets.csv.
+  res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="tickets.csv"' });
+  res.end("﻿" + text);
 }
 
 function sendJson(res, status, data) {

@@ -103,9 +103,9 @@ means QA or the checks are too lenient.
 | api-series | node-api | series | 3 goals: create, update and delete, filters |
 | web-dashboard-bug | web-dashboard | visual | medium: three separate causes of sideways scroll at 375px, an unreadable dark-mode header, desktop unchanged |
 | web-pricing | web-site | visual | medium: cards side by side on desktop and stacked on phones, a site-wide dark theme |
-| lib-intervals-perf | node-lib | multi-round | gate: random inputs against an oracle, 200,000 intervals per side within a time budget |
-| lib-recurrence-fuzz | node-lib | multi-round | gate: 3,000 random recurrence rules against a day-by-day oracle |
-| tickets-export-e2e | node-tickets | multi-round | gate: CSV export driven end to end through the API, every filter, awkward titles |
+| lib-intervals-perf | node-lib | multi-round | gate: random inputs against an oracle, 200,000 intervals per side within a time budget, house rules (JSDoc, error messages) |
+| lib-recurrence-fuzz | node-lib | multi-round | gate: 3,000 random recurrence rules against a day-by-day oracle, house rules (JSDoc, error messages) |
+| tickets-export-e2e | node-tickets | multi-round | gate: CSV export driven end to end through the API, every filter, awkward titles, download rules (BOM, attachment) |
 
 **Series** cases (`goals` instead of `goal`) run several goals one after another on the same repo, like a
 user working through a backlog, and are graded once at the end with hidden tests covering every goal. A
@@ -164,3 +164,11 @@ In practice they did not: the agents can run the checks themselves and fixed eve
 cases (`gate` in `cases.json`) fix that: their gate suite lives outside the repo and the agents only learn its
 name, so a miss surfaces after the round and drives a fix round. The summary's **round 2+** column says whether a case
 does its job (keep a case when at least 2 of 3 `economy` runs reach round 2).
+
+A gate that only checks what the goal states was not enough: on 2026-11-21 all 9 `economy` runs of the three cases
+passed their gate in round 1. So each gate also enforces house rules a CI job would and the goal does not state, the
+way a real project's CI catches what a ticket never said: JSDoc with `@param` and `@returns` on every export and error
+messages that start with the function's name and name the bad argument (`lib-*`), a UTF-8 BOM and a
+`Content-Disposition` attachment for the CSV download (`tickets-export-e2e`). The failure output names exactly what is
+missing, so the fix round can act on it. These cases measure fixing (resume, escalation, the critics), not planning; a
+single agent without the gate fails them by design.

@@ -75,10 +75,38 @@ function perf(m, which, n) {
   return "ok";
 }
 
+/**
+ * House rule: an error message starts with the function's name and a colon, then names the bad argument or element.
+ * Returns every call that breaks it.
+ */
+function errorRules(m) {
+  const cases = [
+    ["mergeIntervals", ['"x"'], TypeError, "mergeIntervals: list"],
+    ["mergeIntervals", ["[[1, 2], [3, 1]]"], RangeError, "mergeIntervals: list[1]"],
+    ["subtractIntervals", ["[[0, 1]]", "5"], TypeError, "subtractIntervals: b"],
+    ["subtractIntervals", ["[[0, 1], [2, 1]]", "[]"], RangeError, "subtractIntervals: a[1]"],
+    ["subtractIntervals", ["[]", "[[5, 2]]"], RangeError, "subtractIntervals: b[0]"],
+  ];
+  const problems = [];
+  for (const [fn, args, type, prefix] of cases) {
+    const call = `${fn}(${args.join(", ")})`;
+    try {
+      m[fn](...args.map((a) => JSON.parse(a)));
+      problems.push(`${call} did not throw`);
+    } catch (e) {
+      const head = new RegExp(`^${prefix.replace(/[[\]]/g, "\\$&")}(?![\\w[])`);
+      if (!(e instanceof type)) problems.push(`${call} threw ${e?.name}; expected a ${type.name}`);
+      else if (!head.test(e.message)) problems.push(`${call} threw "${e.message}"; the message must start with "${prefix}"`);
+    }
+  }
+  return problems.length ? `error messages must start with the function name and a colon, then name the bad argument or element:\n- ${problems.join("\n- ")}` : "ok";
+}
+
 import(workerData.url).then(
   (m) => {
     try {
-      parentPort.postMessage(workerData.task === "fuzz" ? fuzz(m, workerData.which) : perf(m, workerData.which, workerData.n));
+      const { task } = workerData;
+      parentPort.postMessage(task === "rules" ? errorRules(m) : task === "fuzz" ? fuzz(m, workerData.which) : perf(m, workerData.which, workerData.n));
     } catch (e) {
       parentPort.postMessage(`threw ${e}`);
     }

@@ -140,3 +140,12 @@ Both runs spend money; the user starts them or approves them first.
 
 - Exact prompt wording; event field for skipped gates; how the UI marks gate checks.
 - Case content within the three themes, as long as the discrimination run passes.
+
+## Revision after the first discrimination run (2026-11-21)
+
+All 9 `economy` runs passed their gate in round 1 ($4.83): goals that state every requirement get solved first time,
+gate or not. The user chose to have each gate also enforce CI house rules the goal does not state (JSDoc `@param` /
+`@returns` on exports and error messages that start with the function name and name the bad argument for the `lib-*`
+cases; a UTF-8 BOM and `Content-Disposition: attachment; filename="tickets.csv"` for `tickets-export-e2e`). The
+failure output names exactly what is missing. All 9 round-1 solutions from that run fail the revised gates. The cases
+now measure fixing rather than planning, and a single agent without the gate fails them by design.

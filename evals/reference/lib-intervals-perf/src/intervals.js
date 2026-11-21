@@ -1,12 +1,11 @@
 /** Throw unless `list` is an array of [start, end] pairs of finite numbers with start < end. */
-function check(list, name) {
-  if (!Array.isArray(list)) throw new TypeError(`${name} must be an array`);
-  for (const iv of list) {
-    if (!Array.isArray(iv) || iv.length !== 2) throw new RangeError(`${name}: every interval must be [start, end]`);
-    const [s, e] = iv;
-    if (typeof s !== "number" || typeof e !== "number" || !Number.isFinite(s) || !Number.isFinite(e) || !(s < e))
-      throw new RangeError(`${name}: invalid interval [${s}, ${e}]`);
-  }
+function check(fn, list, name) {
+  if (!Array.isArray(list)) throw new TypeError(`${fn}: ${name} must be an array`);
+  list.forEach((iv, i) => {
+    const ok =
+      Array.isArray(iv) && iv.length === 2 && typeof iv[0] === "number" && typeof iv[1] === "number" && Number.isFinite(iv[0]) && Number.isFinite(iv[1]) && iv[0] < iv[1];
+    if (!ok) throw new RangeError(`${fn}: ${name}[${i}] is not a valid interval [start, end] with start < end`);
+  });
 }
 
 /** Sorted copy with overlapping or touching intervals merged. Assumes a checked list. */
@@ -21,16 +20,25 @@ function merged(list) {
   return out;
 }
 
-/** Merge overlapping or touching [start, end) intervals into a sorted list. */
+/**
+ * Merge overlapping or touching [start, end) intervals.
+ * @param {[number, number][]} list intervals in any order
+ * @returns {[number, number][]} new intervals, sorted by start, none overlapping or touching
+ */
 export function mergeIntervals(list) {
-  check(list, "list");
+  check("mergeIntervals", list, "list");
   return merged(list);
 }
 
-/** The parts of the intervals in `a` that no interval in `b` covers, merged and sorted. */
+/**
+ * The parts of the intervals in `a` that no interval in `b` covers.
+ * @param {[number, number][]} a intervals to keep parts of
+ * @param {[number, number][]} b intervals to cut out
+ * @returns {[number, number][]} new intervals, merged and sorted
+ */
 export function subtractIntervals(a, b) {
-  check(a, "a");
-  check(b, "b");
+  check("subtractIntervals", a, "a");
+  check("subtractIntervals", b, "b");
   const A = merged(a);
   const B = merged(b);
   const out = [];

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import { jsdocProblems } from "./house-rules.mjs";
 
 const N = 200_000;
 /** Generous: the goal asks for one second; a sort-and-sweep solution needs a fraction of that. */
@@ -34,16 +35,27 @@ function inWorker(data, ms) {
   });
 }
 
+test("house rules: JSDoc with @param and @returns on every export of src/intervals.js", () => {
+  const problems = jsdocProblems("src/intervals.js");
+  assert.ok(!problems.length, `exported functions need a JSDoc block with @param for each parameter and @returns:\n- ${problems.join("\n- ")}`);
+});
+
+test("house rules: error messages name the function and the bad argument", async () => {
+  const r = await inWorker({ task: "rules" }, 10_000);
+  assert.notEqual(r, "timeout", "a call with invalid input did not return");
+  assert.ok(r === "ok", r);
+});
+
 for (const which of ["merge", "subtract"]) {
   const fn = `${which}Intervals`;
   test(`${fn} matches the oracle on 3,000 random inputs (smallest first)`, async () => {
     const r = await inWorker({ task: "fuzz", which }, 30_000);
     assert.notEqual(r, "timeout", `${fn} did not return on a small input`);
-    assert.equal(r, "ok", r);
+    assert.ok(r === "ok", r);
   });
   test(`${fn} handles ${N.toLocaleString("en")} intervals per argument within the time budget`, async () => {
     const r = await inWorker({ task: "perf", which, n: N }, BUDGET_MS + 2000); // + generating the input
     assert.notEqual(r, "timeout", `${fn} on ${N.toLocaleString("en")} intervals per argument is too slow (the goal asks for under a second)`);
-    assert.equal(r, "ok", r);
+    assert.ok(r === "ok", r);
   });
 }

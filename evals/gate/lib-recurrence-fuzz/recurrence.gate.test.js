@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import { jsdocProblems } from "./house-rules.mjs";
 
 const CASES = 3000;
 const LIMIT_MS = 60_000;
@@ -76,6 +77,63 @@ import(workerData.url).then((m) => {
   parentPort.postMessage("ok");
 }, (e) => parentPort.postMessage({ load: String(e) }));
 `;
+
+/** Runs `code` (CommonJS, sees `m`: the repo's module) in a worker; resolves its message, or "timeout". */
+function inWorker(code, data, ms) {
+  return new Promise((done) => {
+    const src = `const { parentPort, workerData } = require("node:worker_threads");
+      import(workerData.url).then((m) => { ${code} }, (e) => parentPort.postMessage({ load: String(e) }));`;
+    const w = new Worker(src, { eval: true, workerData: { url: pathToFileURL(resolve("src/recurrence.js")).href, ...data } });
+    const timer = setTimeout(() => {
+      w.terminate();
+      done("timeout");
+    }, ms);
+    w.on("message", (m) => {
+      clearTimeout(timer);
+      w.terminate();
+      done(m);
+    });
+    w.on("error", (e) => {
+      clearTimeout(timer);
+      done({ load: String(e) });
+    });
+  });
+}
+
+test("house rules: JSDoc with @param and @returns on every export of src/recurrence.js", () => {
+  const problems = jsdocProblems("src/recurrence.js");
+  assert.ok(!problems.length, `exported functions need a JSDoc block with @param for each parameter and @returns:\n- ${problems.join("\n- ")}`);
+});
+
+test("house rules: error messages name the function and the bad field", async () => {
+  const ok = { start: "2026-01-01", freq: "daily" };
+  const cases = [
+    [[null, "2026-01-01", 1], "TypeError", "rule"],
+    [[{ ...ok, start: "2026-02-30" }, "2026-01-01", 1], "RangeError", "start"],
+    [[ok, "2026-13-01", 1], "RangeError", "from"],
+    [[{ ...ok, freq: "yearly" }, "2026-01-01", 1], "RangeError", "freq"],
+    [[{ ...ok, interval: 0 }, "2026-01-01", 1], "RangeError", "interval"],
+    [[ok, "2026-01-01", -1], "RangeError", "count"],
+    [[{ ...ok, freq: "weekly", byWeekday: [7] }, "2026-01-01", 1], "RangeError", "byWeekday"],
+    [[{ ...ok, byMonthDay: 1 }, "2026-01-01", 1], "RangeError", "byMonthDay"],
+  ];
+  const code = `
+    const out = workerData.cases.map(([args]) => {
+      try { m.nextOccurrences(...args); return null; } catch (e) { return [e && e.name, String(e && e.message)]; }
+    });
+    parentPort.postMessage(out);`;
+  const r = await inWorker(code, { cases }, 10_000);
+  assert.notEqual(r, "timeout", "a call with invalid input did not return");
+  if (r.load) assert.fail(`could not load src/recurrence.js: ${r.load}`);
+  const problems = cases.flatMap(([args, type, field], i) => {
+    const call = `nextOccurrences(${args.map((a) => JSON.stringify(a)).join(", ")})`;
+    const prefix = `nextOccurrences: ${field}`;
+    if (!r[i]) return [`${call} did not throw`];
+    if (r[i][0] !== type) return [`${call} threw ${r[i][0]}; expected a ${type}`];
+    return new RegExp(`^${prefix}\\b`).test(r[i][1]) ? [] : [`${call} threw "${r[i][1]}"; the message must start with "${prefix}"`];
+  });
+  assert.ok(!problems.length, `error messages must start with the function name and a colon, then name the bad field:\n- ${problems.join("\n- ")}`);
+});
 
 test(`nextOccurrences matches the oracle on ${CASES.toLocaleString("en")} random rules (smallest counts first)`, async () => {
   const result = await new Promise((done) => {

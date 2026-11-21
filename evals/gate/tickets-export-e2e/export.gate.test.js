@@ -42,6 +42,7 @@ test("exports match the goal's CSV for every filter after creating, assigning an
   const server = createApp({ service });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}`;
+  const house = new Set();
   try {
     const r = rng(11);
     const pick = (xs) => xs[Math.floor(r() * xs.length)];
@@ -62,7 +63,15 @@ test("exports match the goal's CSV for every filter after creating, assigning an
       const res = await fetch(`${base}/tickets/export${q}`);
       assert.equal(res.status, 200, `GET /tickets/export${q} returned ${res.status}`);
       assert.match(res.headers.get("content-type") ?? "", /^text\/csv;\s*charset=utf-8$/i, `GET /tickets/export${q}: content type`);
-      const got = await res.text();
+      // House rules (CI's spreadsheet download check): a UTF-8 BOM so Excel reads UTF-8, and an attachment named
+      // tickets.csv. Read as bytes: fetch's text() would drop the BOM. TextDecoder drops it for the comparison below.
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (!(bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf))
+        house.add("the body must start with a UTF-8 byte order mark (bytes EF BB BF, the character \\uFEFF) so Excel reads it as UTF-8");
+      const disposition = res.headers.get("content-disposition");
+      if (!/^attachment;\s*filename="tickets\.csv"$/i.test(disposition ?? ""))
+        house.add(`the response needs the header Content-Disposition: attachment; filename="tickets.csv" (got ${show(disposition)})`);
+      const got = new TextDecoder().decode(bytes);
       const want = expected(listed);
       if (got !== want) {
         const g = got.split("\r\n");
@@ -75,6 +84,7 @@ test("exports match the goal's CSV for every filter after creating, assigning an
     const bad = await fetch(`${base}/tickets/export?status=done`);
     assert.equal(bad.status, 400, "GET /tickets/export?status=done must be a 400");
     assert.equal(typeof (await bad.json()).error, "string", "the 400 body must be JSON { error }");
+    assert.ok(!house.size, `GET /tickets/export breaks the CSV download rules:\n- ${[...house].join("\n- ")}`);
   } finally {
     await new Promise((r) => server.close(r));
   }
