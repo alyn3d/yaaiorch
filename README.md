@@ -15,7 +15,12 @@ It drives the [Claude Code](https://docs.claude.com/en/docs/claude-code/overview
 so it uses your existing Claude Code login, agents and skills. It ships as a CLI, a browser UI and a
 Windows/macOS/Linux desktop app (Tauri).
 
-> **Status: early (0.5).** It works end to end and is measured by an eval suite, but expect rough
+> **Built for developers.** YAAIORCH speeds up work you could do and review yourself; it is not a
+> way to build software without knowing how. You decide what the checks test, read the diffs it
+> commits, and own what ships. Passing checks only means the code passed *your* checks: if you
+> can't judge the code, it can't either.
+
+> **Status: early (0.6).** It works end to end and is measured by an eval suite, but expect rough
 > edges. Windows is the primary target; Linux and macOS should work but are less tested.
 > Contributions are very welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
