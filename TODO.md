@@ -36,9 +36,11 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
   falling back to the full loop on failure.
 - [x] **Measure `--fast`**: 18/18 like the full loop, at about half the cost and time; now the default
   ([results](docs/evals/2026-11-18.md)).
-- [ ] **Harder cases first**: the November 2026 run passed every case in round 1, including the multi-round ones
-  (`api-patch-contract` no longer forces a fix round), so round-2 features cannot be measured yet. See "Repo-scale
-  cases" above.
+- [x] **Harder cases first**: the 18 November run passed every case in round 1, including the multi-round ones.
+  The gate cases (`lib-intervals-perf`, `lib-recurrence-fuzz`, `tickets-export-e2e`) need a fix round in every run
+  ([results](docs/evals/2026-11-21.md)). Repo-scale cases above are still open.
+- [ ] **Gate JSDoc parser**: `lib-recurrence-fuzz`'s gate rejects a valid multi-line `@param` with a nested type
+  (`{{start: string, ...}}`), which cost one run an extra round. Accept it, then re-run `--reference`.
 
 ### Test the orchestrator itself
 - [x] Fake `claude` (`test/fake-claude/`) and 47 scenario tests (`npm test`), run in CI on Linux and
@@ -80,7 +82,8 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Context between rounds**: give the architect its previous plan, the diff and the check output,
   not only the failure strings.
 - [x] **Session resume for fix rounds**: continue the implementer's session (`session_id` from the CLI)
-  instead of starting cold (`--no-resume` to turn off; not measured yet: compare `economy` with `economy+noresume`).
+  instead of starting cold (`--no-resume` to turn off). Measured on the gate cases: no difference, 9/9 either way,
+  2.1 vs 2.2 rounds, $1.06 vs $0.96 ([results](docs/evals/2026-11-21.md)); needs a case whose fix depends on round 1's reasoning.
 - [x] **Memory between goals**: `.orchestrator/notes.md` with decisions and pitfalls, read by the
   architect, appended by QA.
 - [x] **Review lens**: optional reviewer pass on the diff for bugs and security, with the user's own
@@ -95,8 +98,8 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Cases to measure them with**: two series cases (`tickets-series`, `api-series`: three goals in a row
   on one repo) and runner configs `+nomem` and `+critic`.
 - [ ] **Measure these** (brief and notes on the two series cases: no difference, 6/6 either way at the same cost,
-  [results](docs/evals/2026-11-18.md); still open on harder cases: context between rounds, per-task escalation, session resume, plan and diff
-  critic, review lens; configs `+nomem`, `+noresume`, `+critic`, `+diffcritic`, `+review`): they were built
+  [results](docs/evals/2026-11-18.md); session resume on the gate cases: no difference, [results](docs/evals/2026-11-21.md);
+  still open: context between rounds, per-task escalation, plan and diff critic, review lens; configs `+nomem`, `+noresume`, `+critic`, `+diffcritic`, `+review`): they were built
   without an eval, because the current cases all pass in round 1. Needs cases that take several
   rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.
 

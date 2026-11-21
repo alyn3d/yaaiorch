@@ -171,4 +171,5 @@ way a real project's CI catches what a ticket never said: JSDoc with `@param` an
 messages that start with the function's name and name the bad argument (`lib-*`), a UTF-8 BOM and a
 `Content-Disposition` attachment for the CSV download (`tickets-export-e2e`). The failure output names exactly what is
 missing, so the fix round can act on it. These cases measure fixing (resume, escalation, the critics), not planning; a
-single agent without the gate fails them by design.
+single agent without the gate fails them by design. With the house rules, every run needed a fix round
+([results](../docs/evals/2026-11-21.md)).
