@@ -1,6 +1,6 @@
 [package]
 name = "yaaiorch"
-version = "0.6.1"
+version = "0.6.2"
 description = "YAAIORCH - Yet Another AI Orchestrator"
 license = "GPL-3.0-only"
 repository = "https://github.com/alyn3d/yaaiorch"
@@ -12,12 +12,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Local date for the daily budget (already in the dependency tree through tauri).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-tauri-plugin-notification = "2"
-tauri-plugin-opener = "2"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

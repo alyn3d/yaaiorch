@@ -1,7 +1,16 @@
 name: Release
 
-# Push a tag like v0.1.0 to build installers for Windows, macOS and Linux and attach them, plus the
-# standalone CLI bundle and checksums, to a DRAFT GitHub release. Review the draft, then publish it.
+# Push a tag like v0.6.2 to build installers for Windows, macOS and Linux with signed updater artifacts,
+# and attach them plus the standalone CLI bundle and checksums to a DRAFT GitHub release.
+# Review the draft, then publish it. The updater manifest (latest.json) is automatically generated and uploaded.
+#
+# Release signing requires GitHub Secrets:
+# - TAURI_SIGNING_PRIVATE_KEY: the private key from `node scripts/generate-keys.mjs --password <pw>`
+# - TAURI_SIGNING_PRIVATE_KEY_PASSWORD: the password used to generate the keys
+#
+# The installers are not code-signed (no Windows certificate, no Apple Developer account); the updater
+# signature above is separate and is what the app checks before installing an update.
+
 on:
   push:
     tags: ["v*"]
@@ -9,54 +18,90 @@ on:
 permissions:
   contents: write
 
+env:
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
 jobs:
   desktop:
-    name: Desktop app (${{ matrix.name }})
+    name: Build (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Windows
+          - name: Windows x64
             platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: ""
+          # One universal build: the macos-13 (Intel) runner image is retired. tauri-action writes both
+          # darwin-x86_64 and darwin-aarch64 entries into latest.json for a universal bundle.
           - name: macOS (universal)
             platform: macos-latest
             target: universal-apple-darwin
             args: "--target universal-apple-darwin"
-          - name: Linux
+          - name: Linux x64
             platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             args: ""
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: orch-ui/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: orch-ui/src-tauri -> target
-      - name: Linux build dependencies
+
+      - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Install
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config
+
+      - name: Install npm dependencies
         working-directory: orch-ui
         run: npm ci
-      # The app ships its own Node.js (Tauri externalBin): download it for this target and check its SHA-256.
-      - name: Bundled Node.js
+
+      - name: Fetch bundled Node.js
         working-directory: orch-ui
         run: node scripts/fetch-node.mjs --target ${{ matrix.target }}
-      # tauri.conf.json's beforeBuildCommand bundles ../orch.ts and builds the UI.
-      - uses: tauri-apps/tauri-action@v0
+
+      - name: Verify updater signing key
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "ERROR: TAURI_SIGNING_PRIVATE_KEY is not set"
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "ERROR: TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not set"
+            exit 1
+          fi
+          echo "✓ Updater signing keys are configured"
+        shell: bash
+
+      - name: Build with Tauri
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -64,39 +109,105 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: YAAIORCH ${{ github.ref_name }}
           releaseBody: |
-            See [CHANGELOG.md](https://github.com/alyn3d/yaaiorch/blob/${{ github.ref_name }}/CHANGELOG.md) for what changed.
+            Automatic updates available. See [CHANGELOG.md](https://github.com/alyn3d/yaaiorch/blob/${{ github.ref_name }}/CHANGELOG.md) for details.
 
-            **Requirements:** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and logged in, and git (the GitHub CLI `gh`, logged in, only to open pull requests on GitHub and import GitHub issues; pushes work with any git host). The desktop app brings its own Node.js; the CLI bundle (`yaaiorch-cli-*.mjs`) needs Node.js 20+.
-            The installers are not code-signed yet, so Windows SmartScreen and macOS Gatekeeper will warn on first launch.
+            **Requirements:** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and logged in, and git. The desktop app brings its own Node.js; the CLI bundle (`yaaiorch-cli-*.mjs`) needs Node.js 20+.
+            The installers are not code-signed, so Windows SmartScreen and macOS Gatekeeper will warn on first launch.
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          # Updater artifacts (.sig files, update bundles) only in release builds, so a local
+          # `npm run tauri build` works without the signing key. tauri-action then writes latest.json
+          # and merges every matrix job's platform entry into the one release asset.
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }} --config src-tauri/tauri.updater.conf.json
 
-  cli:
+  cli-bundle:
     name: CLI bundle and checksums
     needs: desktop
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: orch-ui/package-lock.json
+
       - name: Build orch.mjs
         working-directory: orch-ui
         run: |
           npm ci
           npm run build:orch
-      - name: Attach CLI bundle and SHA-256 checksums
+
+      - name: Download release artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          mkdir -p out
-          gh release download "$TAG" --dir out --pattern '*' --clobber
-          cp orch-ui/src-tauri/resources/orch.mjs "out/yaaiorch-cli-${TAG}.mjs"
-          cp LICENSE out/LICENSE.txt
-          (cd out && sha256sum * | grep -v SHA256SUMS > SHA256SUMS.txt)
-          gh release upload "$TAG" "out/yaaiorch-cli-${TAG}.mjs" out/LICENSE.txt out/SHA256SUMS.txt --clobber
+          mkdir -p ./release-out
+          gh release download "$TAG" --dir ./release-out --pattern '*' --clobber
+
+      - name: Verify all required artifacts
+        run: |
+          cd ./release-out
+          REQUIRED_PATTERNS=(
+            "YAAIORCH_*.msi"
+            "YAAIORCH_*.exe"
+            "YAAIORCH_*.AppImage"
+            "YAAIORCH_*.dmg"
+          )
+          FOUND_ANY=false
+          for pattern in "${REQUIRED_PATTERNS[@]}"; do
+            if ls $pattern 1> /dev/null 2>&1; then
+              echo "✓ Found $pattern"
+              FOUND_ANY=true
+            fi
+          done
+          if [ "$FOUND_ANY" = false ]; then
+            echo "ERROR: No installer artifacts found"
+            ls -la
+            exit 1
+          fi
+
+      - name: Create CLI bundle and checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd ./release-out
+          cp ../orch-ui/src-tauri/resources/orch.mjs "yaaiorch-cli-${TAG}.mjs"
+          cp ../LICENSE LICENSE.txt
+          
+          # Generate checksums
+          if command -v sha256sum &> /dev/null; then
+            sha256sum * > SHA256SUMS.txt
+            # Remove the checksum file itself from the list
+            grep -v SHA256SUMS SHA256SUMS.txt > temp.txt
+            mv temp.txt SHA256SUMS.txt
+          else
+            # macOS fallback
+            shasum -a 256 * > SHA256SUMS.txt
+            grep -v SHA256SUMS SHA256SUMS.txt > temp.txt
+            mv temp.txt SHA256SUMS.txt
+          fi
+          
+          echo "Generated checksums:"
+          cat SHA256SUMS.txt
+
+      - name: Upload CLI bundle and checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd ./release-out
+          gh release upload "$TAG" \
+            "yaaiorch-cli-${TAG}.mjs" \
+            LICENSE.txt \
+            SHA256SUMS.txt \
+            --clobber
+

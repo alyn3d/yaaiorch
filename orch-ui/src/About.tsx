@@ -5,10 +5,12 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { version } from "../package.json";
 import { isTauri } from "./transport";
+import { UpdatePanel } from "./UpdatePanel";
 
 const SOURCE = "https://github.com/alyn3d/yaaiorch";
 
-export function About({ onClose }: { onClose: () => void }) {
+/** `busy`: a repo or group is running somewhere, so installing an update (which restarts the app) waits. */
+export function About({ onClose, busy }: { onClose: () => void; busy: boolean }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [error, setError] = useState("");
 
@@ -60,6 +62,7 @@ export function About({ onClose }: { onClose: () => void }) {
           {error}
         </p>
       )}
+      <UpdatePanel busy={busy} />
     </dialog>
   );
 }
