@@ -6,7 +6,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [Unreleased]
 
 ### Added
-- Gate checks: `"gateChecks"` in `.orchestrator/config.json` names slow suites (end-to-end, performance) that YAAIORCH runs after the ordinary checks pass but the agents may not run themselves, like tests that only run in CI. A failure fails the round and its output goes to the fix round; agents are told the names, not the commands. The run view marks them (**gate**) and shows when they were skipped because an earlier check failed; `orch doctor` warns when an ordinary check's permission would let agents run one anyway.
+- Gate checks: `"gateChecks"` in `.orchestrator/config.json` names slow suites (end-to-end, performance) that YAAIORCH runs after the ordinary checks pass but the agents get no permission to run, like tests that only run in CI. A failure fails the round and its output goes to the fix round; agents are told the names, not the commands, and the commands are denied in their settings. Keep an in-repo gate suite under `"protect"`. The run view marks them (**gate**) and shows when they were skipped because an earlier check failed; `orch doctor` warns when an ordinary check's permission would let agents run one anyway.
 
 ## [0.6.1] - 2026-11-20
 

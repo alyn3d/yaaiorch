@@ -926,12 +926,19 @@ function loadGateChecks(cfg: Config): Record<string, string> {
 
 /**
  * Gate checks an agent could still run: Claude Code allow rules match by prefix, so `Bash(node --test:*)` also allows
- * `node --test ../gate/x.test.js`. The same list writeAgentSettings allows (checks, plus `npm test` with a test check).
+ * `node --test ../gate/x.test.js`. The same list writeAgentSettings allows (checks, plus `npm test` with a test check),
+ * plus the config's own `allow` rules (`Bash(cmd:*)` by prefix, `Bash(cmd)` exactly). A check that forwards arguments
+ * (`npm test -- <path>`) can still run a suite whose path an agent knows; that is beyond what a rule list can tell.
  */
-function gateOverlap(checks: Record<string, string>, gate: Record<string, string>): string[] {
-  const allowed = [...Object.values(checks), ...(checks.test ? ["npm test"] : [])];
+function gateOverlap(checks: Record<string, string>, gate: Record<string, string>, allow: string[] = []): string[] {
+  const prefixes = [...Object.values(checks), ...(checks.test ? ["npm test"] : [])].map((c) => c.trim());
+  const exact: string[] = [];
+  for (const rule of allow) {
+    const m = /^(?:Bash|PowerShell)\((.*?)(:\*)?\)$/.exec(rule);
+    if (m) (m[2] ? prefixes : exact).push(m[1].trim());
+  }
   return Object.entries(gate)
-    .filter(([, cmd]) => allowed.some((a) => cmd.trim().startsWith(a.trim())))
+    .filter(([, cmd]) => prefixes.some((p) => cmd.trim().startsWith(p)) || exact.includes(cmd.trim()))
     .map(([name]) => name);
 }
 
@@ -946,7 +953,9 @@ function writeAgentSettings(cfg: Config, checks: Record<string, string>, plugins
   const extra = { ...pluginSettings(plugins), ...skillSettings(cfg) };
   // A skill turned off is hidden from the model (skillOverrides) and its Skill tool call denied, should it be named anyway.
   const denySkills = [...disabledNames(cfg, "skills")].map((n) => `Skill(${n})`);
-  const deny = [...readDenyRules(readDirs), ...denySkills];
+  // Deny beats allow: a gate command copied from a failure message cannot be run even under a broader allow rule.
+  const denyGate = Object.values(loadGateChecks(cfg)).flatMap((c) => [`Bash(${c}:*)`, `PowerShell(${c}:*)`]);
+  const deny = [...readDenyRules(readDirs), ...denySkills, ...denyGate];
   writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow, ...(deny.length ? { deny } : {}) }, ...extra }, null, 2));
   writeFileSync(
     READONLY_SETTINGS,
@@ -3774,7 +3783,7 @@ function doctor(pr = false): Finding[] {
     f.push({ name: "checks", level: names.length ? "ok" : "warn", detail: names.length ? names.join(", ") : "none found; QA can only read the code" });
     try {
       const gate = loadGateChecks(cfg);
-      const overlap = gateOverlap(checks, gate);
+      const overlap = gateOverlap(checks, gate, cfg.allow ?? []);
       if (Object.keys(gate).length)
         f.push({
           name: "gate checks",
@@ -4994,8 +5003,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   // Read once: the gate is what the run started with, whatever an agent writes to the config later.
   const gate = loadGateChecks(cfg);
   GATE_HINT = gateHint(Object.keys(gate));
-  for (const name of gateOverlap(checks, gate))
-    console.log(`warning: gate check "${name}" starts with an ordinary check command, so agents can run it; give it a distinct command`);
+  for (const name of gateOverlap(checks, gate, cfg.allow ?? []))
+    console.log(`warning: gate check "${name}" is covered by a check's or an "allow" rule's permission, so agents can run it; give it a distinct command`);
   writeAgentSettings(cfg, checks, o.plugins, o.readDirs);
   const browserCheck = visualSetup(cfg, o);
   /** Checks come from package.json too, which the agents may create or change: read them again each round. */
@@ -5360,7 +5369,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       // Gate checks are slow by intent: only once everything agents could run themselves has passed.
       let gateSkipped: string[] | undefined;
       if (Object.keys(gate).length) {
-        if (checkResults.every((c) => c.ok)) checkResults.push(...runChecks(gate).map((c) => ({ ...c, gate: true as const })));
+        if (!errors.length && checkResults.every((c) => c.ok)) checkResults.push(...runChecks(gate).map((c) => ({ ...c, gate: true as const })));
         else gateSkipped = Object.keys(gate);
       }
       emit("checks", {
@@ -5460,7 +5469,14 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const reviewFailures = reviews.filter((r) => !r.approved).flatMap((r) => r.issues.map((i) => `${r.agent} (review): ${i}`));
     const visualFailures = visual?.problems.map((p) => `browser check: ${p}`) ?? [];
     // Exit codes beat opinions: a failed check fails the round whatever QA says.
-    const checkFailures = checkResults.filter((c) => !c.ok).map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
+    // A gate failure names the gate, never its command: failures reach notes.md and from there later goals' prompts.
+    const checkFailures = checkResults
+      .filter((c) => !c.ok)
+      .map((c) =>
+        c.gate
+          ? `gate check "${c.name}" failed (exit ${c.code}):\n${c.output.slice(-800)}`
+          : `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`,
+      );
     // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
     const verifiedBy = verify.length ? verdicts.length > 0 && verdicts.every((v) => v.passed) : checkResults.length > 0;
     const passed =

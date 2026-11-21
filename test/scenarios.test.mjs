@@ -651,11 +651,19 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
       assert.ok(!allow.some((r) => r.includes('node -e "1"')), `${file}: gate command allowed`);
     }
     assert.doesNotMatch(ra.out, /gate check "perf"/);
+    // Deny beats allow: a gate command copied from a failure message still cannot be run.
+    for (const file of ["agent-settings.json", "readonly-settings.json"]) {
+      const deny = JSON.parse(readFileSync(join(a, ".orchestrator", file), "utf8")).permissions.deny ?? [];
+      assert.ok(deny.includes('Bash(node -e "1":*)') && deny.includes('PowerShell(node -e "1":*)'), `${file}: ${JSON.stringify(deny)}`);
+    }
+    const d = repo();
+    writeConfig(d, { gateChecks: { e2e: 'node -e "2"' }, allow: ["Bash(node:*)"] });
+    assert.match(orch(d, ["run", "x", "--max-rounds", "1"]).out, /warning: gate check "e2e"/);
 
     const b = repo();
     writeConfig(b, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: 'node -e "0" && node -e "1"' } });
     const rb = orch(b, ["run", "x", "--max-rounds", "1"]);
-    assert.match(rb.out, /warning: gate check "perf" starts with an ordinary check command/);
+    assert.match(rb.out, /warning: gate check "perf" is covered by a check.s or an "allow" rule.s permission/);
     const finding = JSON.parse(orch(b, ["doctor", "--json"]).out.trim().split(/\r?\n/).at(-1)).find((f) => f.name === "gate checks");
     assert.equal(finding.level, "warn");
     assert.match(finding.detail, /perf/);
@@ -702,7 +710,10 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
         ["perf", false, true],
       ],
     );
-    assert.ok(r.ev("round_end")[0].failures.some((f) => /check "perf" failed/.test(f)));
+    // Named as a gate, without its command: failures go on into notes.md and later goals' round-1 prompts.
+    const gateFailure = r.ev("round_end")[0].failures.find((f) => /check "perf"/.test(f));
+    assert.match(gateFailure, /^gate check "perf" failed \(exit 1\)/);
+    assert.ok(!gateFailure.includes(".gate.mjs"), gateFailure);
     assert.equal(r.ev("round_end")[1].passed, true);
     const [first, second] = promptsOf(prompts, "architect");
     assert.match(first, /gate checks you cannot run yourself: perf/);
@@ -721,6 +732,18 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     );
     assert.deepEqual(checks.gateSkipped, ["perf"]);
     assert.ok(!r.last("round_end").failures.some((f) => /perf/.test(f)));
+  });
+
+  test("gate checks are skipped on a round a task already failed", () => {
+    const dir = repo();
+    writeConfig(dir, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: 'node -e "1"' } });
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_FAIL_AGENT: "be" });
+    const checks = r.last("checks");
+    assert.deepEqual(
+      checks.results.map((c) => c.name),
+      ["unit"],
+    );
+    assert.deepEqual(checks.gateSkipped, ["perf"]);
   });
 
   test("fast path with only a gate check falls back to the full loop on a gate failure", () => {

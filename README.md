@@ -406,12 +406,18 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
 
 - **Gate checks** (optional): slow suites you want judged but not run by the agents, like end-to-end or
   performance tests that would otherwise only run in CI. YAAIORCH runs them after the ordinary checks pass, and a
-  failure fails the round like any check; agents are told their names, never their commands, and may not run them.
-  Give each a command that does not start with an ordinary check's (`orch doctor` warns if one does, since the
-  agents' permission for the check would cover it too):
+  failure fails the round like any check; agents are told their names, never their commands, and get no permission
+  to run them (their commands are denied). Give each a command that no ordinary check or `allow` rule covers
+  (`orch doctor` warns if one does). This is not a sandbox: a check that forwards arguments (`npm test -- <path>`,
+  `pytest <path>`) can still run a suite whose path an agent knows, and a suite inside the repo can be read and
+  edited by the agents. Keep it out of their reach with `"protect"` (list the default `.github/workflows/` too):
 
   ```json
-  { "checks": { "test": "npm test" }, "gateChecks": { "e2e": "node scripts/e2e.mjs" } }
+  {
+    "checks": { "test": "npm test" },
+    "gateChecks": { "e2e": "node e2e/run.mjs" },
+    "protect": [".github/workflows/", "e2e/"]
+  }
   ```
 
 - **Browser checks** (optional; a web app with a dev server). In **Run settings → Browser checks**, YAAIORCH

@@ -1331,4 +1331,9 @@ describe("gate checks", () => {
     assert.deepEqual(o.gateOverlap({ test: "npm run test" }, { gate: "npm test -- --gate" }), ["gate"]);
     assert.deepEqual(o.gateOverlap({ lint: "npm run lint" }, { gate: "node ../g/run.mjs" }), []);
   });
+  test("gateOverlap: the config's own allow rules (a user's, or Agent M's Always allow) count too", () => {
+    assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["Bash(make:*)"]), ["e2e"]);
+    assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["PowerShell(make e2e)"]), ["e2e"]);
+    assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["Bash(make lint:*)", "Bash(make e2e-report)", "Read(**)"]), []);
+  });
 });
