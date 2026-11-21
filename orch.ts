@@ -1081,7 +1081,17 @@ function failureDigest(output: string, max = 1500): string {
     .split(/\r?\n/)
     .filter((l) => !/^\s*at\s/.test(l) && !/^\s*(generatedMessage|code|actual|expected|operator|diff):/.test(l) && !/^\s*[{}],?\s*$/.test(l));
   const summary = lines.findIndex((l) => /^✖ failing tests:/.test(l));
-  return (summary >= 0 ? lines.slice(summary + 1) : lines).join("\n").trim().slice(-max);
+  if (summary < 0) return lines.join("\n").trim().slice(-max);
+  // One block per failing test (each starts at its "✖ name" line), each cut to an equal share from its start: a long
+  // failure must not push a short one out of the window.
+  const blocks: string[][] = [];
+  for (const l of lines.slice(summary + 1)) {
+    if (/^✖ /.test(l) || !blocks.length) blocks.push([]);
+    blocks[blocks.length - 1].push(l);
+  }
+  const texts = blocks.map((b) => b.join("\n").trim()).filter(Boolean);
+  const share = Math.floor((max - 2 * (texts.length - 1)) / Math.max(1, texts.length));
+  return texts.map((t) => (t.length > share ? `${t.slice(0, Math.max(0, share - 1))}…` : t)).join("\n\n");
 }
 
 // ---------- setup: orch installs dependencies (agents never do) when a manifest changed ----------

@@ -1367,6 +1367,15 @@ describe("failureDigest", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  test("a long failure does not push a short one out: each failing test gets its share", () => {
+    const summary =
+      "ℹ fail 2\n✖ failing tests:\n\ntest at gate.js:10:1\n✖ house rules: JSDoc (1ms)\n  AssertionError [ERR_ASSERTION]: SHORT: f has no @param for x\n\n" +
+      `test at gate.js:20:1\n✖ house rules: error messages (2ms)\n  AssertionError [ERR_ASSERTION]: LONG: ${"- call threw x; must start with f: y\n".repeat(80)}`;
+    const digest = o.failureDigest(summary);
+    assert.match(digest, /SHORT: f has no @param for x/);
+    assert.match(digest, /LONG: - call threw/);
+    assert.ok(digest.length <= 1500, String(digest.length));
+  });
   test("other output: the tail, stack frames dropped", () => {
     assert.equal(o.failureDigest("x".repeat(3000)).length, 1500);
     assert.equal(o.failureDigest("Error: boom\n    at f (a.js:1:2)\n    at g (b.js:3:4)\ndone"), "Error: boom\ndone");
