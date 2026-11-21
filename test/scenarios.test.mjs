@@ -667,6 +667,76 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.match(rc.out, /gateChecks/);
   });
 
+  /** A gate script outside the repo that fails its first run (with a recognisable message) and passes after. */
+  const failOnceGate = (dir) => {
+    const script = `${dir}.gate.mjs`;
+    writeFileSync(
+      script,
+      `import { existsSync, readFileSync, writeFileSync } from "node:fs";\n` +
+        `const f = ${JSON.stringify(`${dir}.gate-count`)};\n` +
+        `const n = existsSync(f) ? Number(readFileSync(f, "utf8")) : 0;\n` +
+        `writeFileSync(f, String(n + 1));\n` +
+        `if (!n) { console.log("gate: 1 case failed: sorted output"); process.exit(1); }\n`,
+    );
+    return `node "${script}"`;
+  };
+  /** Prompts captured by FAKE_PROMPTS for one agent, oldest first. */
+  const promptsOf = (dir, agent) =>
+    readdirSync(dir)
+      .filter((f) => f.endsWith(`-${agent}.txt`))
+      .sort()
+      .map((f) => readFileSync(join(dir, f), "utf8"));
+
+  test("a gate check failure fails round 1 and is fixed in round 2", () => {
+    const dir = repo();
+    const cmd = failOnceGate(dir);
+    writeConfig(dir, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: cmd } });
+    const prompts = `${dir}.prompts`;
+    dirs.push(prompts);
+    const r = orch(dir, ["run", "x", "--max-rounds", "3"], { FAKE_PROMPTS: prompts });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("checks")[0].results.map((c) => [c.name, c.ok, c.gate]),
+      [
+        ["unit", true, undefined],
+        ["perf", false, true],
+      ],
+    );
+    assert.ok(r.ev("round_end")[0].failures.some((f) => /check "perf" failed/.test(f)));
+    assert.equal(r.ev("round_end")[1].passed, true);
+    const [first, second] = promptsOf(prompts, "architect");
+    assert.match(first, /gate checks you cannot run yourself: perf/);
+    assert.ok(!first.includes(cmd) && !first.includes(".gate.mjs"), "the gate command stays out of the prompt");
+    assert.match(second, /gate: 1 case failed/);
+  });
+
+  test("gate checks are skipped while an ordinary check fails", () => {
+    const dir = repo();
+    writeConfig(dir, { checks: { unit: 'node -e "process.exit(1)"' }, gateChecks: { perf: 'node -e "1"' } });
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"]);
+    const checks = r.last("checks");
+    assert.deepEqual(
+      checks.results.map((c) => c.name),
+      ["unit"],
+    );
+    assert.deepEqual(checks.gateSkipped, ["perf"]);
+    assert.ok(!r.last("round_end").failures.some((f) => /perf/.test(f)));
+  });
+
+  test("fast path with only a gate check falls back to the full loop on a gate failure", () => {
+    const dir = repo();
+    writeConfig(dir, { gateChecks: { perf: failOnceGate(dir) } });
+    const prompts = `${dir}.prompts`;
+    dirs.push(prompts);
+    const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "3"], { FAKE_PROMPTS: prompts });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("round_start").map((e) => e.mode ?? "full"),
+      ["direct", "full"],
+    );
+    assert.match(promptsOf(prompts, "dev")[0], /gate checks you cannot run yourself: perf/);
+  });
+
   test("agent timeout kills the hung agent and the goal goes on", () => {
     const dir = repo();
     const start = Date.now();
