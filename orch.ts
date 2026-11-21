@@ -749,6 +749,8 @@ function discoverSkills(): Entry[] {
 // ---------- checks: run by the orchestrator, because headless agents may not get shell access ----------
 type Config = {
   checks?: Record<string, string>;
+  /** Checks orch runs after the ordinary ones pass but agents may not run (slow CI-only suites); see loadGateChecks. */
+  gateChecks?: Record<string, string>;
   allow?: string[];
   models?: Partial<Record<Role, string>> & { agents?: Record<string, string> };
   swap?: Record<string, string>;
@@ -905,6 +907,30 @@ function loadChecks(cfg: Config): Record<string, string> {
   if (cfg.checks) return cfg.checks;
   const scripts = readJsonFile<{ scripts?: Record<string, string> }>("package.json", {}).scripts ?? {};
   return Object.fromEntries(CHECK_SCRIPTS.filter((s) => scripts[s] && !/no test specified/.test(scripts[s])).map((s) => [s, `npm run ${s}`]));
+}
+
+/**
+ * Gate checks (config "gateChecks"): run by orch after the ordinary checks pass, never offered to agents. Always explicit;
+ * read once per run, so a config edited mid-run cannot change the gate.
+ */
+function loadGateChecks(cfg: Config): Record<string, string> {
+  const g: unknown = cfg.gateChecks;
+  if (g === undefined) return {};
+  const bad = () => new Error('config "gateChecks" must be an object of name: command strings');
+  if (!g || typeof g !== "object" || Array.isArray(g)) throw bad();
+  for (const [name, command] of Object.entries(g)) if (!name.trim() || typeof command !== "string" || !command.trim()) throw bad();
+  return g as Record<string, string>;
+}
+
+/**
+ * Gate checks an agent could still run: Claude Code allow rules match by prefix, so `Bash(node --test:*)` also allows
+ * `node --test ../gate/x.test.js`. The same list writeAgentSettings allows (checks, plus `npm test` with a test check).
+ */
+function gateOverlap(checks: Record<string, string>, gate: Record<string, string>): string[] {
+  const allowed = [...Object.values(checks), ...(checks.test ? ["npm test"] : [])];
+  return Object.entries(gate)
+    .filter(([, cmd]) => allowed.some((a) => cmd.trim().startsWith(a.trim())))
+    .map(([name]) => name);
 }
 
 /**
@@ -3735,9 +3761,22 @@ function doctor(pr = false): Finding[] {
       f.push({ name: "checkpoints", level: "warn", detail: `${stale.length} leftover checkpoint(s), latest ${stale.at(-1)}: "orch rollback" or "orch prune"` });
   }
   try {
-    const checks = loadChecks(readJsonFile<Config>(CONFIG_FILE, {}));
+    const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+    const checks = loadChecks(cfg);
     const names = Object.keys(checks);
     f.push({ name: "checks", level: names.length ? "ok" : "warn", detail: names.length ? names.join(", ") : "none found; QA can only read the code" });
+    try {
+      const gate = loadGateChecks(cfg);
+      const overlap = gateOverlap(checks, gate);
+      if (Object.keys(gate).length)
+        f.push({
+          name: "gate checks",
+          level: overlap.length ? "warn" : "ok",
+          detail: `${Object.keys(gate).join(", ")}${overlap.length ? `; agents can run: ${overlap.join(", ")} (its command starts with a check's)` : ""}`,
+        });
+    } catch (e) {
+      f.push({ name: "gate checks", level: "fail", detail: msg(e) });
+    }
   } catch (e) {
     f.push({ name: "checks", level: "fail", detail: msg(e) });
   }
@@ -4931,6 +4970,10 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const skills = configuredSkills(cfg);
   writeBuiltins(roster);
   let checks = loadChecks(cfg);
+  // Read once: the gate is what the run started with, whatever an agent writes to the config later.
+  const gate = loadGateChecks(cfg);
+  for (const name of gateOverlap(checks, gate))
+    console.log(`warning: gate check "${name}" starts with an ordinary check command, so agents can run it; give it a distinct command`);
   writeAgentSettings(cfg, checks, o.plugins, o.readDirs);
   const browserCheck = visualSetup(cfg, o);
   /** Checks come from package.json too, which the agents may create or change: read them again each round. */
@@ -6567,6 +6610,8 @@ async function main() {
 
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
 export {
+  loadGateChecks,
+  gateOverlap,
   priorityOf,
   alwaysBlocked,
   probeTarget,

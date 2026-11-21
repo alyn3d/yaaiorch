@@ -1302,3 +1302,20 @@ describe("browser checks (orch-browser.ts)", () => {
     });
   });
 });
+
+describe("gate checks", () => {
+  test("loadGateChecks: none configured is empty, a valid map is kept", () => {
+    assert.deepEqual(o.loadGateChecks({}), {});
+    assert.deepEqual(o.loadGateChecks({ gateChecks: { perf: "node perf.js" } }), { perf: "node perf.js" });
+  });
+  test("loadGateChecks refuses anything but name: command strings", () => {
+    for (const gateChecks of [["x"], { perf: 3 }, { "": "x" }, { perf: " " }, "node x"])
+      assert.throws(() => o.loadGateChecks({ gateChecks }), /gateChecks/, JSON.stringify(gateChecks));
+  });
+  test("gateOverlap: a gate command that an ordinary check's allow rule would match", () => {
+    assert.deepEqual(o.gateOverlap({ test: "node --test" }, { gate: "node --test ../g/x.test.js" }), ["gate"]);
+    // checks.test also puts "npm test" on the allow list
+    assert.deepEqual(o.gateOverlap({ test: "npm run test" }, { gate: "npm test -- --gate" }), ["gate"]);
+    assert.deepEqual(o.gateOverlap({ lint: "npm run lint" }, { gate: "node ../g/run.mjs" }), []);
+  });
+});

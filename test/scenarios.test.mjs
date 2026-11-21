@@ -641,6 +641,32 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.ok(r.last("round_end").failures.some((f) => /check "boom" failed/.test(f)));
   });
 
+  test("gate checks stay off the agents' allow-list; an overlapping check rule is warned about", () => {
+    const a = repo();
+    writeConfig(a, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: 'node -e "1"' } });
+    const ra = orch(a, ["run", "x", "--max-rounds", "1"]);
+    for (const file of ["agent-settings.json", "readonly-settings.json"]) {
+      const allow = JSON.parse(readFileSync(join(a, ".orchestrator", file), "utf8")).permissions.allow;
+      assert.ok(allow.includes('Bash(node -e "0":*)'), file);
+      assert.ok(!allow.some((r) => r.includes('node -e "1"')), `${file}: gate command allowed`);
+    }
+    assert.doesNotMatch(ra.out, /gate check "perf"/);
+
+    const b = repo();
+    writeConfig(b, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: 'node -e "0" && node -e "1"' } });
+    const rb = orch(b, ["run", "x", "--max-rounds", "1"]);
+    assert.match(rb.out, /warning: gate check "perf" starts with an ordinary check command/);
+    const finding = JSON.parse(orch(b, ["doctor", "--json"]).out.trim().split(/\r?\n/).at(-1)).find((f) => f.name === "gate checks");
+    assert.equal(finding.level, "warn");
+    assert.match(finding.detail, /perf/);
+
+    const c = repo();
+    writeConfig(c, { gateChecks: ["x"] });
+    const rc = orch(c, ["run", "x", "--max-rounds", "1"]);
+    assert.notEqual(rc.code, 0);
+    assert.match(rc.out, /gateChecks/);
+  });
+
   test("agent timeout kills the hung agent and the goal goes on", () => {
     const dir = repo();
     const start = Date.now();
