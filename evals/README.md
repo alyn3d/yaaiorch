@@ -66,7 +66,7 @@ false passes are counted the same way for both. Its rows appear as `single:<mode
 - `results/<stamp>.jsonl`: one line per run: case, power, claimed pass, hidden pass, rounds, cost, seconds,
   stuck events, final power tier, error, work dir.
 - `results/<stamp>.md`: tables by power tier (hidden pass rate, claimed pass rate, **false passes**, average
-  rounds, cost, time) and by case, plus the grade output of every failure.
+  rounds, **round 2+**: runs that needed a fix round, **stuck**: runs with a stuck round, cost, time) and by case, plus the grade output of every failure.
 - Work dirs stay in `<temp>/yaaiorch-evals/<stamp>/`, each next to its `.orch.log` and `.grade.log`.
 
 `results/` is git-ignored. Commit a summary by hand when it records a decision (for example a new default tier).
@@ -131,6 +131,12 @@ git-ignored elsewhere, so add it with `git add -f`.
 3. Put a reference solution in `reference/<id>/`, also as repo paths.
 4. `node evals/run.ts --reference --cases <id>` must print `ok`.
 
+A **gate case** also has `gate`: a command the runner passes to orch as a gate check (`gateChecks`: orch runs it after
+the ordinary checks pass, the agents cannot). `{gate}` in `gate` and `grade` stands for the case's gate suite in
+`gate/<id>/`, which is never in the repo: each run gets a copy next to its work dir (`<work dir>.gate/`), and grading
+and `--reference` use the pristine one. `--reference` also requires the gate alone to fail on the fixture and pass with
+the reference.
+
 `greenfield-inventory` starts from an almost empty repo (`fixtures/empty`): its first goal sets up a Node project, its
 second builds a module in it. It measures building from nothing, including checks the agents create themselves.
 
@@ -150,3 +156,8 @@ names, checked by `test/contract.test.js`; `node-lib-strict`: JSDoc tags, no con
 checked by `npm run lint`). A first attempt that misses one fails its checks, so these are the cases that show what
 session resume, the diff critic, the review lens and per-task escalation are worth
 (`--power economy,economy+noresume,economy+diffcritic`).
+
+In practice they did not: the agents can run the checks themselves and fixed every miss within round 1. The **gate**
+cases (`gate` in `cases.json`) fix that: their gate suite lives outside the repo and the agents only learn its
+name, so a miss surfaces after the round and drives a fix round. The summary's **round 2+** column says whether a case
+does its job (keep a case when at least 2 of 3 `economy` runs reach round 2).
