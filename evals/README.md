@@ -103,6 +103,9 @@ means QA or the checks are too lenient.
 | api-series | node-api | series | 3 goals: create, update and delete, filters |
 | web-dashboard-bug | web-dashboard | visual | medium: three separate causes of sideways scroll at 375px, an unreadable dark-mode header, desktop unchanged |
 | web-pricing | web-site | visual | medium: cards side by side on desktop and stacked on phones, a site-wide dark theme |
+| lib-intervals-perf | node-lib | multi-round | gate: random inputs against an oracle, 200,000 intervals per side within a time budget |
+| lib-recurrence-fuzz | node-lib | multi-round | gate: 3,000 random recurrence rules against a day-by-day oracle |
+| tickets-export-e2e | node-tickets | multi-round | gate: CSV export driven end to end through the API, every filter, awkward titles |
 
 **Series** cases (`goals` instead of `goal`) run several goals one after another on the same repo, like a
 user working through a backlog, and are graded once at the end with hidden tests covering every goal. A
