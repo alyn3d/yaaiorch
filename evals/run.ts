@@ -40,8 +40,12 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { resolveClaude } from "../claude-bin.ts";
 
-/** `goals`: a series, run one after another on the same repo and graded once at the end. */
-type Case = { id: string; fixture: string; kind: string; difficulty: string; goal?: string; goals?: string[]; grade: string };
+/**
+ * `goals`: a series, run one after another on the same repo and graded once at the end. `gate`: a gate check command
+ * (orch's `gateChecks`, which agents cannot run); `{gate}` in it and in `grade` stands for the case's gate suite,
+ * `evals/gate/<id>/`, kept outside the repo.
+ */
+type Case = { id: string; fixture: string; kind: string; difficulty: string; goal?: string; goals?: string[]; grade: string; gate?: string };
 const goalsOf = (c: Case): string[] => c.goals ?? [c.goal!];
 /** `power` is the configuration label: an orch tier ("economy"), or "single:<model>" for the control group. */
 type Run = {
@@ -193,6 +197,7 @@ function setupRepo(dir: string, c: Case, ...overlays: string[]) {
   cpSync(join(EVALS, "fixtures", c.fixture), dir, { recursive: true });
   const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
   servePort(dir);
+  if (c.gate) gateSetup(dir, c);
   git("init", "-q", "-b", "main");
   git("-c", "user.name=evals", "-c", "user.email=evals@localhost", "add", "-A");
   git("-c", "user.name=evals", "-c", "user.email=evals@localhost", "commit", "-q", "-m", `fixture ${c.fixture}`);
@@ -219,14 +224,47 @@ function servePort(dir: string) {
   writeFileSync(file, JSON.stringify(cfg, null, 2));
 }
 
-function grade(dir: string, c: Case) {
-  cpSync(join(EVALS, "hidden", c.id), dir, { recursive: true });
+/** Forward slashes: `{gate}` paths go into shell commands on every OS. */
+const slashes = (p: string) => p.replace(/\\/g, "/");
+/** The case's pristine gate suite. */
+const gateSource = (c: Case) => slashes(join(EVALS, "gate", c.id));
+/** The run's copy of the gate suite: next to the work dir, never inside it, so agents cannot read it. */
+const gateDir = (dir: string) => `${dir}.gate`;
+const withGate = (cmd: string, path: string) => cmd.replaceAll("{gate}", path);
+
+/**
+ * Gate cases: copy the suite next to the repo and add it to the repo's config as orch's `gateChecks`, before the fixture
+ * commit (fixtures ignore `.orchestrator/`, so it stays untracked). Orch runs it; the agents only learn its name.
+ */
+function gateSetup(dir: string, c: Case) {
+  if (!existsSync(gateSource(c))) fail(`${c.id}: no gate suite in evals/gate/${c.id}`);
+  rmSync(gateDir(dir), { recursive: true, force: true });
+  cpSync(gateSource(c), gateDir(dir), { recursive: true });
+  const file = join(dir, ".orchestrator", "config.json");
+  mkdirSync(dirname(file), { recursive: true });
+  const cfg = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  cfg.gateChecks = { gate: withGate(c.gate!, slashes(gateDir(dir))) };
+  writeFileSync(file, JSON.stringify(cfg, null, 2));
+}
+
+/** Run a shell command in the repo; the whole output and its tail. */
+function shell(cmd: string, dir: string) {
   // Browser-graded cases (web-*) load evals/lib/page.mjs from here.
   const env = { ...process.env, YAAIORCH_EVALS: EVALS };
-  const r = spawnSync(c.grade, { cwd: dir, shell: true, encoding: "utf8", timeout: 180_000, windowsHide: true, env });
+  const r = spawnSync(cmd, { cwd: dir, shell: true, encoding: "utf8", timeout: 180_000, windowsHide: true, env });
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n${r.error.message}` : ""}`;
-  writeFileSync(join(dir, "..", `${dir.split(/[\\/]/).pop()}.grade.log`), output);
-  return { pass: r.status === 0, tail: output.trim().split(/\r?\n/).slice(-8).join("\n") };
+  return { pass: r.status === 0, output, tail: output.trim().split(/\r?\n/).slice(-8).join("\n") };
+}
+
+/** The gate alone, from the pristine suite (`--reference`). */
+const gateRun = (dir: string, c: Case) => shell(withGate(c.gate!, gateSource(c)), dir);
+
+function grade(dir: string, c: Case) {
+  cpSync(join(EVALS, "hidden", c.id), dir, { recursive: true });
+  // Gate cases grade with the pristine suite, never the run's copy.
+  const r = shell(withGate(c.grade, gateSource(c)), dir);
+  writeFileSync(join(dir, "..", `${dir.split(/[\\/]/).pop()}.grade.log`), r.output);
+  return { pass: r.pass, tail: r.tail };
 }
 
 // ---------- --reference: validate the suite itself ----------
@@ -243,12 +281,16 @@ if (a.reference) {
     const solved = join(workRoot, `${c.id}-reference`);
     setupRepo(solved, c, ref);
     const after = grade(solved, c);
-    const ok = !before.pass && after.pass;
+    // A gate case's gate must also tell the two apart on its own: it is what forces the fix round.
+    const gate = c.gate ? { before: gateRun(untouched, c), after: gateRun(solved, c) } : null;
+    const ok = !before.pass && after.pass && (!gate || (!gate.before.pass && gate.after.pass));
     if (!ok) bad++;
     console.log(
-      `${ok ? "ok  " : "BAD "} ${c.id.padEnd(20)} untouched fixture: ${before.pass ? "PASSES (tests too weak)" : "fails"}   reference: ${after.pass ? "passes" : "FAILS"}`,
+      `${ok ? "ok  " : "BAD "} ${c.id.padEnd(20)} untouched fixture: ${before.pass ? "PASSES (tests too weak)" : "fails"}   reference: ${after.pass ? "passes" : "FAILS"}` +
+        (gate ? `   gate: ${gate.before.pass ? "PASSES untouched (too weak)" : "fails"} / ${gate.after.pass ? "passes" : "FAILS reference"}` : ""),
     );
     if (!after.pass) console.log(after.tail.replace(/^/gm, "       "));
+    if (gate && !gate.after.pass) console.log(gate.after.tail.replace(/^/gm, "       "));
   }
   console.log(bad ? `\n${bad} case(s) need fixing` : "\nall cases discriminate: the hidden tests fail before and pass with the reference");
   process.exit(bad ? 1 : 0);
@@ -616,6 +658,8 @@ await Promise.all(workers);
 // ---------- summary ----------
 const pct = (n: number, d: number) => (d ? `${Math.round((100 * n) / d)}%` : "-");
 const avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0);
+/** A fix round happened: more rounds than goals (one round per goal is a first-try pass). */
+const reachedFixRound = (r: Run) => r.rounds > (r.goals ?? 1);
 const lines: string[] = [];
 lines.push(`# Eval ${stamp}`, "");
 lines.push(`Cases: ${cases.map((c) => c.id).join(", ")}  `);
@@ -634,17 +678,23 @@ if (stoppedBy)
   );
 lines.push("## By configuration", "");
 lines.push("Orch tiers run the full loop; `single:<model>` is the control group: one `claude -p` call with the same goal, permissions, checks and budget.", "");
-lines.push("| config | runs | hidden pass | claimed pass | false pass | avg rounds | avg cost | avg time | total cost |");
-lines.push("|---|---|---|---|---|---|---|---|---|");
+lines.push("| config | runs | hidden pass | claimed pass | false pass | avg rounds | round 2+ | stuck | avg cost | avg time | total cost |");
+lines.push("|---|---|---|---|---|---|---|---|---|---|---|");
 for (const p of configs) {
   const rs = runs.filter((r) => r.power === p);
   lines.push(
     `| ${p} | ${rs.length} | ${pct(rs.filter((r) => r.hidden).length, rs.length)} | ${pct(rs.filter((r) => r.claimed).length, rs.length)} | ` +
-      `${rs.filter((r) => r.claimed && !r.hidden).length} | ${avg(rs.map((r) => r.rounds)).toFixed(1)} | $${avg(rs.map((r) => r.cost)).toFixed(2)} | ` +
+      `${rs.filter((r) => r.claimed && !r.hidden).length} | ${avg(rs.map((r) => r.rounds)).toFixed(1)} | ` +
+      `${pct(rs.filter(reachedFixRound).length, rs.length)} | ${rs.filter((r) => r.stuck > 0).length} | $${avg(rs.map((r) => r.cost)).toFixed(2)} | ` +
       `${(avg(rs.map((r) => r.seconds)) / 60).toFixed(1)} min | $${rs.reduce((s, r) => s + r.cost, 0).toFixed(2)} |`,
   );
 }
-lines.push("", "False pass: the run reported success (orch: QA passed; single: Status: COMPLETE) but the hidden tests failed.", "");
+lines.push(
+  "",
+  "False pass: the run reported success (orch: QA passed; single: Status: COMPLETE) but the hidden tests failed. " +
+    "Round 2+: runs that needed a fix round (in a series, more rounds than goals). Stuck: runs with a stuck round (power escalated).",
+  "",
+);
 if (cases.some((c) => c.goals))
   lines.push(
     "Series cases run several goals in a row on one repo; their rounds and cost are totals over all goals, and they count as claimed only if every goal passed.",

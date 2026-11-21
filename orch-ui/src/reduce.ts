@@ -262,7 +262,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
     case "waiting":
       return run && { ...run, waitingUntil: ev.until, waitingReason: ev.reason };
     case "checks":
-      return run && upd(run, ev.round, (r) => ({ ...r, checks: ev.results }));
+      return run && upd(run, ev.round, (r) => ({ ...r, checks: ev.results, gateSkipped: ev.gateSkipped }));
     case "checks_start":
       return run && upd(run, ev.round, (r) => ({ ...r, checksStarted: true }));
     case "visual_start":

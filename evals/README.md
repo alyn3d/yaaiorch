@@ -66,7 +66,7 @@ false passes are counted the same way for both. Its rows appear as `single:<mode
 - `results/<stamp>.jsonl`: one line per run: case, power, claimed pass, hidden pass, rounds, cost, seconds,
   stuck events, final power tier, error, work dir.
 - `results/<stamp>.md`: tables by power tier (hidden pass rate, claimed pass rate, **false passes**, average
-  rounds, cost, time) and by case, plus the grade output of every failure.
+  rounds, **round 2+**: runs that needed a fix round, **stuck**: runs with a stuck round, cost, time) and by case, plus the grade output of every failure.
 - Work dirs stay in `<temp>/yaaiorch-evals/<stamp>/`, each next to its `.orch.log` and `.grade.log`.
 
 `results/` is git-ignored. Commit a summary by hand when it records a decision (for example a new default tier).
@@ -103,6 +103,9 @@ means QA or the checks are too lenient.
 | api-series | node-api | series | 3 goals: create, update and delete, filters |
 | web-dashboard-bug | web-dashboard | visual | medium: three separate causes of sideways scroll at 375px, an unreadable dark-mode header, desktop unchanged |
 | web-pricing | web-site | visual | medium: cards side by side on desktop and stacked on phones, a site-wide dark theme |
+| lib-intervals-perf | node-lib | multi-round | gate: random inputs against an oracle, 200,000 intervals per side within a time budget, house rules (JSDoc, error messages) |
+| lib-recurrence-fuzz | node-lib | multi-round | gate: 3,000 random recurrence rules against a day-by-day oracle, house rules (JSDoc, error messages) |
+| tickets-export-e2e | node-tickets | multi-round | gate: CSV export driven end to end through the API, every filter, awkward titles, download rules (BOM, attachment) |
 
 **Series** cases (`goals` instead of `goal`) run several goals one after another on the same repo, like a
 user working through a backlog, and are graded once at the end with hidden tests covering every goal. A
@@ -131,6 +134,12 @@ git-ignored elsewhere, so add it with `git add -f`.
 3. Put a reference solution in `reference/<id>/`, also as repo paths.
 4. `node evals/run.ts --reference --cases <id>` must print `ok`.
 
+A **gate case** also has `gate`: a command the runner passes to orch as a gate check (`gateChecks`: orch runs it after
+the ordinary checks pass, the agents cannot). `{gate}` in `gate` and `grade` stands for the case's gate suite in
+`gate/<id>/`, which is never in the repo: each run gets a copy next to its work dir (`<work dir>.gate/`), and grading
+and `--reference` use the pristine one. `--reference` also requires the gate alone to fail on the fixture and pass with
+the reference.
+
 `greenfield-inventory` starts from an almost empty repo (`fixtures/empty`): its first goal sets up a Node project, its
 second builds a module in it. It measures building from nothing, including checks the agents create themselves.
 
@@ -150,3 +159,17 @@ names, checked by `test/contract.test.js`; `node-lib-strict`: JSDoc tags, no con
 checked by `npm run lint`). A first attempt that misses one fails its checks, so these are the cases that show what
 session resume, the diff critic, the review lens and per-task escalation are worth
 (`--power economy,economy+noresume,economy+diffcritic`).
+
+In practice they did not: the agents can run the checks themselves and fixed every miss within round 1. The **gate**
+cases (`gate` in `cases.json`) fix that: their gate suite lives outside the repo and the agents only learn its
+name, so a miss surfaces after the round and drives a fix round. The summary's **round 2+** column says whether a case
+does its job (keep a case when at least 2 of 3 `economy` runs reach round 2).
+
+A gate that only checks what the goal states was not enough: on 2026-11-21 all 9 `economy` runs of the three cases
+passed their gate in round 1. So each gate also enforces house rules a CI job would and the goal does not state, the
+way a real project's CI catches what a ticket never said: JSDoc with `@param` and `@returns` on every export and error
+messages that start with the function's name and name the bad argument (`lib-*`), a UTF-8 BOM and a
+`Content-Disposition` attachment for the CSV download (`tickets-export-e2e`). The failure output names exactly what is
+missing, so the fix round can act on it. These cases measure fixing (resume, escalation, the critics), not planning; a
+single agent without the gate fails them by design. With the house rules, every run needed a fix round
+([results](../docs/evals/2026-11-21.md)).

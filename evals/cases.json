@@ -233,5 +233,32 @@
     "difficulty": "visual: responsive cards and a site-wide dark theme, graded in a browser",
     "goal": "Add a /pricing page (public/pricing.html) with three plan cards, Free, Pro and Team: side by side on desktop, stacked in one column on phones, and never wider than the screen. Give each card the class \"plan\" and put the plan's name in an h2 inside it. Add a dark theme for the whole site that follows the system setting (prefers-color-scheme), with readable text. Link Pricing from the header nav on every page.",
     "grade": "node --test test/__hidden__/pricing.test.mjs test/site.test.mjs"
+  },
+  {
+    "id": "lib-intervals-perf",
+    "fixture": "node-lib",
+    "kind": "multi-round",
+    "difficulty": "gate (outside the repo): random inputs against an oracle, 200,000 intervals per side within a time budget, and CI house rules the goal does not state (JSDoc @param/@returns on exports; error messages start with the function name and name the bad argument)",
+    "goal": "Add src/intervals.js exporting mergeIntervals(list) and subtractIntervals(a, b). An interval is a two-element array [start, end] of finite numbers with start < end; it covers start up to but not including end. Both functions throw a TypeError when an argument is not an array, and a RangeError when an element of it is not a valid interval. mergeIntervals returns a new array of new intervals sorted by start, where overlapping or touching intervals (such as [1, 3] and [3, 5]) are merged into one, so no two results overlap or touch. subtractIntervals returns the parts of the intervals in a that no interval in b covers, in the same merged and sorted form; a and b may each be unsorted and overlapping. Neither function changes its arguments. Both must handle 200,000 intervals per argument in under a second. Add tests in test/intervals.test.js.",
+    "grade": "node --test test/__hidden__/intervals.test.js test/array.test.js test/stats.test.js && node --test \"{gate}/intervals.gate.test.js\"",
+    "gate": "node --test \"{gate}/intervals.gate.test.js\""
+  },
+  {
+    "id": "lib-recurrence-fuzz",
+    "fixture": "node-lib",
+    "kind": "multi-round",
+    "difficulty": "gate (outside the repo): 3,000 random rules against a day-by-day oracle, and CI house rules the goal does not state (JSDoc @param/@returns on exports; error messages start with the function name and name the bad field)",
+    "goal": "Add src/recurrence.js exporting nextOccurrences(rule, from, count), which returns the first count dates on or after from on which a recurring rule occurs, as an array of \"YYYY-MM-DD\" strings in order. Dates are UTC calendar dates written \"YYYY-MM-DD\" (zero-padded, and a real date). The rule is an object { start, freq, interval, byWeekday, byMonthDay }: start is a date and the earliest possible occurrence (from may be before or after it); freq is \"daily\", \"weekly\" or \"monthly\"; interval is a positive integer, default 1. Daily: start and every interval-th day after it. Weekly: byWeekday is a non-empty array of distinct weekdays, 0 for Sunday to 6 for Saturday, default the weekday of start; weeks run from Monday to Sunday, and the rule occurs on those weekdays in the week that contains start and in every interval-th week after that one, but never before start. Monthly: byMonthDay is 1 to 31, or -1 for the last day of the month, default the day of the month of start; the rule occurs on that day in the month of start and in every interval-th month after it, never before start, and a month without that day (the 31st in April, the 30th in February) has no occurrence. Only dates before January 1 of the year start + 100 count, so a rule that can never occur, or has fewer than count occurrences, returns what it found. count is an integer from 0 to 1000. Throw a TypeError when rule is not an object, and a RangeError for any other invalid input: a bad date, an unknown freq, a bad interval or count, byWeekday on a rule that is not weekly, byMonthDay on a rule that is not monthly, or an invalid byWeekday or byMonthDay. Add tests in test/recurrence.test.js.",
+    "grade": "node --test test/__hidden__/recurrence.test.js test/array.test.js test/stats.test.js && node --test \"{gate}/recurrence.gate.test.js\"",
+    "gate": "node --test \"{gate}/recurrence.gate.test.js\""
+  },
+  {
+    "id": "tickets-export-e2e",
+    "fixture": "node-tickets",
+    "kind": "multi-round",
+    "difficulty": "gate (outside the repo): the export driven end to end through the API with awkward titles, and CI's download rules the goal does not state (a UTF-8 BOM, Content-Disposition attachment; filename=\"tickets.csv\")",
+    "goal": "Add GET /tickets/export, which returns the tickets as CSV with status 200 and Content-Type text/csv; charset=utf-8. It takes the same optional status and assignee query parameters as GET /tickets, combined the same way, lists the tickets in id order, and answers an invalid status with the same 400 JSON error. The first line is the header id,title,priority,status,assignee,createdAt; then one line per ticket with those fields, where a ticket without an assignee has an empty field. Every line, the last one included, ends with \r\n. A field that contains a comma, a double quote, a carriage return or a line feed is enclosed in double quotes, with every double quote inside it doubled; other fields are not quoted. So that spreadsheets do not run a title as a formula, a title that starts with =, +, - or @ gets a single quote (') in front of it, before any quoting. Titles may contain line breaks, which creating a ticket keeps. Put the CSV formatting in its own module, src/csv.js, and add tests.",
+    "grade": "node --test test/__hidden__/export.test.js test/service.test.js test/http.test.js && node --test \"{gate}/export.gate.test.js\"",
+    "gate": "node --test \"{gate}/export.gate.test.js\""
   }
 ]

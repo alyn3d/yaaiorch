@@ -641,6 +641,125 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.ok(r.last("round_end").failures.some((f) => /check "boom" failed/.test(f)));
   });
 
+  test("gate checks stay off the agents' allow-list; an overlapping check rule is warned about", () => {
+    const a = repo();
+    writeConfig(a, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: 'node -e "1"' } });
+    const ra = orch(a, ["run", "x", "--max-rounds", "1"]);
+    for (const file of ["agent-settings.json", "readonly-settings.json"]) {
+      const allow = JSON.parse(readFileSync(join(a, ".orchestrator", file), "utf8")).permissions.allow;
+      assert.ok(allow.includes('Bash(node -e "0":*)'), file);
+      assert.ok(!allow.some((r) => r.includes('node -e "1"')), `${file}: gate command allowed`);
+    }
+    assert.doesNotMatch(ra.out, /gate check "perf"/);
+    // Deny beats allow: a gate command copied from a failure message still cannot be run.
+    for (const file of ["agent-settings.json", "readonly-settings.json"]) {
+      const deny = JSON.parse(readFileSync(join(a, ".orchestrator", file), "utf8")).permissions.deny ?? [];
+      assert.ok(deny.includes('Bash(node -e "1":*)') && deny.includes('PowerShell(node -e "1":*)'), `${file}: ${JSON.stringify(deny)}`);
+    }
+    const d = repo();
+    writeConfig(d, { gateChecks: { e2e: 'node -e "2"' }, allow: ["Bash(node:*)"] });
+    assert.match(orch(d, ["run", "x", "--max-rounds", "1"]).out, /warning: gate check "e2e"/);
+
+    const b = repo();
+    writeConfig(b, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: 'node -e "0" && node -e "1"' } });
+    const rb = orch(b, ["run", "x", "--max-rounds", "1"]);
+    assert.match(rb.out, /warning: gate check "perf" is covered by a check.s or an "allow" rule.s permission/);
+    const finding = JSON.parse(orch(b, ["doctor", "--json"]).out.trim().split(/\r?\n/).at(-1)).find((f) => f.name === "gate checks");
+    assert.equal(finding.level, "warn");
+    assert.match(finding.detail, /perf/);
+
+    const c = repo();
+    writeConfig(c, { gateChecks: ["x"] });
+    const rc = orch(c, ["run", "x", "--max-rounds", "1"]);
+    assert.notEqual(rc.code, 0);
+    assert.match(rc.out, /gateChecks/);
+  });
+
+  /** A gate script outside the repo that fails its first run (with a recognisable message) and passes after. */
+  const failOnceGate = (dir) => {
+    const script = `${dir}.gate.mjs`;
+    writeFileSync(
+      script,
+      `import { existsSync, readFileSync, writeFileSync } from "node:fs";\n` +
+        `const f = ${JSON.stringify(`${dir}.gate-count`)};\n` +
+        `const n = existsSync(f) ? Number(readFileSync(f, "utf8")) : 0;\n` +
+        `writeFileSync(f, String(n + 1));\n` +
+        `if (!n) { console.log("gate: 1 case failed: sorted output"); process.exit(1); }\n`,
+    );
+    return `node "${script}"`;
+  };
+  /** Prompts captured by FAKE_PROMPTS for one agent, oldest first. */
+  const promptsOf = (dir, agent) =>
+    readdirSync(dir)
+      .filter((f) => f.endsWith(`-${agent}.txt`))
+      .sort()
+      .map((f) => readFileSync(join(dir, f), "utf8"));
+
+  test("a gate check failure fails round 1 and is fixed in round 2", () => {
+    const dir = repo();
+    const cmd = failOnceGate(dir);
+    writeConfig(dir, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: cmd } });
+    const prompts = `${dir}.prompts`;
+    dirs.push(prompts);
+    const r = orch(dir, ["run", "x", "--max-rounds", "3"], { FAKE_PROMPTS: prompts });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("checks")[0].results.map((c) => [c.name, c.ok, c.gate]),
+      [
+        ["unit", true, undefined],
+        ["perf", false, true],
+      ],
+    );
+    // Named as a gate, without its command: failures go on into notes.md and later goals' round-1 prompts.
+    const gateFailure = r.ev("round_end")[0].failures.find((f) => /check "perf"/.test(f));
+    assert.match(gateFailure, /^gate check "perf" failed \(exit 1\)/);
+    assert.ok(!gateFailure.includes(".gate.mjs"), gateFailure);
+    assert.equal(r.ev("round_end")[1].passed, true);
+    const [first, second] = promptsOf(prompts, "architect");
+    assert.match(first, /gate checks you cannot run yourself: perf/);
+    assert.ok(!first.includes(cmd) && !first.includes(".gate.mjs"), "the gate command stays out of the prompt");
+    assert.match(second, /gate: 1 case failed/);
+  });
+
+  test("gate checks are skipped while an ordinary check fails", () => {
+    const dir = repo();
+    writeConfig(dir, { checks: { unit: 'node -e "process.exit(1)"' }, gateChecks: { perf: 'node -e "1"' } });
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"]);
+    const checks = r.last("checks");
+    assert.deepEqual(
+      checks.results.map((c) => c.name),
+      ["unit"],
+    );
+    assert.deepEqual(checks.gateSkipped, ["perf"]);
+    assert.ok(!r.last("round_end").failures.some((f) => /perf/.test(f)));
+  });
+
+  test("gate checks are skipped on a round a task already failed", () => {
+    const dir = repo();
+    writeConfig(dir, { checks: { unit: 'node -e "0"' }, gateChecks: { perf: 'node -e "1"' } });
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { FAKE_FAIL_AGENT: "be" });
+    const checks = r.last("checks");
+    assert.deepEqual(
+      checks.results.map((c) => c.name),
+      ["unit"],
+    );
+    assert.deepEqual(checks.gateSkipped, ["perf"]);
+  });
+
+  test("fast path with only a gate check falls back to the full loop on a gate failure", () => {
+    const dir = repo();
+    writeConfig(dir, { gateChecks: { perf: failOnceGate(dir) } });
+    const prompts = `${dir}.prompts`;
+    dirs.push(prompts);
+    const r = orch(dir, ["run", "x", "--fast", "--max-rounds", "3"], { FAKE_PROMPTS: prompts });
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(
+      r.ev("round_start").map((e) => e.mode ?? "full"),
+      ["direct", "full"],
+    );
+    assert.match(promptsOf(prompts, "dev")[0], /gate checks you cannot run yourself: perf/);
+  });
+
   test("agent timeout kills the hung agent and the goal goes on", () => {
     const dir = repo();
     const start = Date.now();

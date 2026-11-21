@@ -371,6 +371,8 @@ const PERMIT_TOOL = "mcp__agentm__approve";
 const SHELL_TOOLS = ["Bash", "PowerShell"];
 /** Browser checks: what the architect is told about them this goal ("" when off), and the app's dev server. */
 let VISUAL_HINT = "";
+/** gateHint for the run's gate checks, set at run start and added to every architect prompt. */
+let GATE_HINT = "";
 let DEV_SERVER: DevServer | null = null;
 const VISUAL_DIR = `${DIR}/visual`;
 const MAX_TASKS = 25;
@@ -749,6 +751,8 @@ function discoverSkills(): Entry[] {
 // ---------- checks: run by the orchestrator, because headless agents may not get shell access ----------
 type Config = {
   checks?: Record<string, string>;
+  /** Checks orch runs after the ordinary ones pass but agents may not run (slow CI-only suites); see loadGateChecks. */
+  gateChecks?: Record<string, string>;
   allow?: string[];
   models?: Partial<Record<Role, string>> & { agents?: Record<string, string> };
   swap?: Record<string, string>;
@@ -800,7 +804,7 @@ type Config = {
   /** false: no browser checks even with "serve". */
   visual?: boolean;
 };
-type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number };
+type Check = { name: string; command: string; ok: boolean; code: number | null; output: string; ms: number; gate?: true };
 
 function readJsonFile<T>(path: string, fallback: T): T {
   try {
@@ -908,6 +912,37 @@ function loadChecks(cfg: Config): Record<string, string> {
 }
 
 /**
+ * Gate checks (config "gateChecks"): run by orch after the ordinary checks pass, never offered to agents. Always explicit;
+ * read once per run, so a config edited mid-run cannot change the gate.
+ */
+function loadGateChecks(cfg: Config): Record<string, string> {
+  const g: unknown = cfg.gateChecks;
+  if (g === undefined) return {};
+  const bad = () => new Error('config "gateChecks" must be an object of name: command strings');
+  if (!g || typeof g !== "object" || Array.isArray(g)) throw bad();
+  for (const [name, command] of Object.entries(g)) if (!name.trim() || typeof command !== "string" || !command.trim()) throw bad();
+  return g as Record<string, string>;
+}
+
+/**
+ * Gate checks an agent could still run: Claude Code allow rules match by prefix, so `Bash(node --test:*)` also allows
+ * `node --test ../gate/x.test.js`. The same list writeAgentSettings allows (checks, plus `npm test` with a test check),
+ * plus the config's own `allow` rules (`Bash(cmd:*)` by prefix, `Bash(cmd)` exactly). A check that forwards arguments
+ * (`npm test -- <path>`) can still run a suite whose path an agent knows; that is beyond what a rule list can tell.
+ */
+function gateOverlap(checks: Record<string, string>, gate: Record<string, string>, allow: string[] = []): string[] {
+  const prefixes = [...Object.values(checks), ...(checks.test ? ["npm test"] : [])].map((c) => c.trim());
+  const exact: string[] = [];
+  for (const rule of allow) {
+    const m = /^(?:Bash|PowerShell)\((.*?)(:\*)?\)$/.exec(rule);
+    if (m) (m[2] ? prefixes : exact).push(m[1].trim());
+  }
+  return Object.entries(gate)
+    .filter(([, cmd]) => prefixes.some((p) => cmd.trim().startsWith(p)) || exact.includes(cmd.trim()))
+    .map(([name]) => name);
+}
+
+/**
  * Let agents run the checks and read-only git. Compound commands (cd && ...) still need approval, so
  * they may not. Read-only roles also deny the edit tools and run in permission mode "default", where
  * shell commands that write files are refused too (acceptEdits would let `echo > file` through).
@@ -918,7 +953,9 @@ function writeAgentSettings(cfg: Config, checks: Record<string, string>, plugins
   const extra = { ...pluginSettings(plugins), ...skillSettings(cfg) };
   // A skill turned off is hidden from the model (skillOverrides) and its Skill tool call denied, should it be named anyway.
   const denySkills = [...disabledNames(cfg, "skills")].map((n) => `Skill(${n})`);
-  const deny = [...readDenyRules(readDirs), ...denySkills];
+  // Deny beats allow: a gate command copied from a failure message cannot be run even under a broader allow rule.
+  const denyGate = Object.values(loadGateChecks(cfg)).flatMap((c) => [`Bash(${c}:*)`, `PowerShell(${c}:*)`]);
+  const deny = [...readDenyRules(readDirs), ...denySkills, ...denyGate];
   writeFileSync(AGENT_SETTINGS, JSON.stringify({ permissions: { allow, ...(deny.length ? { deny } : {}) }, ...extra }, null, 2));
   writeFileSync(
     READONLY_SETTINGS,
@@ -1026,8 +1063,36 @@ function runChecks(checks: Record<string, string>): Check[] {
 const checkReport = (cs: Check[]) =>
   cs.length
     ? `\n\nChecks run by the orchestrator (trust these over the reports):\n` +
-      cs.map((c) => `### ${c.name}: \`${c.command}\` ${c.ok ? "passed" : `FAILED (exit ${c.code})`}\n${c.output.slice(-1500) || "(no output)"}`).join("\n")
+      cs
+        .map(
+          (c) =>
+            `### ${c.name}${c.gate ? " (gate check, agents cannot run it)" : ""}: \`${c.command}\` ${c.ok ? "passed" : `FAILED (exit ${c.code})`}\n${c.output.slice(-1500) || "(no output)"}`,
+        )
+        .join("\n")
     : "\n\nNo checks are configured for this repo; verify by reading the code.";
+
+/**
+ * A failed check's output for the next round, at most `max` characters: stack frames and assertion-object dumps
+ * dropped, and from node --test's "failing tests" summary when there is one, so every failing test's message fits
+ * (a plain tail kept only the last one, and the fix round missed the others).
+ */
+function failureDigest(output: string, max = 1500): string {
+  const lines = output
+    .split(/\r?\n/)
+    .filter((l) => !/^\s*at\s/.test(l) && !/^\s*(generatedMessage|code|actual|expected|operator|diff):/.test(l) && !/^\s*[{}],?\s*$/.test(l));
+  const summary = lines.findIndex((l) => /^✖ failing tests:/.test(l));
+  if (summary < 0) return lines.join("\n").trim().slice(-max);
+  // One block per failing test (each starts at its "✖ name" line), each cut to an equal share from its start: a long
+  // failure must not push a short one out of the window.
+  const blocks: string[][] = [];
+  for (const l of lines.slice(summary + 1)) {
+    if (/^✖ /.test(l) || !blocks.length) blocks.push([]);
+    blocks[blocks.length - 1].push(l);
+  }
+  const texts = blocks.map((b) => b.join("\n").trim()).filter(Boolean);
+  const share = Math.floor((max - 2 * (texts.length - 1)) / Math.max(1, texts.length));
+  return texts.map((t) => (t.length > share ? `${t.slice(0, Math.max(0, share - 1))}…` : t)).join("\n\n");
+}
 
 // ---------- setup: orch installs dependencies (agents never do) when a manifest changed ----------
 const MANIFESTS = [
@@ -3735,9 +3800,22 @@ function doctor(pr = false): Finding[] {
       f.push({ name: "checkpoints", level: "warn", detail: `${stale.length} leftover checkpoint(s), latest ${stale.at(-1)}: "orch rollback" or "orch prune"` });
   }
   try {
-    const checks = loadChecks(readJsonFile<Config>(CONFIG_FILE, {}));
+    const cfg = readJsonFile<Config>(CONFIG_FILE, {});
+    const checks = loadChecks(cfg);
     const names = Object.keys(checks);
     f.push({ name: "checks", level: names.length ? "ok" : "warn", detail: names.length ? names.join(", ") : "none found; QA can only read the code" });
+    try {
+      const gate = loadGateChecks(cfg);
+      const overlap = gateOverlap(checks, gate, cfg.allow ?? []);
+      if (Object.keys(gate).length)
+        f.push({
+          name: "gate checks",
+          level: overlap.length ? "warn" : "ok",
+          detail: `${Object.keys(gate).join(", ")}${overlap.length ? `; agents can run: ${overlap.join(", ")} (its command starts with a check's)` : ""}`,
+        });
+    } catch (e) {
+      f.push({ name: "gate checks", level: "fail", detail: msg(e) });
+    }
   } catch (e) {
     f.push({ name: "checks", level: "fail", detail: msg(e) });
   }
@@ -3989,6 +4067,7 @@ async function makePlan(
     specForPrompt() +
     (ctx.groupContext ? `\n${ctx.groupContext}\n` : "") +
     VISUAL_HINT +
+    (GATE_HINT ? `\n${GATE_HINT.trim()}\n` : "") +
     (previous ? `\n${previous}\n` : "") +
     (failures.length ? `\nPrevious QA failures to fix:\n- ${failures.join("\n- ")}\n` : "") +
     (note ? `\n${note}\n` : "") +
@@ -4015,8 +4094,16 @@ async function makePlan(
  * Fast-path plan: one `dev` task for the whole goal on the tier's strong model (heavy), no file list.
  * Verified by the repo's checks; when there are none, a QA task is added so something still verifies.
  */
-function directPlan(goal: string, checks: Record<string, string>, brief: string | null = null, notes = ""): Plan {
+/** What agents learn about gate checks: their names only, never the commands (`""` when there are none). */
+function gateHint(names: string[]): string {
+  return names.length
+    ? ` After the build the orchestrator also runs gate checks you cannot run yourself: ${names.join(", ")}. Their failures, if any, come back in the next round.`
+    : "";
+}
+
+function directPlan(goal: string, checks: Record<string, string>, brief: string | null = null, notes = "", gateNames: string[] = []): Plan {
   const commands = Object.values(checks);
+  const judged = commands.length + gateNames.length > 0;
   const task =
     `Goal: ${goal}\n\n` +
     (brief ? `Project brief (notes on this repo from an earlier run):\n${brief}\n\n` : "") +
@@ -4025,12 +4112,15 @@ function directPlan(goal: string, checks: Record<string, string>, brief: string 
     `(code and tests) following the repository's conventions.` +
     (commands.length
       ? ` Afterwards the orchestrator runs these checks and they must pass (you can run them yourself): ${commands.join(", ")}.`
-      : " No automated checks are configured, so a reviewer will check the result.");
+      : judged
+        ? ""
+        : " No automated checks are configured, so a reviewer will check the result.") +
+    gateHint(gateNames);
   return {
     summary: "Direct attempt (fast path): one agent does the whole goal",
     tasks: [
       { agent: "dev", phase: "build", task, heavy: true },
-      ...(commands.length ? [] : [{ agent: "qa", phase: "verify" as Phase, task: "Check that the goal is fully met and nothing is broken." }]),
+      ...(judged ? [] : [{ agent: "qa", phase: "verify" as Phase, task: "Check that the goal is fully met and nothing is broken." }]),
     ],
   };
 }
@@ -4141,10 +4231,12 @@ async function learn(o: Opts) {
   };
   const old = readBrief();
   const commands = Object.entries(checks).map(([n, c]) => `${n}: ${c}`);
+  const gateLine = gateHint(Object.keys(loadGateChecks(cfg))).trim();
   const prompt =
     `Study this repository so that later goals need not explore it from scratch. Read the README and docs, the build ` +
     `and package files, the folder layout, the main entry points, and a few typical source and test files. Do not edit anything.\n` +
     (commands.length ? `\nThe orchestrator runs these checks after every build:\n- ${commands.join("\n- ")}\n` : "") +
+    (gateLine ? `\n${gateLine}\n` : "") +
     (old ? `\nThe current project brief, to check, correct and extend:\n${old}\n` : "") +
     LEARN_FORMAT;
   emit("learn_start", { power: o.power });
@@ -4931,6 +5023,11 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
   const skills = configuredSkills(cfg);
   writeBuiltins(roster);
   let checks = loadChecks(cfg);
+  // Read once: the gate is what the run started with, whatever an agent writes to the config later.
+  const gate = loadGateChecks(cfg);
+  GATE_HINT = gateHint(Object.keys(gate));
+  for (const name of gateOverlap(checks, gate, cfg.allow ?? []))
+    console.log(`warning: gate check "${name}" is covered by a check's or an "allow" rule's permission, so agents can run it; give it a distinct command`);
   writeAgentSettings(cfg, checks, o.plugins, o.readDirs);
   const browserCheck = visualSetup(cfg, o);
   /** Checks come from package.json too, which the agents may create or change: read them again each round. */
@@ -5007,7 +5104,7 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const brief = fresh ? fresh.text : null;
     const notes = o.notes ? readNotes() : "";
     const planTokensBefore = ctx.budget.tokens;
-    if (direct) plan = directPlan(goal, checks, brief || null, notes);
+    if (direct) plan = directPlan(goal, checks, brief || null, notes, Object.keys(gate));
     else {
       emit("architect_start", { round });
       const architectModel = modelFor(power, models, "architect", "architect");
@@ -5292,7 +5389,17 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       const setup = runSetup(cfg, !!cp);
       refreshChecks();
       checkResults = setup && !setup.ok ? [setup] : [...(setup ? [setup] : []), ...runChecks(checks)];
-      emit("checks", { round, results: checkResults.map(({ name, command, ok, code, ms }) => ({ name, command, ok, code, ms })) });
+      // Gate checks are slow by intent: only once everything agents could run themselves has passed.
+      let gateSkipped: string[] | undefined;
+      if (Object.keys(gate).length) {
+        if (!errors.length && checkResults.every((c) => c.ok)) checkResults.push(...runChecks(gate).map((c) => ({ ...c, gate: true as const })));
+        else gateSkipped = Object.keys(gate);
+      }
+      emit("checks", {
+        round,
+        results: checkResults.map(({ name, command, ok, code, ms, gate }) => ({ name, command, ok, code, ms, ...(gate ? { gate } : {}) })),
+        ...(gateSkipped ? { gateSkipped } : {}),
+      });
       // Diff reviews run next to QA, but only on a round the checks and tasks have not already failed.
       const clean = !errors.length && checkResults.every((c) => c.ok);
       reviewsP = clean
@@ -5385,7 +5492,14 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
     const reviewFailures = reviews.filter((r) => !r.approved).flatMap((r) => r.issues.map((i) => `${r.agent} (review): ${i}`));
     const visualFailures = visual?.problems.map((p) => `browser check: ${p}`) ?? [];
     // Exit codes beat opinions: a failed check fails the round whatever QA says.
-    const checkFailures = checkResults.filter((c) => !c.ok).map((c) => `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`);
+    // A gate failure names the gate, never its command: failures reach notes.md and from there later goals' prompts.
+    const checkFailures = checkResults
+      .filter((c) => !c.ok)
+      .map((c) =>
+        c.gate
+          ? `gate check "${c.name}" failed (exit ${c.code}):\n${failureDigest(c.output)}`
+          : `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${failureDigest(c.output)}`,
+      );
     // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
     const verifiedBy = verify.length ? verdicts.length > 0 && verdicts.every((v) => v.passed) : checkResults.length > 0;
     const passed =
@@ -6567,6 +6681,10 @@ async function main() {
 
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
 export {
+  failureDigest,
+  loadGateChecks,
+  gateHint,
+  gateOverlap,
   priorityOf,
   alwaysBlocked,
   probeTarget,

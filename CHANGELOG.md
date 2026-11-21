@@ -5,6 +5,12 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Gate checks: `"gateChecks"` in `.orchestrator/config.json` names slow suites (end-to-end, performance) that YAAIORCH runs after the ordinary checks pass but the agents get no permission to run, like tests that only run in CI. A failure fails the round and its output goes to the fix round; agents are told the names, not the commands, and the commands are denied in their settings. Keep an in-repo gate suite under `"protect"`. The run view marks them (**gate**) and shows when they were skipped because an earlier check failed; `orch doctor` warns when an ordinary check's permission would let agents run one anyway.
+- Three eval cases that need a fix round (`lib-intervals-perf`, `lib-recurrence-fuzz`, `tickets-export-e2e`): each has a gate suite outside the repo that checks behaviour against an oracle and house rules the goal does not state. All 40 runs on 21 November passed, and all 31 with the house rules needed a fix round. Session resume made no measurable difference on them ([results](docs/evals/2026-11-21.md)).
+
+### Fixed
+- A fix round now sees every failing test of a failed check, not only the last: the output it gets drops stack traces and, for node --test, gives each failing test an equal share of 1,500 characters (instead of the last 800 characters of the output). Before, a check that failed two tests cost an extra round, one per test.
 ## [0.6.2] - 2026-11-21
 
 ### Added

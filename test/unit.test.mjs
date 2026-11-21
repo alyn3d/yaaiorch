@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { tsxApi } from "./tsx.mjs";
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -560,6 +561,19 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     ({ overviewBoard } = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "overviewBoard.ts")).href, import.meta.url));
   });
   const fold = (events) => events.reduce((run, e, i) => reduce(run, { t: 1000 + i, ...e }), null);
+  test("gate checks keep their gate flag, and skipped gates are recorded on the round", () => {
+    const run = fold([
+      { type: "goal_start", goal: "g", maxRounds: 2 },
+      { type: "round_start", round: 1, power: "economy" },
+      { type: "checks", round: 1, results: [{ name: "unit", command: "u", ok: false, code: 1, ms: 1 }], gateSkipped: ["e2e"] },
+      { type: "round_start", round: 2, power: "economy" },
+      { type: "checks", round: 2, results: [{ name: "perf", command: "p", ok: false, code: 1, ms: 1, gate: true }] },
+    ]);
+    assert.deepEqual(run.rounds[0].gateSkipped, ["e2e"]);
+    assert.equal(run.rounds[1].checks[0].gate, true);
+    assert.equal(run.rounds[1].gateSkipped, undefined);
+    assert.deepEqual(failureSummary(run).issues, ['Gate check "perf" failed (exit 1).']);
+  });
   test("questions remain independently answered in the replay", () => {
     const run = fold([
       { type: "goal_start", goal: "g", maxRounds: 1 },
@@ -1300,5 +1314,70 @@ describe("browser checks (orch-browser.ts)", () => {
       observations: [],
       ms: 5,
     });
+  });
+});
+
+describe("gate checks", () => {
+  test("loadGateChecks: none configured is empty, a valid map is kept", () => {
+    assert.deepEqual(o.loadGateChecks({}), {});
+    assert.deepEqual(o.loadGateChecks({ gateChecks: { perf: "node perf.js" } }), { perf: "node perf.js" });
+  });
+  test("loadGateChecks refuses anything but name: command strings", () => {
+    for (const gateChecks of [["x"], { perf: 3 }, { "": "x" }, { perf: " " }, "node x"])
+      assert.throws(() => o.loadGateChecks({ gateChecks }), /gateChecks/, JSON.stringify(gateChecks));
+  });
+  test("gateOverlap: a gate command that an ordinary check's allow rule would match", () => {
+    assert.deepEqual(o.gateOverlap({ test: "node --test" }, { gate: "node --test ../g/x.test.js" }), ["gate"]);
+    // checks.test also puts "npm test" on the allow list
+    assert.deepEqual(o.gateOverlap({ test: "npm run test" }, { gate: "npm test -- --gate" }), ["gate"]);
+    assert.deepEqual(o.gateOverlap({ lint: "npm run lint" }, { gate: "node ../g/run.mjs" }), []);
+  });
+  test("gateOverlap: the config's own allow rules (a user's, or Agent M's Always allow) count too", () => {
+    assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["Bash(make:*)"]), ["e2e"]);
+    assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["PowerShell(make e2e)"]), ["e2e"]);
+    assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["Bash(make lint:*)", "Bash(make e2e-report)", "Read(**)"]), []);
+  });
+});
+
+describe("failureDigest", () => {
+  test("keeps every failing test's message from real node --test output, not only the last one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "yaaiorch-digest-"));
+    try {
+      const file = join(dir, "two.test.mjs");
+      writeFileSync(
+        file,
+        `import { test } from "node:test";\nimport assert from "node:assert/strict";\n` +
+          `test("first rule", () => assert.ok(false, "FIRST: exported functions need JSDoc\\n- src/a.js: f has no @param for x"));\n` +
+          `test("second rule", () => assert.ok(false, "SECOND: error messages must start with the function name"));\n`,
+      );
+      // Without the parent runner's context, or the child skips its files as a recursive run.
+      const env = { ...process.env };
+      delete env.NODE_TEST_CONTEXT;
+      const r = spawnSync(process.execPath, ["--test", file], { encoding: "utf8", env });
+      assert.match(`${r.stdout}`, /second rule/, "precondition: the child ran the test file");
+      const output = `${r.stdout}${r.stderr}`;
+      assert.ok(!output.slice(-800).includes("FIRST"), "precondition: the old 800-character tail loses the first failure");
+      const digest = o.failureDigest(output);
+      assert.match(digest, /FIRST: exported functions need JSDoc/);
+      assert.match(digest, /f has no @param for x/);
+      assert.match(digest, /SECOND: error messages must start/);
+      assert.doesNotMatch(digest, /^\s+at /m, "stack frames are dropped");
+      assert.ok(digest.length <= 1500);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  test("a long failure does not push a short one out: each failing test gets its share", () => {
+    const summary =
+      "ℹ fail 2\n✖ failing tests:\n\ntest at gate.js:10:1\n✖ house rules: JSDoc (1ms)\n  AssertionError [ERR_ASSERTION]: SHORT: f has no @param for x\n\n" +
+      `test at gate.js:20:1\n✖ house rules: error messages (2ms)\n  AssertionError [ERR_ASSERTION]: LONG: ${"- call threw x; must start with f: y\n".repeat(80)}`;
+    const digest = o.failureDigest(summary);
+    assert.match(digest, /SHORT: f has no @param for x/);
+    assert.match(digest, /LONG: - call threw/);
+    assert.ok(digest.length <= 1500, String(digest.length));
+  });
+  test("other output: the tail, stack frames dropped", () => {
+    assert.equal(o.failureDigest("x".repeat(3000)).length, 1500);
+    assert.equal(o.failureDigest("Error: boom\n    at f (a.js:1:2)\n    at g (b.js:3:4)\ndone"), "Error: boom\ndone");
   });
 });
