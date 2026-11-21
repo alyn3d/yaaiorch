@@ -99,7 +99,9 @@ function errorRules(m) {
       else if (!head.test(e.message)) problems.push(`${call} threw "${e.message}"; the message must start with "${prefix}"`);
     }
   }
-  return problems.length ? `error messages must start with the function name and a colon, then name the bad argument or element:\n- ${problems.join("\n- ")}` : "ok";
+  return problems.length
+    ? `error messages must start with the function name and a colon, then name the bad argument or element:\n- ${problems.join("\n- ")}`
+    : "ok";
 }
 
 import(workerData.url).then(

@@ -55,7 +55,11 @@ test("exports match the goal's CSV for every filter after creating, assigning an
       assert.equal(res.status, 201, `creating ${show(body)} failed with ${res.status}`);
       const { id } = await res.json();
       if (r() < 0.3)
-        await fetch(`${base}/tickets/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee: pick(["ana", "cy"]) }) });
+        await fetch(`${base}/tickets/${id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ assignee: pick(["ana", "cy"]) }),
+        });
       if (r() < 0.4) await fetch(`${base}/tickets/${id}/close`, { method: "POST" });
     }
     for (const q of ["", "?status=open", "?status=closed", "?assignee=ana", "?assignee=cy", "?status=closed&assignee=ana", "?assignee=nobody"]) {
