@@ -1071,6 +1071,19 @@ const checkReport = (cs: Check[]) =>
         .join("\n")
     : "\n\nNo checks are configured for this repo; verify by reading the code.";
 
+/**
+ * A failed check's output for the next round, at most `max` characters: stack frames and assertion-object dumps
+ * dropped, and from node --test's "failing tests" summary when there is one, so every failing test's message fits
+ * (a plain tail kept only the last one, and the fix round missed the others).
+ */
+function failureDigest(output: string, max = 1500): string {
+  const lines = output
+    .split(/\r?\n/)
+    .filter((l) => !/^\s*at\s/.test(l) && !/^\s*(generatedMessage|code|actual|expected|operator|diff):/.test(l) && !/^\s*[{}],?\s*$/.test(l));
+  const summary = lines.findIndex((l) => /^✖ failing tests:/.test(l));
+  return (summary >= 0 ? lines.slice(summary + 1) : lines).join("\n").trim().slice(-max);
+}
+
 // ---------- setup: orch installs dependencies (agents never do) when a manifest changed ----------
 const MANIFESTS = [
   "package.json",
@@ -5474,8 +5487,8 @@ async function runGoalInner(goal: string, o: Opts, cp: string, ctx: RunCtx, lr: 
       .filter((c) => !c.ok)
       .map((c) =>
         c.gate
-          ? `gate check "${c.name}" failed (exit ${c.code}):\n${c.output.slice(-800)}`
-          : `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${c.output.slice(-800)}`,
+          ? `gate check "${c.name}" failed (exit ${c.code}):\n${failureDigest(c.output)}`
+          : `check "${c.name}" failed (\`${c.command}\`, exit ${c.code}):\n${failureDigest(c.output)}`,
       );
     // A plan without verify tasks (fast path with checks) is judged by the checks alone; at least one must have run.
     const verifiedBy = verify.length ? verdicts.length > 0 && verdicts.every((v) => v.passed) : checkResults.length > 0;
@@ -6658,6 +6671,7 @@ async function main() {
 
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
 export {
+  failureDigest,
   loadGateChecks,
   gateHint,
   gateOverlap,

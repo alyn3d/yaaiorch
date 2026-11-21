@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { tsxApi } from "./tsx.mjs";
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -1335,5 +1336,39 @@ describe("gate checks", () => {
     assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["Bash(make:*)"]), ["e2e"]);
     assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["PowerShell(make e2e)"]), ["e2e"]);
     assert.deepEqual(o.gateOverlap({}, { e2e: "make e2e" }, ["Bash(make lint:*)", "Bash(make e2e-report)", "Read(**)"]), []);
+  });
+});
+
+describe("failureDigest", () => {
+  test("keeps every failing test's message from real node --test output, not only the last one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "yaaiorch-digest-"));
+    try {
+      const file = join(dir, "two.test.mjs");
+      writeFileSync(
+        file,
+        `import { test } from "node:test";\nimport assert from "node:assert/strict";\n` +
+          `test("first rule", () => assert.ok(false, "FIRST: exported functions need JSDoc\\n- src/a.js: f has no @param for x"));\n` +
+          `test("second rule", () => assert.ok(false, "SECOND: error messages must start with the function name"));\n`,
+      );
+      // Without the parent runner's context, or the child skips its files as a recursive run.
+      const env = { ...process.env };
+      delete env.NODE_TEST_CONTEXT;
+      const r = spawnSync(process.execPath, ["--test", file], { encoding: "utf8", env });
+      assert.match(`${r.stdout}`, /second rule/, "precondition: the child ran the test file");
+      const output = `${r.stdout}${r.stderr}`;
+      assert.ok(!output.slice(-800).includes("FIRST"), "precondition: the old 800-character tail loses the first failure");
+      const digest = o.failureDigest(output);
+      assert.match(digest, /FIRST: exported functions need JSDoc/);
+      assert.match(digest, /f has no @param for x/);
+      assert.match(digest, /SECOND: error messages must start/);
+      assert.doesNotMatch(digest, /^\s+at /m, "stack frames are dropped");
+      assert.ok(digest.length <= 1500);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  test("other output: the tail, stack frames dropped", () => {
+    assert.equal(o.failureDigest("x".repeat(3000)).length, 1500);
+    assert.equal(o.failureDigest("Error: boom\n    at f (a.js:1:2)\n    at g (b.js:3:4)\ndone"), "Error: boom\ndone");
   });
 });
