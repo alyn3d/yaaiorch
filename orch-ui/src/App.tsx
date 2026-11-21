@@ -295,6 +295,7 @@ export function App() {
         <ErrorBoundary resetKey={current}>
           {about && (
             <About
+              busy={running > 0}
               onClose={() => {
                 setAbout(false);
                 aboutButton.current?.focus();

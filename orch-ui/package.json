@@ -1,6 +1,6 @@
 {
   "name": "yaaiorch-ui",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "YAAIORCH (Yet Another AI Orchestrator): browser UI and desktop app",
   "license": "GPL-3.0-only",
   "repository": {
@@ -27,13 +27,15 @@
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-notification": "^2.8.1",
     "@tauri-apps/plugin-opener": "^2.7.3",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tsx": "^4.19.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.12.6",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

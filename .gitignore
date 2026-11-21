@@ -18,3 +18,7 @@ evals/results/
 
 # local release assets
 release/
+
+# updater signing keys (orch-ui/scripts/generate-keys.mjs writes them to orch-ui/src-tauri/)
+*.key
+*.key.pub

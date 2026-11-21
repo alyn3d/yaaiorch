@@ -5,6 +5,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-21
+
+### Added
+- Automatic updates for the desktop app: **About YAAIORCH** checks GitHub Releases for a newer version, downloads and installs a signed update with progress, and restarts the app. Checking works any time; installing waits until no repo or group is running. Updates are signed with minisign (Ed25519): the public key is embedded in the app, the private key is a GitHub Secret, and every download is verified before it is installed. Release notes are shown as plain Markdown, never as HTML. The release workflow (`release.yml`) builds Windows x64 (NSIS and MSI), macOS (universal) and Linux x64 (AppImage), writes the update manifest (`latest.json`) through `tauri-action`, and attaches everything plus the CLI bundle and checksums to a draft release you review and publish. Installers are still not code-signed. Updates start from this version: earlier versions need one manual install. See [docs/UPDATER.md](docs/UPDATER.md) for setup and signing key generation.
+
 ## [0.6.1] - 2026-11-20
 
 ### Added
@@ -440,7 +445,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/alyn3d/yaaiorch/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/alyn3d/yaaiorch/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/alyn3d/yaaiorch/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/alyn3d/yaaiorch/compare/v0.5.5...v0.5.6
