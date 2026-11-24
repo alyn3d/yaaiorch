@@ -11,6 +11,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ### Fixed
 - A fix round now sees every failing test of a failed check, not only the last: the output it gets drops stack traces and, for node --test, gives each failing test an equal share of 1,500 characters (instead of the last 800 characters of the output). Before, a check that failed two tests cost an extra round, one per test.
+- The JSDoc house rule in the `lib-intervals-perf` and `lib-recurrence-fuzz` gates accepts a `@param` whose type spans several lines or nests braces (`{{start: string, ...}}`), which a run on 21 November was wrongly failed for, and no longer accepts a parameter that only appears as a property inside another parameter's type.
 ## [0.6.2] - 2026-11-21
 
 ### Added

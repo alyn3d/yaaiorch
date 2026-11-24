@@ -39,8 +39,8 @@ one so nobody duplicates work. Finished work is listed in [CHANGELOG.md](CHANGEL
 - [x] **Harder cases first**: the 18 November run passed every case in round 1, including the multi-round ones.
   The gate cases (`lib-intervals-perf`, `lib-recurrence-fuzz`, `tickets-export-e2e`) need a fix round in every run
   ([results](docs/evals/2026-11-21.md)). Repo-scale cases above are still open.
-- [ ] **Gate JSDoc parser**: `lib-recurrence-fuzz`'s gate rejects a valid multi-line `@param` with a nested type
-  (`{{start: string, ...}}`), which cost one run an extra round. Accept it, then re-run `--reference`.
+- [x] **Gate JSDoc parser**: the house-rules gate now accepts a multi-line `@param` with a nested type
+  (`{{start: string, ...}}`) and no longer counts a property inside a type as a documented parameter.
 
 ### Test the orchestrator itself
 - [x] Fake `claude` (`test/fake-claude/`) and 47 scenario tests (`npm test`), run in CI on Linux and
