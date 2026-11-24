@@ -41,7 +41,7 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
     case "group_start":
       return {
         goal: ev.goal,
-        maxRounds: ev.maxRounds ?? 0,
+        maxRounds: 0,
         dryRun: false,
         status: "running",
         startedAt: ev.t,

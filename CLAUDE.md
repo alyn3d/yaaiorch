@@ -16,6 +16,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 - `claude-bin.ts`: finds the `claude` executable once (Windows: an .exe directly, an npm .cmd shim unwrapped to node + its script), shared by `orch.ts` and `evals/run.ts`.
 - `orch-group.ts`, `orch-group-run.ts`: repo groups (config, coordinator prompts and parsing; the `orch group run` process), bundled into `orch.mjs`.
 - `orch-agents.ts`: built-in agent prompts, bundled into `orch.mjs`. Written to `.orchestrator/builtin-agents.json` at run time and passed to `claude --agents`. Reply formats are appended to prompts by `orch.ts`, not stored here.
+- `orch-events.ts`: the event payload types (`OrchEventData`, `OrchEvent`), `EVENT_TYPES` and `COST_EVENTS`, shared by orch, the browser server and the UI; no imports.
 - `orch-ui/src`: React + TypeScript + SCSS. `transport.ts` picks HTTP/SSE (browser) or Tauri invoke/events.
 - `orch-ui/src/reduce.ts`: folds structured events into the run view.
 - `orch-ui/server.ts`: browser-mode server. Spawns orch.ts, forwards events over SSE.
@@ -24,9 +25,12 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (via `src-tauri`).
 
 ## Event protocol
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
-architect_start, checkpoint, plan, checks_start, checks, visual_start, visual, task_start, task_activity, task_end, round_diff, round_end, stuck, critic, review, split_proposal, coverage, retry, blocked, queue_changed, question_wait, question_answered, command_wait, command_decided, resumed, intake, protected, secrets, ci, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage, history_error, group_start, group_plan, group_approval_wait, group_approval, group_step, group_child, group_fault, group_rollback, group_end. Keep `server.ts`, `main.rs` and `reduce.ts`
-in sync when adding or changing events. The UI also folds a synthetic `stopped` event (from `useOrch.ts`) when the
-process exits without `goal_end`.
+architect_start, checkpoint, plan, checks_start, checks, visual_start, visual, task_start, task_activity, task_end, round_diff, round_end, stuck, critic, review, split_proposal, coverage, retry, blocked, queue_changed, question_wait, question_answered, command_wait, command_decided, resumed, intake, protected, secrets, ci, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage, history_error, group_start, group_plan, group_approval_wait, group_approval, group_step, group_child, group_fault, group_rollback, group_end. Each event's payload is typed in `orch-events.ts` (`OrchEventData`, one
+discriminated union `OrchEvent`): `emit` in `orch.ts` / `orch-group-run.ts` and the UI's `reduce.ts` use it, so a
+renamed field fails the typecheck. Add a new event there first (and to `EVENT_TYPES`); a unit test checks this list
+and the ARCHITECTURE.md table name every type, and that `main.rs`'s cost events match `COST_EVENTS` (which
+`server.ts` imports). `main.rs` is not typed against it: keep it in sync by hand. The UI also folds a synthetic
+`stopped` event (from `useOrch.ts`) when the process exits without `goal_end`.
 
 ## Commands (run in `orch-ui`)
 - `npm install`

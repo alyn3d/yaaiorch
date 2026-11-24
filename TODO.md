@@ -211,7 +211,7 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Cross-repo work board** in Overview: working tasks, user input, verification/PR review and completed queue goals.
 - [ ] **One backend**: share line parsing and event buffering instead of keeping `server.ts` and
   `main.rs` in sync (or let the desktop app start `server.ts`).
-- [ ] **Shared event types** between `orch.ts` and the UI (one discriminated union). **good first issue**
+- [x] **Shared event types** between `orch.ts` and the UI (one discriminated union, `orch-events.ts`).
 - [ ] **More agent runtimes**: put Codex CLI, Gemini CLI and OpenCode behind the `run()` contract
   (prompt in, `{text, cost}` out, permission mode mapped per runtime), choosable per role, and add
   `--runtime` to the eval runner to compare them.

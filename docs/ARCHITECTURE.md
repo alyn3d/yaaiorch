@@ -162,7 +162,7 @@ Budget with `--max-cost` (`childShare`): the build gets 60% (split over the repo
 
 ### Structured events
 
-With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per event (all carry `type` and `t` in ms):
+With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per event (all carry `type` and `t` in ms). The payloads are typed in `orch-events.ts`, which the emitters and the UI share; the table below summarizes them:
 
 | type | fields |
 |---|---|

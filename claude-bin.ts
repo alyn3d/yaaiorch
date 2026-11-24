@@ -7,8 +7,8 @@
 // metacharacter rules (&, |, ^, %) apply to the command line. So on Windows we look `claude` up on PATH
 // ourselves: an .exe (the native installer) runs directly; an npm .cmd shim is read for the script it
 // starts, which then runs with node directly. Only a shim we cannot read falls back to cmd.exe.
-// On other platforms spawn() already resolves PATH and shebangs, so nothing changes there.
-import { readFileSync, statSync } from "node:fs";
+// On other platforms spawn() already resolves PATH and shebangs; we only check that the name is there.
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 export type ClaudeCmd = {
@@ -21,8 +21,8 @@ export type ClaudeCmd = {
   /** Human-readable: how claude is started (for `orch doctor`). */
   via: string;
   /**
-   * Windows only: not found on PATH. Callers must not spawn it, since both cmd.exe and Node's own lookup
-   * would try the current directory (the target repo) first.
+   * Not found on PATH (or, given as a path, not there). Callers must not spawn it: on Windows both cmd.exe and
+   * Node's own lookup would try the current directory (the target repo) first.
    */
   missing?: boolean;
 };
@@ -80,9 +80,32 @@ export function shimTarget(shim: string): string | undefined {
 export const resolveCommand = (bin: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): ClaudeCmd =>
   resolveClaude(bin, env, platform);
 
+/**
+ * Other platforms: whether spawn() will find `name`: a path as given, a bare name as an executable file on PATH.
+ * Only to say "not found" up front (a missing `gh` is not the same as a logged-out one); spawn() still resolves it.
+ */
+export function onPosixPath(name: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const executable = (p: string) => {
+    try {
+      accessSync(p, constants.X_OK);
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  };
+  if (name.includes("/")) return executable(name);
+  return (env.PATH ?? "")
+    .split(":")
+    .filter(Boolean)
+    .some((dir) => executable(join(dir, name)));
+}
+
 /** How to start `bin` (CLAUDE_BIN or "claude") on this platform. */
 export function resolveClaude(bin: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): ClaudeCmd {
-  if (platform !== "win32") return { file: bin, pre: [], shell: false, via: bin };
+  if (platform !== "win32")
+    return onPosixPath(bin, env)
+      ? { file: bin, pre: [], shell: false, via: bin }
+      : { file: bin, pre: [], shell: false, via: "not found on PATH", missing: true };
   const quoted = (p: string) => (/\s/.test(p) && !p.startsWith('"') ? `"${p}"` : p);
   const viaShell = (p: string, why: string): ClaudeCmd => ({ file: quoted(p), pre: [], shell: true, via: `cmd.exe (${why})` });
   const found = findOnPath(bin.replace(/^"(.*)"$/, "$1"), env);
