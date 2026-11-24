@@ -19,8 +19,33 @@ export function jsdocProblems(file) {
       problems.push(`${file}: ${name} has no JSDoc block (/** ... */ right above it, with @param and @returns)`);
       continue;
     }
-    for (const p of params) if (!new RegExp(`@param\\b[^\\n]*[\\s}]\\[?${p}\\b`).test(doc)) problems.push(`${file}: ${name}'s JSDoc has no @param for ${p}`);
+    const documented = paramNames(doc);
+    for (const p of params) if (!documented.has(p)) problems.push(`${file}: ${name}'s JSDoc has no @param for ${p}`);
     if (!/@returns?\b/.test(doc)) problems.push(`${file}: ${name}'s JSDoc has no @returns`);
   }
   return problems;
+}
+
+/**
+ * Names documented by the block's `@param` tags. The type may span lines and nest braces
+ * (`{{start: string, every: number}}` over several lines); the name follows it, optionally in brackets
+ * (`[opts]`, `[opts=1]`) or dotted (`opts.start` documents `opts`). Property names inside the type never count.
+ */
+export function paramNames(doc) {
+  const text = doc.replace(/^[ \t]*\/?\*+\/?/gm, " ");
+  const names = new Set();
+  for (const m of text.matchAll(/@param\b/g)) {
+    let i = m.index + m[0].length;
+    while (/\s/.test(text[i] ?? "")) i++;
+    if (text[i] === "{") {
+      for (let depth = 0; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}" && --depth === 0) break;
+      }
+      i++;
+    }
+    const name = /^\s*\[?\s*([A-Za-z_$][\w$]*)/.exec(text.slice(i));
+    if (name) names.add(name[1]);
+  }
+  return names;
 }
