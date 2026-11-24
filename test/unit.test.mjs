@@ -1230,7 +1230,8 @@ describe("browser checks (orch-browser.ts)", () => {
     } finally {
       server?.stop();
       process.chdir(cwd);
-      rmSync(dir, { recursive: true, force: true });
+      // stop() does not wait for the exit, and Windows refuses to delete a live process's working directory (EPERM).
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     }
   });
 
