@@ -47,7 +47,7 @@ import {
   type GroupConfig,
   type GroupRepo,
 } from "./orch-group";
-import { approveGroup, childShare, costArgs as groupCostArgs, GROUP_EXIT, groupDir, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
+import { approveGroup, childShare, clearGitLocks, costArgs as groupCostArgs, GROUP_EXIT, groupDir, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import type { OrchEventData, OrchEventType } from "./orch-events";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
@@ -6726,6 +6726,7 @@ export {
   parseGroupPlan,
   parseFaultCall,
   childShare,
+  clearGitLocks,
   groupCostArgs,
   readDenyRules,
   acquireRunLock,

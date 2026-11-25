@@ -22,7 +22,8 @@
 //   FAKE_COST=<usd>          total_cost_usd per call (default 0.05)
 //   FAKE_FAIL_AGENT=<name>   that implementer exits 1; FAKE_LOCK_REPO=<dir> then also leaves <dir>/.git/index.lock
 //                            behind, so git cannot commit or reset there (a park that fails)
-//   FAKE_HANG_AGENT=<name>   that implementer never returns
+//   FAKE_HANG_AGENT=<name>   that implementer never returns; FAKE_HANG_REPO=<dir>: only in that repo, and it leaves
+//                            <dir>/.git/index.lock first (a git add killed half way)
 //   FAKE_SLOW=<seconds>      implementers sleep first
 //   FAKE_ACTIVITY=<agents>    stream tool requests for these agents; FAKE_ACTIVITY_WAIT holds each call open (ms)
 //   FAKE_NOWRITE=1           implementers claim COMPLETE but write nothing
@@ -64,7 +65,7 @@
 //                            utilizations (fractions, e.g. 0.83,0.24); windows reset FAKE_USAGE_RESET_S (3600) s from now
 // Also answers `--version` and `auth status --json` for `orch doctor`, `plugin list --json` and
 // `plugin details <id>` for `orch plugins`, and honours --max-budget-usd.
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync, readdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -508,8 +509,11 @@ if (prompt.startsWith("You are the group coordinator.")) {
     if (env.FAKE_LOCK_REPO) writeFileSync(`${env.FAKE_LOCK_REPO}/.git/index.lock`, "");
     process.exit(1);
   }
-  if (env.FAKE_HANG_AGENT === agent) {
+  const hangHere = !env.FAKE_HANG_REPO || realpathSync(process.cwd()) === realpathSync(env.FAKE_HANG_REPO);
+  if (env.FAKE_HANG_AGENT === agent && hangHere) {
     log(`${agent}: hanging`);
+    // As if the process tree were killed during a git add: the lock stays behind.
+    if (env.FAKE_HANG_REPO) writeFileSync(`${env.FAKE_HANG_REPO}/.git/index.lock`, "");
     setInterval(() => {}, 1000);
     await new Promise(() => {});
   }

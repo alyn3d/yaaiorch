@@ -4,7 +4,7 @@ import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { tsxApi } from "./tsx.mjs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync, realpathSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
@@ -849,6 +849,34 @@ describe("orch group-member coordinate", () => {
   });
 });
 
+describe("clearGitLocks", () => {
+  test("removes the git locks written since the killed run started, and nothing older or else", () => {
+    const dir = mkdtempSync(join(tmpdir(), "orch-locks-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: dir });
+      const g = join(dir, ".git");
+      writeFileSync(join(g, "HEAD.lock"), "");
+      const since = Date.now() + 5000; // HEAD.lock predates the run
+      mkdirSync(join(g, "refs", "heads", "orchestrator"), { recursive: true });
+      for (const f of ["index.lock", "refs/heads/orchestrator/x.lock", "refs/heads/main.lock"]) {
+        writeFileSync(join(g, f), "");
+        const t = new Date(since + 1000);
+        utimesSync(join(g, f), t, t);
+      }
+      mkdirSync(join(g, "objects", "ab"), { recursive: true });
+      writeFileSync(join(g, "objects", "ab", "c.lock"), "");
+      utimesSync(join(g, "objects", "ab", "c.lock"), new Date(since + 1000), new Date(since + 1000));
+      assert.deepEqual(o.clearGitLocks(dir, since).sort(), ["index.lock", "refs/heads/main.lock", "refs/heads/orchestrator/x.lock"]);
+      assert.ok(existsSync(join(g, "HEAD.lock")), "an older lock is someone else's");
+      assert.ok(existsSync(join(g, "objects", "ab", "c.lock")), "only the top level and refs are swept");
+      assert.ok(existsSync(join(g, "HEAD")));
+      assert.deepEqual(o.clearGitLocks(join(dir, "nope"), 0), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("group budget shares", () => {
   test("the build gets 60% of what is left, split over the repos that build", () => {
     assert.deepEqual(o.groupCostArgs(undefined), []);
@@ -1048,8 +1076,8 @@ describe("orch group run", { timeout: 600_000 }, () => {
     const lock = join(s.fe, ".git", "index.lock");
     try {
       // Only the frontend builds: its fe task writes work, its failing be task leaves the lock there. With both repos
-      // building, whichever failed first had the group kill the other mid-commit, which could leave a stale lock in
-      // that repo too (a flaky test; the kill itself is a separate issue).
+      // building, both be tasks would fail and the order would decide which repo's run is killed and which keeps its
+      // lock (a run that fails on its own keeps it).
       const r = group(s, ["run", "shop", "list the items", "--no-fast", "--max-rounds", "1"], {
         FAKE_FAIL_AGENT: "be",
         FAKE_LOCK_REPO: s.fe,
@@ -1082,6 +1110,34 @@ describe("orch group run", { timeout: 600_000 }, () => {
         branches(s.fe).join(", "),
       );
       assert.equal(JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8")).rolledBack, true);
+      assert.deepEqual(locks(s), []);
+    } finally {
+      rmSync(lock, { force: true });
+      clean(s);
+    }
+  });
+
+  test("a sibling killed during a git step leaves no stale index.lock: its work is parked like the other's", () => {
+    const s = setup();
+    const lock = join(s.be, ".git", "index.lock");
+    try {
+      // The backend's be task hangs after leaving the lock (as a git add killed half way would); its fe task wrote work.
+      // The frontend's QA fails, so the group kills the backend's tree. FAKE_SLOW lets the backend reach the hang first.
+      const r = group(s, ["run", "shop", "list the items", "--no-fast", "--max-rounds", "1"], {
+        FAKE_QA: "fail",
+        FAKE_HANG_AGENT: "be",
+        FAKE_HANG_REPO: s.be,
+        FAKE_SLOW: "2",
+      });
+      assert.equal(r.code, 1, r.out);
+      assert.match(readFileSync(join(s.home, "fake.log"), "utf8"), /be: hanging/, "the backend hung before the kill");
+      assert.ok(!existsSync(lock), "the stale lock is gone");
+      const end = r.ev("group_end").at(-1);
+      assert.equal(end.kept, undefined, JSON.stringify(end));
+      assert.match(end.parked.backend, /^orchestrator\/failed-group-/, r.out);
+      assert.match(end.parked.frontend, /^orchestrator\/failed-group-/, r.out);
+      assert.equal(head(s.be), s.heads.be);
+      assert.equal(head(s.fe), s.heads.fe);
       assert.deepEqual(locks(s), []);
     } finally {
       rmSync(lock, { force: true });

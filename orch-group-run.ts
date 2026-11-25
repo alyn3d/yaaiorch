@@ -10,7 +10,7 @@
 // It must not import orch.ts (orch.ts imports it): the lock and atomic-write helpers come in as `GroupDeps`. Every
 // repo-level git step runs as `orch group-member ...` in that repo, so this file never touches a repo itself.
 import { spawn, spawnSync, execFileSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { DevServer, type ServeConfig } from "./orch-browser";
@@ -74,7 +74,8 @@ function emit<K extends OrchEventType>(type: K, data: OrchEventData[K]) {
 }
 
 // ---------- children: every process the group starts, so it can kill or await them all ----------
-const live = new Set<{ p: ChildProcess; done: Promise<number> }>();
+/** `killed`: the group killed its tree, so a git step it was in may have left a lock behind (`clearGitLocks`). */
+const live = new Set<{ p: ChildProcess; done: Promise<number>; killed: boolean }>();
 /** The backend's server during the integration step: killed with the children, on every exit path. */
 let backendServer: DevServer | undefined;
 
@@ -93,7 +94,10 @@ function killChildTree(p: ChildProcess) {
   }
 }
 const killAll = () => {
-  for (const c of live) killChildTree(c.p);
+  for (const c of live) {
+    c.killed = true;
+    killChildTree(c.p);
+  }
   backendServer?.stop();
 };
 /** Kill every child and wait until each has exited, so nothing runs in a repo once its lock is released. */
@@ -102,9 +106,50 @@ async function settleChildren() {
   await Promise.all([...live].map((c) => c.done));
 }
 
-type Spawned = { done: Promise<number>; kill(): void };
+/** `started`: when it was spawned; `killed()`: whether the group killed its tree. */
+type Spawned = { done: Promise<number>; kill(): void; started: number; killed(): boolean };
+
+/**
+ * Git lock files in `dir`'s git dir (index.lock, HEAD.lock, any .lock under refs) last written at or after `since`, removed.
+ * Only for a repo whose run the group killed and awaited, while it holds that repo's run lock: a lock newer than the
+ * run was left by its killed git step, and nothing else may be in the repo. An older lock is someone else's and stays.
+ * Returns the removed paths, relative to the git dir.
+ */
+export function clearGitLocks(dir: string, since: number): string[] {
+  const r = spawnSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: dir, encoding: "utf8", windowsHide: true });
+  const gitDir = r.status === 0 ? r.stdout.trim() : "";
+  if (!gitDir) return [];
+  const removed: string[] = [];
+  const visit = (rel: string, deep: boolean) => {
+    let names: Dirent[];
+    try {
+      names = readdirSync(join(gitDir, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const d of names) {
+      const path = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) {
+        if (deep || d.name === "refs") visit(path, true);
+      } else if (d.isFile() && d.name.endsWith(".lock")) {
+        try {
+          // A second of slack: some file systems keep mtimes in whole seconds.
+          if (statSync(join(gitDir, path)).mtimeMs >= since - 1000) {
+            rmSync(join(gitDir, path));
+            removed.push(path);
+          }
+        } catch {
+          /* gone already */
+        }
+      }
+    }
+  };
+  visit("", false);
+  return removed;
+}
 
 function spawnOrch(cwd: string, args: string[], env: Record<string, string>, onLine: (line: string, stream: "out" | "err") => void, input?: string): Spawned {
+  const started = Date.now();
   const p = spawn(process.execPath, [...selfArgs(), ...args], {
     cwd,
     env: { ...process.env, ...env },
@@ -117,6 +162,7 @@ function spawnOrch(cwd: string, args: string[], env: Record<string, string>, onL
   createInterface({ input: p.stderr! }).on("line", (l) => onLine(l, "err"));
   const entry = {
     p,
+    killed: false,
     done: new Promise<number>((ok) => {
       p.on("error", (e) => {
         onLine(`could not start: ${msg(e)}`, "err");
@@ -127,7 +173,15 @@ function spawnOrch(cwd: string, args: string[], env: Record<string, string>, onL
   };
   live.add(entry);
   void entry.done.then(() => live.delete(entry));
-  return { done: entry.done, kill: () => killChildTree(p) };
+  return {
+    done: entry.done,
+    kill: () => {
+      entry.killed = true;
+      killChildTree(p);
+    },
+    started,
+    killed: () => entry.killed,
+  };
 }
 
 /**
@@ -478,6 +532,12 @@ async function runChildren(
     }),
   );
   for (const e of ends) s.spent += e.cost;
+  // A tree killed half way through a git add or commit leaves its lock, and the park after it would fail on it.
+  for (const x of started)
+    if (x.c.killed()) {
+      const removed = clearGitLocks(repoOf(s, x.role).path, x.c.started);
+      if (removed.length) console.warn(`${x.role}: removed ${removed.join(", ")} left in .git by its stopped run`);
+    }
   return ends;
 }
 
