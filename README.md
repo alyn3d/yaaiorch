@@ -63,8 +63,11 @@ Installers for Windows (`.exe` setup or `.msi`), macOS and Linux, and a standalo
 (`yaaiorch-cli-<version>.mjs`, run with `node`), are on the
 [releases page](https://github.com/alyn3d/yaaiorch/releases), with SHA-256 checksums.
 
-- The apps are **not code-signed** yet: Windows SmartScreen shows "Windows protected your PC"
-  (choose *More info* → *Run anyway*), and macOS needs right-click → *Open* the first time.
+- The apps are **not code-signed**, on purpose: signing costs money every year and this is a free project. Updates
+  are still verified against the project's own updater key. Windows SmartScreen shows "Windows protected your PC"
+  (choose *More info* → *Run anyway*). macOS blocks the first launch: open **System Settings → Privacy & Security**
+  and choose *Open Anyway* (before macOS 15, right-click → *Open* also works), or run
+  `xattr -dr com.apple.quarantine /Applications/YAAIORCH.app`.
 - The desktop app **brings its own Node.js** to run the orchestrator, so you only need your logged-in **Claude
   Code** and git. (It uses `node` on PATH only when built without it; `YAAIORCH_NODE` points it at another one.)
   Your project's own checks (`npm test` and so on) still use whatever your project needs.

@@ -219,8 +219,9 @@ Each item should show its effect in the evals before it becomes the default.
 - [ ] **More agent runtimes**: put Codex CLI, Gemini CLI and OpenCode behind the `run()` contract
   (prompt in, `{text, cost}` out, permission mode mapped per runtime), choosable per role, and add
   `--runtime` to the eval runner to compare them.
-- [ ] **Packaging**: bundle Node as a sidecar (done: `fetch-node.mjs`, Tauri externalBin), sign the Windows installer, auto-update, release builds
-  for Windows, macOS and Linux from CI.
+- [x] **Packaging**: Node bundled as a sidecar (`fetch-node.mjs`, Tauri externalBin), auto-update (Tauri updater,
+  minisign key), release builds for Windows, macOS (universal) and Linux from CI (`release.yml`). Installers stay
+  unsigned on purpose (no paid certificates); the README explains the first-launch steps.
 - [ ] **Verify on macOS and Linux** (CLI, browser mode, desktop build), including the desktop app started from
   Finder or a launcher finding `claude` (PATH from the login shell). **good first issue** if you have the machine.
   Linux so far: the whole test suite on Ubuntu (WSL, Node 22) with the fake claude; still open there: a real
