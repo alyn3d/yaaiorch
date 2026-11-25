@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { GroupConfig, GroupRole, GroupView as Group, Power } from "./types";
 import { transport, type GroupForm } from "./transport";
-import { baseName, usd } from "./repoStatus";
+import { baseName, groupWaits, usd } from "./repoStatus";
 import type { Session } from "./useOrch";
 import { AgentText } from "./AgentText";
 
@@ -23,8 +23,8 @@ export const samePath = (a: string, b: string) => {
   return norm(a) === norm(b);
 };
 
-type GroupOpts = { power: Power; maxRounds: number; maxCost: string; approvePlan: boolean; fast: boolean };
-const DEFAULTS: GroupOpts = { power: "heavy", maxRounds: 5, maxCost: "", approvePlan: false, fast: true };
+type GroupOpts = { power: Power; maxRounds: number; maxCost: string; approvePlan: boolean; fast: boolean; onLimit: "wait" | "stop" };
+const DEFAULTS: GroupOpts = { power: "heavy", maxRounds: 5, maxCost: "", approvePlan: false, fast: true, onLimit: "wait" };
 
 /** A group's run options, remembered per group in this browser. */
 function useGroupOpts(name: string): [GroupOpts, (o: GroupOpts) => void] {
@@ -248,6 +248,13 @@ export function GroupView({
             Max $
             <input type="number" min={0} step={0.5} placeholder="none" value={opts.maxCost} onChange={(e) => setOpts({ ...opts, maxCost: e.target.value })} />
           </label>
+          <label title="On a Claude usage limit: wait for the reset and carry on, or park both repos' work and stop">
+            On limit
+            <select value={opts.onLimit} onChange={(e) => setOpts({ ...opts, onLimit: e.target.value as GroupOpts["onLimit"] })}>
+              <option value="wait">wait</option>
+              <option value="stop">stop</option>
+            </select>
+          </label>
           <label className="check" title="Show the coordinator's contract and goals before anything is built">
             <input type="checkbox" checked={opts.approvePlan} onChange={(e) => setOpts({ ...opts, approvePlan: e.target.checked })} /> Approve plan
           </label>
@@ -267,6 +274,7 @@ export function GroupView({
                 maxCost: cap > 0 ? cap : undefined,
                 approvePlan: opts.approvePlan,
                 fast: opts.fast,
+                onLimit: opts.onLimit,
               });
               if (ok) setGoal("");
             }}
@@ -286,6 +294,10 @@ export function GroupView({
           run={run!}
           group={group}
           running={running}
+          waits={groupWaits(
+            run,
+            cfg.repos.map((r) => ({ role: r.role, session: memberOf(r.path) })),
+          )}
           onAnswer={(b) => call("approve", b)}
           onOpenRepo={(p) => memberOf(p) && onOpenRepo(memberOf(p)!.state.repo)}
         />
@@ -325,12 +337,15 @@ function GroupRunCard({
   run,
   group,
   running,
+  waits,
   onAnswer,
   onOpenRepo,
 }: {
   run: NonNullable<Session["run"]>;
   group: Group;
   running: boolean;
+  /** Usage-limit waits of the coordinator and the member runs (`groupWaits`). */
+  waits: string[];
   onAnswer: (body: Record<string, unknown>) => Promise<boolean>;
   onOpenRepo: (path: string) => void;
 }) {
@@ -349,6 +364,11 @@ function GroupRunCard({
         </span>
       </div>
       {status === "running" && <p className="group-step">{stepText(group)}</p>}
+      {status === "running" && waits.length > 0 && (
+        <p className="group-wait" role="status">
+          {waits.join("; ")}. The group carries on by itself after the reset; Stop parks both repos instead.
+        </p>
+      )}
       {group.skipped && <p className="muted">Integration skipped: {group.skipped}.</p>}
       {group.failed && <p className="error">Integration failed: {group.failed}</p>}
       {group.external && <p className="muted">Checked against a backend that was already running (no serve command).</p>}

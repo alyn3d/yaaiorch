@@ -5,6 +5,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Repo groups wait out a Claude usage limit instead of giving up: `orch group run` takes `--on-limit wait|stop` (**On limit** on the group page), and `wait` is the default, as for `orch run`. A member run that hits the limit sets its work aside, waits for the reset and carries on from it, while the other repo keeps building; a coordinator call that hits it waits and asks again. The group page says who is waiting and until when, and a member repo waiting inside a group shows that wait instead of just "in group". Stopping the group during such a wait parks the work that run had set aside on the group's `orchestrator/interrupted-group-*` branch, like any other stopped group. `--on-limit stop` keeps the old behaviour: both repos are parked as interrupted and the run exits with code 3.
+
+### Fixed
+- Repo groups: a group goal that passed after a failed integration round no longer leaves that round's `orchestrator/checkpoint-*` branch in the frontend repo. The group now removes the checkpoints its own member runs left behind when it passes, as it already did when it parks a repo, and only those: an older checkpoint on the same commit stays.
+- Repo groups: the cost of a member run that was retried (after a usage limit) now counts every attempt toward the group's `--max-cost`, not only the last.
+
 ## [0.6.3] - 2026-11-25
 
 ### Added

@@ -47,7 +47,18 @@ import {
   type GroupConfig,
   type GroupRepo,
 } from "./orch-group";
-import { approveGroup, childShare, clearGitLocks, costArgs as groupCostArgs, GROUP_EXIT, groupDir, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
+import {
+  approveGroup,
+  childShare,
+  clearGitLocks,
+  costArgs as groupCostArgs,
+  GROUP_EXIT,
+  groupDir,
+  limitWaitUntil,
+  rollbackGroup,
+  runGroup,
+  stopGroup,
+} from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import type { OrchEventData, OrchEventType } from "./orch-events";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
@@ -113,9 +124,11 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
                   options belong to the backend, --env to the frontend, "{backend}" = the backend's URL)
   orch group list [--json] | remove NAME   show or delete groups (~/.yaaiorch/groups)
   orch group run NAME "<goal>" [--max-cost USD] [--power P] [--model SPEC] [--approve-plan] [--fast|--no-fast]
+                  [--on-limit wait|stop]
                   one goal across the group: the coordinator writes the API contract and a goal per repo, both
                   repos build in parallel; on failure or stop each repo's work is parked on a branch and the repo
-                  reset (exit 1, 3 on a usage limit, 130 when stopped). --approve-plan: orch approve --group NAME
+                  reset (exit 1, 130 when stopped). On a usage limit it waits for the reset and carries on
+                  (default), or with --on-limit stop parks both repos and exits 3. --approve-plan: orch approve --group NAME
   orch group stop NAME   stop a running group goal (its work is parked as interrupted)
   orch browser [status | login [URL] | install]   the browser the checks use (status); log in to the app once in
                         a window on this repo's own browser profile, which the checks reuse (login); download
@@ -3165,9 +3178,16 @@ ${dirty}`);
       if (b !== "failed" && b !== "interrupted") throw new Error("usage: orch group-member park <checkpoint> <failed|interrupted>");
       anchor(a);
       const leftovers = childCheckpoints(a!);
-      const parked = moveWorkAside(a!, b, `orch: group ${b} (unfinished)`);
+      // A member run waiting out a usage limit (--on-limit wait) already moved its work to its own interrupted-* branch.
+      const waited = childInterrupted(a!);
+      let parked = moveWorkAside(a!, b, `orch: group ${b} (unfinished)`);
+      if (!parked && waited.length) {
+        // Nothing in place: that branch is the run's work, so it goes under the group's name like any other park.
+        parked = `${BRANCH_PREFIX}${b}-group-${a!.slice(GROUP_CHECKPOINT.length)}`;
+        git("branch", "-m", waited.pop()!, parked);
+      }
       for (const cp of leftovers) git("branch", "-D", cp);
-      return out({ parked });
+      return out({ parked, ...(waited.length ? { also: waited } : {}) });
     }
     case "reset": {
       const { ref, isSha } = anchor(a);
@@ -3203,9 +3223,13 @@ ${dirty}`);
       }
       return out({ ahead: Number(git("rev-list", "--count", `${ref}..HEAD`)), ...(after === undefined ? {} : { after }) });
     }
-    case "drop":
-      git("branch", "-D", checkpoint(a));
+    case "drop": {
+      // After a pass: a member run that failed on the way (an integration round before its fix) kept its checkpoint.
+      const leftovers = childCheckpoints(checkpoint(a));
+      git("branch", "-D", a!);
+      for (const cp of leftovers) git("branch", "-D", cp);
       return out({});
+    }
     case "coordinate": {
       // stdout carries exactly one JSON line: events (ORCH_EVENTS) are off and any other log line goes to stderr.
       delete process.env.ORCH_EVENTS;
@@ -3214,6 +3238,16 @@ ${dirty}`);
       let result;
       try {
         result = await coordinate(a, values);
+      } catch (e) {
+        // The group waits for the reset itself (--on-limit wait): it reads the time from this answer, then exit 3.
+        if (e instanceof UsageLimit) {
+          console.log = log;
+          out({ limit: true, ...(e.resetAt ? { resetAt: e.resetAt } : {}) });
+          // Not "Stopped:" as main() says: the group decides whether it waits or stops, and says so itself.
+          console.error(`Usage limit: ${e.message}${e.resetAt ? ` (resets at ${when(e.resetAt)})` : ""}`);
+          process.exit(3);
+        }
+        throw e;
       } finally {
         console.log = log;
       }
@@ -3227,19 +3261,34 @@ ${dirty}`);
 }
 
 /**
- * The run checkpoints a group's children left behind (a failed or stopped `orch run` keeps its own): every
- * orchestrator/checkpoint-* at or after the group checkpoint. The group checkpoint is the way back, so they go.
+ * The `orchestrator/<kind>-<ms>` branches member runs of this group run left (oldest first): built on the group
+ * checkpoint and named after a time at or after its stamp, so an older branch on the same commit is never taken.
  */
-function childCheckpoints(groupCp: string): string[] {
-  return checkpoints().filter((cp) => {
-    try {
-      git("merge-base", "--is-ancestor", groupCp, cp);
-      return true;
-    } catch {
-      return false;
-    }
-  });
+function memberBranches(groupCp: string, kind: "checkpoint" | "interrupted"): string[] {
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-/.exec(groupCp.slice(GROUP_CHECKPOINT.length));
+  // The stamp has whole seconds in local time; a member run starts after it.
+  const since = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime() : Infinity;
+  const name = new RegExp(`^${BRANCH_PREFIX}${kind}-(\\d{13})$`);
+  return git("branch", "--list", `${BRANCH_PREFIX}${kind}-*`, "--format=%(refname:short)")
+    .split("\n")
+    .filter((b) => Number(name.exec(b)?.[1]) >= since)
+    .filter((b) => {
+      try {
+        git("merge-base", "--is-ancestor", groupCp, b);
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .sort((x, y) => Number(x.slice(-13)) - Number(y.slice(-13)));
 }
+/** Work a member run set aside while it waited out a usage limit (--on-limit wait). */
+const childInterrupted = (groupCp: string) => memberBranches(groupCp, "interrupted");
+/**
+ * The run checkpoints a group's children left behind (a failed or stopped `orch run` keeps its own). The group
+ * checkpoint is the way back, so they go: when the group parks or resets a repo, and when it passes.
+ */
+const childCheckpoints = (groupCp: string) => memberBranches(groupCp, "checkpoint");
 
 /**
  * `orch group-member coordinate plan|fault --group NAME`: the read-only coordinator, run in this repo with the other
@@ -5635,10 +5684,7 @@ function stopRequested(): boolean {
 }
 
 /** One minute past the reset (the CLI rounds the time); 30 min if the reply had no time. ORCH_LIMIT_WAIT_MS overrides it for tests. */
-function waitUntil(resetAt?: number) {
-  const override = Number(process.env.ORCH_LIMIT_WAIT_MS);
-  return override > 0 ? Date.now() + override : (resetAt ?? Date.now() + 29 * 60_000) + 60_000;
-}
+const waitUntil = limitWaitUntil;
 
 /** `orch run` with --on-limit wait: sleep until the reset, then the caller retries the goal. */
 async function waitForReset(e: UsageLimit) {
@@ -6237,6 +6283,7 @@ type GroupFlags = {
   "approve-plan"?: boolean;
   fast?: boolean;
   "no-fast"?: boolean;
+  "on-limit"?: string;
 };
 
 /** `orch group run NAME "<goal>"`: exits 0 pass, 1 fail, 3 usage limit, 130 stopped. */
@@ -6248,6 +6295,8 @@ async function groupRun(name: string | undefined, goal: string, values: GroupFla
   if (!(agentTimeout > 0)) throw new Error(`--agent-timeout must be a positive number of minutes, got "${values["agent-timeout"]}"`);
   const maxRounds = Number(values["max-rounds"] ?? 5);
   if (!Number.isInteger(maxRounds) || maxRounds < 1) throw new Error(`--max-rounds must be a whole number of at least 1, got "${values["max-rounds"]}"`);
+  const onLimit = String(values["on-limit"] ?? "wait");
+  if (onLimit !== "wait" && onLimit !== "stop") throw new Error(`--on-limit must be wait or stop, got "${onLimit}"`);
   let maxCost: number | undefined;
   if (values["max-cost"] !== undefined) {
     maxCost = Number(values["max-cost"]);
@@ -6261,6 +6310,7 @@ async function groupRun(name: string | undefined, goal: string, values: GroupFla
       agentTimeout,
       maxRounds,
       approvePlan: !!values["approve-plan"],
+      onLimit,
       ...(maxCost !== undefined ? { maxCost } : {}),
       ...(values.model ? { model: values.model } : {}),
       ...(values["no-fast"] ? { fast: false } : values.fast ? { fast: true } : {}),

@@ -5,7 +5,9 @@
 // both repos' run locks, checkpoints both repos, asks the coordinator for the contract and one goal per repo, builds
 // both repos in parallel (each an `orch run` child under the held lock), then checks the frontend against the running
 // backend (integration, with coordinator fault calls and fix rounds), and ends by dropping the checkpoints (pass) or
-// parking each repo's work and resetting it (fail, usage limit, stop). Bundled into orch.mjs.
+// parking each repo's work and resetting it (fail, usage limit with --on-limit stop, stop). With --on-limit wait (the
+// default) a usage limit pauses instead: each member run waits for the reset and resumes its parked work itself, and the
+// group waits and asks the coordinator again. Bundled into orch.mjs.
 //
 // It must not import orch.ts (orch.ts imports it): the lock and atomic-write helpers come in as `GroupDeps`. Every
 // repo-level git step runs as `orch group-member ...` in that repo, so this file never touches a repo itself.
@@ -40,6 +42,8 @@ export type GroupOpts = {
   /** The build children's fast path: undefined keeps each repo's own default. */
   fast?: boolean;
   maxRounds?: number;
+  /** On a Claude usage limit: wait for the reset and carry on (default), or park both repos and exit 3. */
+  onLimit?: "wait" | "stop";
 };
 export type GroupOutcome = "pass" | "fail" | "limit" | "stopped";
 export type GroupDeps = {
@@ -68,6 +72,15 @@ export const selfArgs = (): string[] => [...process.execArgv, resolve(process.ar
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * When to try again after a usage limit: one minute past the reset (the CLI rounds the time); 30 min if the reply had
+ * no time. ORCH_LIMIT_WAIT_MS overrides it for tests. Shared with orch.ts (`orch run`, `loop`).
+ */
+export function limitWaitUntil(resetAt?: number): number {
+  const override = Number(process.env.ORCH_LIMIT_WAIT_MS);
+  return override > 0 ? Date.now() + override : (resetAt ?? Date.now() + 29 * 60_000) + 60_000;
+}
 
 function emit<K extends OrchEventType>(type: K, data: OrchEventData[K]) {
   if (process.env.ORCH_EVENTS) console.log("@@ORCH@@ " + JSON.stringify({ type, t: Date.now(), ...data }));
@@ -226,17 +239,24 @@ async function member(
   );
   const code = await c.done;
   if (code !== 0) {
-    // orch prints "Error: <message>" (possibly over several lines) as its last words.
-    const at = err.findLastIndex((l) => l.startsWith("Error: ") || l.startsWith("Stopped: "));
+    // orch prints "Error: <message>" (possibly over several lines) as its last words ("Usage limit: " from coordinate).
+    const at = err.findLastIndex((l) => /^(Error|Stopped|Usage limit): /.test(l));
     const text =
       at >= 0
         ? err
             .slice(at)
             .join("\n")
-            .replace(/^(Error|Stopped): /, "")
+            .replace(/^(Error|Stopped|Usage limit): /, "")
         : err.filter((l) => l.trim()).at(-1);
-    const e = new Error(text || `orch group-member ${args[0]} exited with ${code}`) as Error & { code?: number };
+    const e = new Error(text || `orch group-member ${args[0]} exited with ${code}`) as Error & { code?: number; data?: Record<string, unknown> };
     e.code = code;
+    // A step that failed may still have answered (coordinate: {limit, resetAt} on a usage limit).
+    try {
+      const last = out.filter((l) => l.trim()).at(-1);
+      if (last) e.data = JSON.parse(last) as Record<string, unknown>;
+    } catch {
+      /* no answer */
+    }
     throw e;
   }
   const last = out.filter((l) => l.trim()).at(-1) ?? "{}";
@@ -360,26 +380,42 @@ const modelArgs = (o: GroupOpts) => [
   "--agent-timeout",
   String(o.agentTimeout),
   "--on-limit",
-  "stop",
+  o.onLimit ?? "wait",
   ...(o.model ? ["--model", o.model] : []),
 ];
 
-/** The coordinator, run in the backend repo with the frontend readable. Exit 3 is a usage limit. */
+/** --on-limit wait: sleep until the reset (a stop ends the wait), then the caller tries again. */
+async function waitOutLimit(s: Run, what: string, resetAt?: number) {
+  const until = limitWaitUntil(resetAt);
+  console.log(
+    `${what} hit the Claude usage limit; waiting until ${new Date(until).toLocaleString()} and then trying again (orch group stop ${s.g.name} to stop).`,
+  );
+  emit("waiting", { reason: "usage_limit", until });
+  while (!s.stopped && Date.now() < until) await sleep(Math.min(1000, until - Date.now()));
+  if (s.stopped) throw new Stopped();
+}
+
+/** The coordinator, run in the backend repo with the frontend readable. Exit 3 is a usage limit: wait and ask again, or stop. */
 async function coordinator(s: Run, mode: "plan" | "fault", input: Record<string, unknown>): Promise<{ reply: unknown; cost: number }> {
   const briefs = Object.fromEntries(ROLES.map((r) => [r, readBrief(repoOf(s, r))]).filter(([, b]) => b));
   let r;
-  try {
-    r = await member(
-      repoOf(s, "backend"),
-      s.locks.get("backend")!,
-      ["coordinate", mode, "--group", s.g.name, ...modelArgs(s.o), ...costArgs(budgetLeft(s))],
-      JSON.stringify({ ...input, briefs }),
-      "coordinator",
-    );
-  } catch (e) {
-    if (s.stopped) throw new Stopped();
-    if ((e as { code?: number }).code === 3) throw new Limit(msg(e));
-    throw new Error(`coordinator: ${msg(e)}`, { cause: e });
+  for (;;) {
+    try {
+      r = await member(
+        repoOf(s, "backend"),
+        s.locks.get("backend")!,
+        ["coordinate", mode, "--group", s.g.name, ...modelArgs(s.o), ...costArgs(budgetLeft(s))],
+        JSON.stringify({ ...input, briefs }),
+        "coordinator",
+      );
+      break;
+    } catch (e) {
+      if (s.stopped) throw new Stopped();
+      const { code, data } = e as { code?: number; data?: { resetAt?: unknown } };
+      if (code !== 3) throw new Error(`coordinator: ${msg(e)}`, { cause: e });
+      if (s.o.onLimit === "stop") throw new Limit(msg(e));
+      await waitOutLimit(s, "the coordinator", typeof data?.resetAt === "number" ? data.resetAt : undefined);
+    }
   }
   const cost = Number(r.cost) || 0;
   s.spent += cost;
@@ -512,7 +548,8 @@ async function runChildren(
     // The frontend's env reaches everything its child starts (checks, dev server, browser checks); the lock id wins.
     const env = { ...(role === "frontend" ? frontendEnv(s) : {}), ORCH_GROUP_LOCK: s.locks.get(role)! };
     const c = runChild(repo, args, env, (event) => {
-      if (event.type === "goal_end" && typeof event.cost === "number") cost = event.cost;
+      // One goal_end per attempt: a run that waited out a usage limit ends its first attempt and starts again.
+      if (event.type === "goal_end" && typeof event.cost === "number") cost += event.cost;
       watch?.(role, event);
       // Passed on as the child printed it: the child is this same orch, so it is one of the OrchEvent shapes.
       emit("group_child", { repo: repo.path, role, event: event as unknown as OrchEvent });
@@ -586,7 +623,7 @@ function integrationReport(f: Findings, code: number, serverTail: string): strin
   return parts.join("\n\n");
 }
 
-/** Throws Stopped, Limit or a failure for children that did not all pass. */
+/** Throws Stopped, Limit or a failure for children that did not all pass (exit 3 only with --on-limit stop: a child waits otherwise). */
 function childrenPassed(s: Run, ends: ChildEnd[], what: string) {
   if (s.stopped) throw new Stopped();
   if (ends.some((e) => e.code === 3)) throw new Limit("a member run hit the Claude usage limit");
@@ -736,6 +773,8 @@ async function endStep(s: Run, ok: boolean, kind: "failed" | "interrupted", reas
       } else {
         const r = await member(repo, s.locks.get(role)!, ["park", cp.branch, kind]);
         parked[role] = (r.parked as string | null) ?? null;
+        if (Array.isArray(r.also))
+          for (const b of r.also) console.log(`${role}: more of its work, from a run that waited out a usage limit, is on ${String(b)}`);
         step = "drop";
         await member(repo, s.locks.get(role)!, ["drop", cp.branch]);
         console.log(`${role}: ${parked[role] ? `work parked on ${parked[role]}` : "nothing to park"}; reset to ${cp.branch.replace(/^.*\//, "")}`);

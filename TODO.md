@@ -129,8 +129,8 @@ Each item should show its effect in the evals before it becomes the default.
   member's process tree at once; a kill during that run's `git add` or commit left a stale `.git/index.lock`, so its park
   failed too. Once the killed tree has exited, the group now removes the git locks written since that run started
   (`clearGitLocks`).
-- [ ] **Repo groups: `--on-limit wait`.** A usage limit parks both repos as interrupted and exits 3; waiting for the
-  reset and resuming the parked work is not built.
+- [x] **Repo groups: `--on-limit wait`** (the default): member runs wait for the reset and resume their parked work,
+  the group waits and asks the coordinator again; `--on-limit stop` (or **On limit: stop**) parks and exits 3 as before.
 - [ ] **Repo groups: PR mode** (a branch and pull request per repo, linked to each other).
 - [ ] **Repo groups: evals** (cases with a backend and a frontend repo, graded by hidden tests on both).
 

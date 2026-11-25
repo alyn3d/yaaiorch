@@ -977,8 +977,11 @@ describe("orch group run", { timeout: 600_000 }, () => {
   test("happy path builds both repos", () => {
     const s = setup();
     try {
+      // An old run's checkpoint on the very commit the group starts from: not the group's to remove.
+      git(s.fe, "branch", "orchestrator/checkpoint-1000000000000");
       const r = group(s, ["run", "shop", "list the items"]);
       assert.equal(r.code, 0, r.out);
+      assert.deepEqual(branches(s.fe), ["orchestrator/checkpoint-1000000000000"], "an older checkpoint is left alone");
       assert.equal(r.ev("group_start")[0].group, "shop");
       assert.equal(r.ev("group_plan")[0].contract, "GET /api/items → Item[]");
       assert.equal(r.ev("group_end").at(-1).ok, true, r.out);
@@ -1364,11 +1367,12 @@ describe("orch group run", { timeout: 600_000 }, () => {
     }
   });
 
-  test("a usage limit in a child stops the group with exit 3", () => {
+  test("--on-limit stop: a usage limit in a child stops the group with exit 3", () => {
     const s = setup();
     try {
-      const r = group(s, ["run", "shop", "list the items"], { FAKE_LIMIT_AFTER: "1" });
+      const r = group(s, ["run", "shop", "list the items", "--on-limit", "stop"], { FAKE_LIMIT_AFTER: "1" });
       assert.equal(r.code, 3, r.out);
+      assert.equal(r.ev("waiting").length, 0);
       const end = r.ev("group_end").at(-1);
       assert.equal(end.ok, false);
       assert.equal(end.reason, "UsageLimit");
@@ -1376,6 +1380,103 @@ describe("orch group run", { timeout: 600_000 }, () => {
       assert.equal(head(s.fe), s.heads.fe);
       assert.deepEqual(locks(s), []);
     } finally {
+      clean(s);
+    }
+  });
+
+  test("--on-limit stop: a usage limit in the coordinator stops the group with exit 3", () => {
+    const s = setup();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--on-limit", "stop"], { FAKE_LIMIT_ON: "1" });
+      assert.equal(r.code, 3, r.out);
+      assert.equal(r.ev("group_end").at(-1).reason, "UsageLimit");
+      assert.equal(r.ev("group_plan").length, 0);
+      assert.deepEqual(locks(s), []);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("a usage limit (default wait): the coordinator and a member run wait for the reset, and the group passes", () => {
+    const s = setup();
+    try {
+      // Call 1 in each repo hits the limit: the coordinator's in the backend, the frontend's first build call.
+      const r = group(s, ["run", "shop", "list the items"], { FAKE_LIMIT_ON: "1", ORCH_LIMIT_WAIT_MS: "500" });
+      assert.equal(r.code, 0, r.out);
+      // The group's own wait (coordinator), then the frontend run's (wrapped).
+      assert.equal(r.ev("waiting").length, 1, r.out);
+      assert.equal(r.ev("waiting")[0].reason, "usage_limit");
+      assert.equal(r.ev("group_plan").length, 1);
+      const feEvents = r
+        .ev("group_child")
+        .filter((e) => e.role === "frontend")
+        .map((e) => e.event);
+      assert.equal(feEvents.filter((e) => e.type === "waiting").length, 1, r.out);
+      assert.equal(feEvents.filter((e) => e.type === "goal_start").length, 2, "the frontend's goal is retried after the wait");
+      assert.equal(feEvents.filter((e) => e.type === "goal_end").at(-1).passed, true);
+      assert.equal(r.ev("group_end").at(-1).ok, true, r.out);
+      for (const [dir, start] of [
+        [s.be, s.heads.be],
+        [s.fe, s.heads.fe],
+      ]) {
+        assert.notEqual(head(dir), start, `${dir} has a new commit`);
+        assert.deepEqual(
+          branches(dir).filter((b) => /checkpoint|interrupted/.test(b)),
+          [],
+        );
+      }
+      assert.deepEqual(locks(s), []);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("a stop while a member run waits out a usage limit parks that run's set-aside work under the group's name", async () => {
+    const s = setup();
+    // Call 2: the backend's build (nothing written yet) and the frontend's QA (after its build wrote and committed).
+    const run = groupAsync(s, ["run", "shop", "list the items"], { FAKE_LIMIT_ON: "2", ORCH_LIMIT_WAIT_MS: "600000" });
+    try {
+      await until(() => /\[frontend\] usage limit reached; waiting/.test(run.out()), 120_000);
+      writeFileSync(join(s.gdir, "stop"), "now");
+      const { code, out } = await run.done;
+      assert.equal(code, 130, out);
+      const end = run
+        .events()
+        .filter((e) => e.type === "group_end")
+        .at(-1);
+      assert.match(end.parked.frontend ?? "", /^orchestrator\/interrupted-group-/, out);
+      assert.deepEqual(branches(s.fe), [end.parked.frontend], "the member's own interrupted-* branch was renamed, not left behind");
+      assert.equal(head(s.fe), s.heads.fe);
+      assert.notEqual(git(s.fe, "rev-parse", end.parked.frontend), s.heads.fe, "the parked branch holds the frontend's work");
+      assert.deepEqual(locks(s), []);
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
+      clean(s);
+    }
+  });
+
+  test("a stop while the group waits out a usage limit ends it (exit 130), both repos back where they started", async () => {
+    const s = setup();
+    const run = groupAsync(s, ["run", "shop", "list the items"], { FAKE_LIMIT_ON: "1", ORCH_LIMIT_WAIT_MS: "600000" });
+    try {
+      await until(() => run.events().some((e) => e.type === "waiting"), 120_000);
+      writeFileSync(join(s.gdir, "stop"), "now");
+      const { code, out } = await run.done;
+      assert.equal(code, 130, out);
+      assert.equal(
+        run
+          .events()
+          .filter((e) => e.type === "group_end")
+          .at(-1).reason,
+        "Stopped",
+      );
+      assert.equal(head(s.be), s.heads.be);
+      assert.equal(head(s.fe), s.heads.fe);
+      assert.deepEqual(locks(s), []);
+    } finally {
+      if (run.child.exitCode === null) run.child.kill();
+      await run.done;
       clean(s);
     }
   });
@@ -1496,6 +1597,9 @@ describe("orch group run", { timeout: 600_000 }, () => {
     try {
       const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"], { FAKE_QA_FAIL_INTEGRATION: "1", FAKE_GROUP_FAULT: "backend" });
       assert.equal(r.code, 0, r.out);
+      // The failed integration run kept its checkpoint; the passed group removes it.
+      assert.deepEqual(branches(s.fe), [], "no member checkpoint left in the frontend");
+      assert.deepEqual(branches(s.be), []);
       const fix = steps(r, "fix");
       assert.deepEqual(
         fix.map((e) => [e.repo, e.round]),
@@ -1508,6 +1612,36 @@ describe("orch group run", { timeout: 600_000 }, () => {
       );
       assert.ok(r.events.indexOf(fix[0]) < r.events.indexOf(integ[1]));
       assert.equal(r.ev("group_end").at(-1).ok, true);
+      assert.equal(await answers(s.url), false, "the backend server is stopped when the group ends");
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("a usage limit during integration and in the fault call: both wait for the reset, and the group passes", async () => {
+    const s = await setupServe();
+    try {
+      // Call 4 in each repo: the backend's is the coordinator's fault call, the frontend's a build task of integration round 1.
+      const r = group(s, ["run", "shop", "list the items", "--max-rounds", "1"], {
+        FAKE_QA_FAIL_INTEGRATION: "1",
+        FAKE_GROUP_FAULT: "backend",
+        FAKE_LIMIT_ON: "4",
+        ORCH_LIMIT_WAIT_MS: "500",
+      });
+      assert.equal(r.code, 0, r.out);
+      assert.equal(r.ev("waiting").length, 1, "the group's own wait, for the fault call");
+      assert.equal(r.ev("group_fault").length, 1);
+      const fe = r
+        .ev("group_child")
+        .filter((e) => e.role === "frontend")
+        .map((e) => e.event);
+      assert.equal(fe.filter((e) => e.type === "waiting").length, 1, "the integration run's wait");
+      assert.deepEqual(
+        steps(r, "integration").map((e) => e.round),
+        [1, 2],
+      );
+      assert.equal(r.ev("group_end").at(-1).ok, true);
+      assert.ok(!branches(s.fe).some((b) => b.includes("interrupted")), "the integration run's set-aside work was brought back");
       assert.equal(await answers(s.url), false, "the backend server is stopped when the group ends");
     } finally {
       clean(s);

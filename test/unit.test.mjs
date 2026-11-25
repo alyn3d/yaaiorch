@@ -543,6 +543,44 @@ describe("brief progress (orch-ui/src/progress.ts)", () => {
   });
 });
 
+describe("usage-limit waits (orch-ui/src/repoStatus.ts)", () => {
+  let r;
+  before(async () => {
+    const { tsImport } = await tsxApi(root);
+    r = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "repoStatus.ts")).href, import.meta.url);
+  });
+  const now = 1_000_000;
+  const run = (extra = {}) => ({ status: "running", rounds: [], cost: 0, ...extra });
+  const member = (inGroup, extra) => ({ state: { repo: "/r", running: null, queued: null, queue: [], inGroup }, run: run(extra) });
+  test("a wait counts until it is over", () => {
+    assert.equal(r.waitLabel(run({ waitingUntil: now + 1 }), now), "waiting for the usage limit");
+    assert.equal(r.waitLabel(run({ waitingUntil: now + 1, waitingReason: "usage_cap" }), now), "paused at your usage cap");
+    assert.equal(r.waitLabel(run({ waitingUntil: now }), now), null);
+    // The attempt that hit the limit has ended (goal_end) before the run waits: still a wait.
+    assert.equal(r.waitLabel(run({ waitingUntil: now + 1, status: "failed" }), now), "waiting for the usage limit");
+    assert.equal(r.waitLabel(undefined, now), null);
+  });
+  test("a group run lists its own wait and its members' (only those in the group)", () => {
+    const g = run({ waitingUntil: now + 60_000 });
+    const w = r.groupWaits(
+      g,
+      [
+        { role: "backend", session: member(undefined, { waitingUntil: now + 60_000 }) },
+        { role: "frontend", session: member("shop", { waitingUntil: now + 60_000, status: "failed" }) },
+      ],
+      now,
+    );
+    assert.equal(w.length, 2);
+    assert.match(w[0], /^coordinator: waiting for the usage limit until /);
+    assert.match(w[1], /^frontend: waiting for the usage limit until /);
+    assert.deepEqual(r.groupWaits(run({ status: "failed", waitingUntil: now + 1 }), [], now), []);
+  });
+  test("a member waiting inside a group shows the wait, not just 'in group'", () => {
+    assert.equal(r.repoStatus(member("shop", { waitingUntil: now + 1 }), now).label, "waiting for the usage limit");
+    assert.equal(r.repoStatus(member("shop", {}), now).label, "in group shop");
+  });
+});
+
 describe("open in editor (orch-ui/src/editorLinks.ts)", () => {
   let o;
   before(async () => {

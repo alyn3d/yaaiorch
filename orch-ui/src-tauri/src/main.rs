@@ -1259,6 +1259,9 @@ fn run_goal(
         if let Some(fast) = fast {
             args.push(if fast { "--fast" } else { "--no-fast" }.into());
         }
+        if let Some(l) = on_limit.as_deref().filter(|l| *l == "wait" || *l == "stop") {
+            args.extend(["--on-limit".into(), l.into()]);
+        }
         let label = format!("group: {}", goal.chars().take(60).collect::<String>());
         args.push(goal);
         return request_start(&app, &repo, args, label);

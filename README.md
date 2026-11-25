@@ -218,8 +218,9 @@ What a run does:
 4. Pass: each repo keeps its commits on its current branch. Failure: each repo's work is parked on
    `orchestrator/failed-group-*` and the repo is reset to where it started; stop parks as `interrupted-group-*`.
 
-`--max-cost` is split over the steps (60% for the build, the rest for integration and fixes). A usage limit parks the
-work as interrupted and exits with code 3; groups do not wait and resume yet. To stop a group run, use
+`--max-cost` is split over the steps (60% for the build, the rest for integration and fixes). On a usage limit the group
+waits for the reset and carries on: each repo's run sets its work aside, waits and resumes it, and the coordinator is
+asked again (`--on-limit stop`, or **On limit: stop** in the app, parks both repos as interrupted and exits with code 3). To stop a group run, use
 `orch group stop NAME` (it parks both repos); on Windows Ctrl+C may not reach every child process.
 `orch group rollback NAME` undoes the last passed group goal in both repos (everything after the start commit goes to
 `orchestrator/discarded-group-*`, including commits you made since; it says so), and checks both repos before it resets

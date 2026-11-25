@@ -457,6 +457,7 @@ export function groupRunArgs(name: string, b: Record<string, unknown>): string[]
     ...(typeof b.models === "string" && MODEL_SPEC.test(b.models) ? ["--model", b.models] : []),
     ...(b.approvePlan ? ["--approve-plan"] : []),
     ...(b.fast === true ? ["--fast"] : b.fast === false ? ["--no-fast"] : []),
+    ...(b.onLimit === "wait" || b.onLimit === "stop" ? ["--on-limit", b.onLimit] : []),
     String(b.goal).trim(),
   ];
 }

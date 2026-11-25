@@ -110,7 +110,8 @@ contract, stop, roll back), and member repos show their part. Skills and custom 
 Still open, moved on:
 
 - More than two repos and other roles (several backends, a shared library, a mobile app).
-- Waiting out a usage limit inside a group, a branch and pull request per repo, and group eval cases.
+- A branch and pull request per repo, and group eval cases. (Waiting out a usage limit inside a group shipped after
+  0.6.3.)
 
 ## 0.7: product and packaging
 
