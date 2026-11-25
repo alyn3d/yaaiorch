@@ -14,6 +14,7 @@ import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { DevServer, type ServeConfig } from "./orch-browser";
+import type { OrchEvent, OrchEventData, OrchEventType } from "./orch-events";
 import {
   checkGroupName,
   groupEnv,
@@ -68,7 +69,7 @@ export const selfArgs = (): string[] => [...process.execArgv, resolve(process.ar
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function emit(type: string, data: Record<string, unknown> = {}) {
+function emit<K extends OrchEventType>(type: K, data: OrchEventData[K]) {
   if (process.env.ORCH_EVENTS) console.log("@@ORCH@@ " + JSON.stringify({ type, t: Date.now(), ...data }));
 }
 
@@ -459,7 +460,8 @@ async function runChildren(
     const c = runChild(repo, args, env, (event) => {
       if (event.type === "goal_end" && typeof event.cost === "number") cost = event.cost;
       watch?.(role, event);
-      emit("group_child", { repo: repo.path, role, event });
+      // Passed on as the child printed it: the child is this same orch, so it is one of the OrchEvent shapes.
+      emit("group_child", { repo: repo.path, role, event: event as unknown as OrchEvent });
     });
     return { role, c, cost: () => cost, stopped: false };
   });

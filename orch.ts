@@ -49,6 +49,7 @@ import {
 } from "./orch-group";
 import { approveGroup, childShare, costArgs as groupCostArgs, GROUP_EXIT, groupDir, rollbackGroup, runGroup, stopGroup } from "./orch-group-run";
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
+import type { OrchEventData, OrchEventType } from "./orch-events";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import {
   DevServer,
@@ -649,7 +650,7 @@ function beginHistory(): HistoryWriter | undefined {
 }
 
 /** Structured events also go to the active goal's append-only history, even without ORCH_EVENTS. */
-const emit = (type: string, data: Record<string, unknown> = {}) => {
+const emit = <K extends OrchEventType>(type: K, data: OrchEventData[K]) => {
   const event = { type, t: Date.now(), ...data };
   if (historyWriter?.path) {
     try {
@@ -1827,7 +1828,7 @@ function scanCommands() {
       );
     } else if (kind === "done.json") {
       if (announcedCommands.delete(id)) {
-        emit("command_decided", { id, decision: data.outcome });
+        emit("command_decided", { id, decision: String(data.outcome) });
         console.log(`command ${["allow", "always", "prefix"].includes(String(data.outcome)) ? "allowed" : String(data.outcome)}`);
       }
       rmSync(file, { force: true });
@@ -3622,7 +3623,7 @@ async function watchPullRequest(gb: GoalBranch, goal: string, o: Opts, lr: LastR
     console.log(`waiting for the CI checks of ${lr.pr}...`);
     const ci = await waitForChecks(lr.pr!);
     lr.ci = ci.state;
-    emit("ci", { pr: lr.pr, state: ci.state, attempt, failed: ci.failed.map((c) => c.name) });
+    emit("ci", { pr: lr.pr!, state: ci.state, attempt, failed: ci.failed.map((c) => c.name) });
     console.log(`CI: ${ci.state}${ci.failed.length ? ` (${ci.failed.map((c) => c.name).join(", ")})` : ""}`);
     if (ci.state !== "fail" || attempt >= o.ciFixes) return cost;
     const logs = ci.failed.map(checkLog).join("\n\n");

@@ -125,6 +125,10 @@ Each item should show its effect in the evals before it becomes the default.
   shell for curl). Integration agents now get a probe tool for the running backend (`--probe`), the goal requires live
   checks, and the fault call blames a side only for what the report shows.
 - [ ] **Repo groups: more than two repos and other roles** (several backends, a shared library, a mobile app).
+- [ ] **Repo groups: stop a sibling without breaking its git.** When one member run fails, the group kills the other
+  member's process tree at once; a kill during that run's `git add` or commit leaves a stale `.git/index.lock`, so its park
+  fails too and `orch group rollback` needs the lock removed by hand. Stop it at a safe point (between agent calls), or
+  clear a lock created by the killed tree once it is gone.
 - [ ] **Repo groups: `--on-limit wait`.** A usage limit parks both repos as interrupted and exits 3; waiting for the
   reset and resuming the parked work is not built.
 - [ ] **Repo groups: PR mode** (a branch and pull request per repo, linked to each other).
@@ -211,7 +215,7 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Cross-repo work board** in Overview: working tasks, user input, verification/PR review and completed queue goals.
 - [ ] **One backend**: share line parsing and event buffering instead of keeping `server.ts` and
   `main.rs` in sync (or let the desktop app start `server.ts`).
-- [ ] **Shared event types** between `orch.ts` and the UI (one discriminated union). **good first issue**
+- [x] **Shared event types** between `orch.ts` and the UI (one discriminated union, `orch-events.ts`).
 - [ ] **More agent runtimes**: put Codex CLI, Gemini CLI and OpenCode behind the `run()` contract
   (prompt in, `{text, cost}` out, permission mode mapped per runtime), choosable per role, and add
   `--runtime` to the eval runner to compare them.

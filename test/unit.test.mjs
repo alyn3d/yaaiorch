@@ -3,7 +3,7 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import { tsxApi } from "./tsx.mjs";
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -350,8 +350,17 @@ describe("claude-bin: start claude without a shell on Windows", () => {
   const env = (d) => ({ PATH: d, PATHEXT: ".COM;.EXE;.BAT;.CMD" });
   const file = (p, text = "") => (mkdirSync(dirname(p), { recursive: true }), writeFileSync(p, text));
 
-  test("other platforms spawn the name as given", () => {
-    assert.deepEqual(cb.resolveClaude("claude", {}, "linux"), { file: "claude", pre: [], shell: false, via: "claude" });
+  test("other platforms spawn the name as given, and say when it is not there", (t) => {
+    if (process.platform === "win32") return t.skip("needs POSIX file modes");
+    const d = join(dir, "posix");
+    file(join(d, "claude"), "#!/bin/sh\n");
+    chmodSync(join(d, "claude"), 0o755);
+    file(join(d, "plain"));
+    assert.deepEqual(cb.resolveClaude("claude", { PATH: `/nowhere:${d}` }, "linux"), { file: "claude", pre: [], shell: false, via: "claude" });
+    assert.equal(cb.resolveClaude("claude", { PATH: "/nowhere" }, "linux").missing, true);
+    assert.equal(cb.resolveClaude("plain", { PATH: d }, "linux").missing, true, "not executable");
+    assert.equal(cb.resolveClaude(join(d, "claude"), {}, "linux").missing, undefined, "a path is used as given");
+    assert.equal(cb.resolveClaude(join(d, "none"), { PATH: d }, "linux").missing, true);
   });
   test("an .exe on PATH runs directly", () => {
     const d = join(dir, "exe");
@@ -1221,7 +1230,8 @@ describe("browser checks (orch-browser.ts)", () => {
     } finally {
       server?.stop();
       process.chdir(cwd);
-      rmSync(dir, { recursive: true, force: true });
+      // stop() does not wait for the exit, and Windows refuses to delete a live process's working directory (EPERM).
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     }
   });
 
@@ -1379,5 +1389,32 @@ describe("failureDigest", () => {
   test("other output: the tail, stack frames dropped", () => {
     assert.equal(o.failureDigest("x".repeat(3000)).length, 1500);
     assert.equal(o.failureDigest("Error: boom\n    at f (a.js:1:2)\n    at g (b.js:3:4)\ndone"), "Error: boom\ndone");
+  });
+});
+
+describe("event types (orch-events.ts)", () => {
+  let ev;
+  before(async () => {
+    const { tsImport } = await tsxApi(root);
+    ev = await tsImport(pathToFileURL(join(root, "orch-events.ts")).href, import.meta.url);
+  });
+  test("every event type is in CLAUDE.md's list and docs/ARCHITECTURE.md's table", () => {
+    const claude = readFileSync(join(root, "CLAUDE.md"), "utf8");
+    const list = /With `ORCH_EVENTS=1`[^:]*:([^.]*)\./.exec(claude)?.[1] ?? "";
+    const listed = new Set(list.split(",").map((s) => s.trim()));
+    // The first cell of each table row; a row may name two events (`learn_start`, `learn_end`).
+    const rows = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8").match(/^\| `[^|]*\|/gm) ?? [];
+    const inTable = new Set(rows.flatMap((cell) => [...cell.matchAll(/`(\w+)`/g)].map((m) => m[1])));
+    for (const type of ev.EVENT_TYPES) {
+      assert.ok(listed.has(type), `CLAUDE.md's event list is missing ${type}`);
+      assert.ok(inTable.has(type), `docs/ARCHITECTURE.md's event table is missing ${type}`);
+    }
+    for (const type of listed) assert.ok(ev.EVENT_TYPES.includes(type), `CLAUDE.md lists ${type}, which orch-events.ts does not define`);
+  });
+  test("main.rs adds the same events to the daily budget as server.ts", () => {
+    const rs = readFileSync(join(root, "orch-ui", "src-tauri", "src", "main.rs"), "utf8");
+    const arm = /fn on_event[\s\S]*?matches!\(\s*kind,\s*([^)]*)\)/.exec(rs)?.[1] ?? "";
+    const kinds = [...arm.matchAll(/"(\w+)"/g)].map((m) => m[1]);
+    assert.deepEqual([...kinds].sort(), [...ev.COST_EVENTS].sort());
   });
 });

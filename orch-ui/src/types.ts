@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 alyn3d and contributors
 // SPDX-License-Identifier: GPL-3.0-only
 
+import type { OrchEvent as WireEvent } from "../../orch-events";
+
 /** `note`: why a pending goal is waiting, e.g. "usage limit: retrying after …". */
 export type Item = {
   id: number;
@@ -85,7 +87,8 @@ export type AgentRoster = { agents: RosterEntry[]; skills: RosterSkill[]; swap?:
 /** One line of `orch doctor --json`. */
 export type Finding = { name: string; level: "ok" | "warn" | "fail"; detail: string };
 
-export type OrchEvent = { type: string; t: number; [k: string]: any };
+/** What orch sends (`orch-events.ts`, shared with the emitters) plus `stopped`, which useOrch.ts folds in when the process exits without `goal_end`. */
+export type OrchEvent = WireEvent | { type: "stopped"; t: number };
 export type HistoryEntry = {
   id: string;
   goal?: string;

@@ -16,6 +16,9 @@ import { homedir, tmpdir } from "node:os";
 import { resolve, join, extname, dirname, delimiter, relative, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+// Every agent call reports its cost once: the plan (architect, critic), each task_end, diff reviews, learn, notes tidy,
+// share; a repo group's coordinator in group_plan and group_fault. A group member's events arrive wrapped (unwrapGroupEvent).
+import { COST_EVENTS } from "../orch-events";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ORCH = resolve(process.env.ORCH_PATH ?? join(here, "..", "orch.ts"));
@@ -194,11 +197,7 @@ const sendGlobal = () => {
   for (const s of sessions.values()) if (s.pending) sendSession(s); // their wait reason may have changed
 };
 
-/**
- * Every agent call reports its cost once: the plan (architect, critic), each task_end, diff reviews, learn, notes tidy, share;
- * a repo group's coordinator in group_plan and group_fault. A group member's own events arrive wrapped (unwrapGroupEvent).
- */
-const COST_EVENTS = new Set(["plan", "task_end", "review", "learn_end", "notes_tidy", "share_end", "split_proposal", "coverage", "group_plan", "group_fault"]);
+/** A line from the orch process as parsed: loose, since an older or newer orch may send other fields (types: orch-events.ts). */
 type OrchEvent = { type: string; [k: string]: unknown };
 /**
  * `orch group run` wraps each member's own event in `group_child {repo, role, event}`: the member repo's path and that event,
