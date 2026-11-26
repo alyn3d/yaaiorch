@@ -986,63 +986,40 @@ button {
     margin: 12px 0;
     display: grid;
     gap: 6px;
-    button {
+  }
+  // One attempt: the replay button (goal, time, status, cost) and Run again side by side; notes below both.
+  .history-entry {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px;
+    > button:first-child {
       width: 100%;
+      min-width: 0;
+      height: auto;
+      min-height: var(--control-h);
+      padding-block: 6px;
       display: flex;
       align-items: center;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 4px 8px;
       text-align: left;
-      > span:first-child {
-        flex: 1 1 200px;
+      white-space: normal;
+      // A goal can be a long brief: two lines here, the whole text in the replay and the tooltip.
+      > .history-goal {
+        flex: 1 1 260px;
+        min-width: 0;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
         overflow-wrap: anywhere;
       }
-      .history-entry {
-        display: flex;
-        align-items: flex-start;
-        gap: 8px;
-        > button:first-child {
-          flex: 1;
-        }
-        > button.small {
-          width: auto;
-          flex: 0 0 auto;
-        }
-      }
     }
-    .visual-shots {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 10px;
-      margin: 8px 0 14px;
-    }
-    .visual-shot {
-      min-width: 0;
+    > p {
+      grid-column: 1 / -1;
       margin: 0;
-      overflow: hidden;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--surface-2);
-      img {
-        display: block;
-        width: 100%;
-        height: auto;
-      }
-      figcaption {
-        padding: 6px 8px;
-        color: var(--muted);
-        font-size: 11px;
-        overflow-wrap: anywhere;
-      }
-    }
-    .visual-shot-empty {
-      display: grid;
-      min-height: 120px;
-      place-items: center;
-      padding: 12px;
-      color: var(--muted);
-      font-size: 12px;
-      text-align: center;
     }
   }
   .history-replay {
@@ -1051,6 +1028,41 @@ button {
       margin-top: 10px;
     }
   }
+}
+// Browser-check screenshots of a round (RunView).
+.visual-shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 8px 0 14px;
+}
+.visual-shot {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  figcaption {
+    padding: 6px 8px;
+    color: var(--muted);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+}
+.visual-shot-empty {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 .models {
   border: 1px solid var(--border);

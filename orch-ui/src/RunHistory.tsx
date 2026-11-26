@@ -91,7 +91,9 @@ export function RunHistory({
             {entries.map((entry) => (
               <li key={entry.id} className="history-entry">
                 <button onClick={() => replay(entry.id)} disabled={entry.status === "unreadable"} aria-pressed={selected?.id === entry.id}>
-                  <span>{entry.goal ?? "Unreadable recording"}</span>
+                  <span className="history-goal" title={entry.goal}>
+                    {entry.goal ?? "Unreadable recording"}
+                  </span>
                   <span className="muted">{entry.startedAt === undefined ? entry.id : new Date(entry.startedAt).toLocaleString()}</span>
                   <span className={`badge ${entry.status === "passed" ? "done" : entry.status === "failed" ? "failed" : "warn"}`}>{entry.status}</span>
                   {entry.cost !== undefined && <span className="cost">${entry.cost.toFixed(2)}</span>}
