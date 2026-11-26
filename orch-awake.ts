@@ -11,7 +11,7 @@
 //   macOS:   caffeinate -i -w <pid>.
 //   Linux:   systemd-inhibit --what=idle around a shell loop that ends with orch.
 import { spawn } from "node:child_process";
-import { resolveCommand } from "./claude-bin";
+import { findOnPosixPath } from "./claude-bin";
 
 export type AwakeCommand = { file: string; args: string[] };
 
@@ -40,10 +40,10 @@ export function awakeCommand(pid: number, platform: NodeJS.Platform = process.pl
   }
   if (platform === "darwin") return { file: "/usr/bin/caffeinate", args: ["-i", "-w", String(pid)] };
   if (platform === "linux") {
-    const bin = resolveCommand("systemd-inhibit", env, platform);
-    if (bin.missing) return null;
+    const file = findOnPosixPath("systemd-inhibit", env);
+    if (!file) return null;
     return {
-      file: bin.file,
+      file,
       args: [
         "--what=idle",
         "--who=YAAIORCH",

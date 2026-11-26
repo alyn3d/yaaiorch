@@ -304,7 +304,10 @@ fn fix_path() {
     let current = std::env::var("PATH").unwrap_or_default();
     let mut dirs: Vec<String> = Vec::new();
     for d in from_shell.split(':').chain(current.split(':')).map(str::to_string).chain(extra) {
-        if !d.is_empty() && !dirs.contains(&d) && (from_shell.split(':').any(|s| s == d) || current.split(':').any(|c| c == d) || Path::new(&d).is_dir()) {
+        if !d.is_empty()
+            && !dirs.contains(&d)
+            && (from_shell.split(':').any(|s| s == d) || current.split(':').any(|c| c == d) || std::path::Path::new(&d).is_dir())
+        {
             dirs.push(d);
         }
     }

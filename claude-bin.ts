@@ -85,6 +85,11 @@ export const resolveCommand = (bin: string, env: NodeJS.ProcessEnv = process.env
  * Only to say "not found" up front (a missing `gh` is not the same as a logged-out one); spawn() still resolves it.
  */
 export function onPosixPath(name: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return findOnPosixPath(name, env) !== null;
+}
+
+/** Other platforms: the full path spawn() would run for `name` (a path as given, a bare name from PATH), or null. */
+export function findOnPosixPath(name: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const executable = (p: string) => {
     try {
       accessSync(p, constants.X_OK);
@@ -93,11 +98,12 @@ export function onPosixPath(name: string, env: NodeJS.ProcessEnv = process.env):
       return false;
     }
   };
-  if (name.includes("/")) return executable(name);
-  return (env.PATH ?? "")
-    .split(":")
-    .filter(Boolean)
-    .some((dir) => executable(join(dir, name)));
+  if (name.includes("/")) return executable(name) ? name : null;
+  for (const dir of (env.PATH ?? "").split(":").filter(Boolean)) {
+    const full = join(dir, name);
+    if (executable(full)) return full;
+  }
+  return null;
 }
 
 /** How to start `bin` (CLAUDE_BIN or "claude") on this platform. */
