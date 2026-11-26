@@ -853,6 +853,16 @@ const pct = (n: number, d: number) => (d ? `${Math.round((100 * n) / d)}%` : "-"
 const avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0);
 /** A fix round happened: more rounds than goals (one round per goal is a first-try pass). */
 const reachedFixRound = (r: Run) => r.rounds > (r.goals ?? 1);
+/** Every other option that changes what a run does, so a resumed eval runs the same way (quoted for a shell). */
+function resumeOptions(): string {
+  const q = (v: string) => (/^[\w.,:=+/-]+$/.test(v) ? v : `"${v}"`);
+  const keep = ["orch", "orch-model", "claude-bin", "max-rounds", "max-cost", "agent-timeout", "eval-timeout", "parallel"] as const;
+  const defaults: Record<string, string> = { "max-rounds": "4", "max-cost": "3", "agent-timeout": "15", "eval-timeout": "30", parallel: "1" };
+  return keep
+    .filter((k) => a[k] !== undefined && a[k] !== defaults[k])
+    .map((k) => ` --${k} ${q(String(a[k]))}`)
+    .join("");
+}
 const lines: string[] = [];
 lines.push(`# Eval ${stamp}`, "");
 lines.push(`Cases: ${cases.map((c) => c.id).join(", ")}  `);
@@ -865,7 +875,7 @@ if (stoppedBy)
     `**Stopped early: ${stoppedBy}.** ${jobs.length} run(s) not done. Finish with:`,
     "",
     "```",
-    `node evals/run.ts --resume ${stamp} --power ${powers.join(",") || "none"}${singles.length ? ` --single ${singles.join(",")}` : ""} --repeat ${a.repeat}${wanted ? ` --cases ${wanted.join(",")}` : ""}${a["usage-cap"] ? ` --usage-cap ${a["usage-cap"]}` : ""}${a["user-plugins"] ? " --user-plugins" : ""}`,
+    `node evals/run.ts --resume ${stamp} --power ${powers.join(",") || "none"}${singles.length ? ` --single ${singles.join(",")}` : ""} --repeat ${a.repeat}${wanted ? ` --cases ${wanted.join(",")}` : ""}${a["usage-cap"] ? ` --usage-cap ${a["usage-cap"]}` : ""}${a["user-plugins"] ? " --user-plugins" : ""}${resumeOptions()}`,
     "```",
     "",
   );

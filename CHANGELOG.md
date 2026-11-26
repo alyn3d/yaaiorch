@@ -16,6 +16,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - Repo groups: the integration check no longer undoes the frontend's goal. It only knew the contract, which covers the HTTP side, so in the group evals it twice rewrote a correctly built web client to match the API's shapes (`listOrders()` turned into a one-page fetcher returning `{items, nextCursor}`, `placeOrder` renamed) and passed. It now gets the frontend's goal and keeps every name, parameter and return value that goal states.
 - Repo groups: a group goal that passed after a failed integration round no longer leaves that round's `orchestrator/checkpoint-*` branch in the frontend repo. The group now removes the checkpoints its own member runs left behind when it passes, as it already did when it parks a repo, and only those: an older checkpoint on the same commit stays.
 - Repo groups: the cost of a member run that was retried (after a usage limit) now counts every attempt toward the group's `--max-cost`, not only the last.
+- Evals: the `--resume` command the runner prints when it stops early now carries the options the run was started with (`--orch`, `--max-cost`, `--max-rounds`, `--parallel` and the like), so a resumed run uses the same orch and limits.
 
 ## [0.6.3] - 2026-11-25
 
