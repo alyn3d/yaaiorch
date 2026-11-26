@@ -1520,10 +1520,4 @@ describe("event types (orch-events.ts)", () => {
     }
     for (const type of listed) assert.ok(ev.EVENT_TYPES.includes(type), `CLAUDE.md lists ${type}, which orch-events.ts does not define`);
   });
-  test("main.rs adds the same events to the daily budget as server.ts", () => {
-    const rs = readFileSync(join(root, "orch-ui", "src-tauri", "src", "main.rs"), "utf8");
-    const arm = /fn on_event[\s\S]*?matches!\(\s*kind,\s*([^)]*)\)/.exec(rs)?.[1] ?? "";
-    const kinds = [...arm.matchAll(/"(\w+)"/g)].map((m) => m[1]);
-    assert.deepEqual([...kinds].sort(), [...ev.COST_EVENTS].sort());
-  });
 });

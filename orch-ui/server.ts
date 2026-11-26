@@ -4,7 +4,12 @@
 /**
  * Local server for the YAAIORCH UI, for several repos at once (one session per repo).
  *   ORCH_REPO=<repo> or ORCH_REPOS=<repo>;<repo>…  repos to open at start (the list is also remembered)
- *   ORCH_PATH=<orch.ts> (default: ../orch.ts)   PORT (4317)   MAX_PARALLEL (default 2)
+ *   ORCH_PATH=<orch.ts> (default: ../orch.ts; an orch.mjs bundle runs without tsx)   PORT (4317; 0: any free port)
+ *   MAX_PARALLEL (default 2)
+ * Started by the desktop app (src-tauri) as its backend: YAAIORCH_APP=1 (print `@@READY@@ {"port":N,"token":"..."}` on
+ * stdout, which only the app reads, once listening; /api/token is then closed), YAAIORCH_APP_ORIGINS (the app's webview
+ * origins, allowed cross-origin), YAAIORCH_UI_SETTINGS (the settings file) and YAAIORCH_PARENT_PID (exit, stopping every
+ * run, once that process is gone).
  * Each session spawns orch.ts in its repo and streams output over SSE, tagged with the repo. At most
  * `maxParallel` sessions run at once; further starts wait for a free slot. One run per repo at a time.
  */
@@ -23,10 +28,11 @@ import { COST_EVENTS } from "../orch-events";
 const here = dirname(fileURLToPath(import.meta.url));
 const ORCH = resolve(process.env.ORCH_PATH ?? join(here, "..", "orch.ts"));
 const PORT = Number(process.env.PORT ?? 4317);
-const TSX_CLI = createRequire(import.meta.url).resolve("tsx/cli");
+/** How to start orch: the TypeScript source through tsx, or the bundled orch.mjs directly (the desktop app). */
+const ORCH_CMD = ORCH.endsWith(".ts") ? [createRequire(import.meta.url).resolve("tsx/cli"), ORCH] : [ORCH];
 const DIST = join(here, "dist");
 /** Remembered open repos and the parallel limit. */
-const SETTINGS_FILE = join(homedir(), ".yaaiorch", "ui.json");
+const SETTINGS_FILE = process.env.YAAIORCH_UI_SETTINGS || join(homedir(), ".yaaiorch", "ui.json");
 
 // ---------- request guard: only the UI served by this process may drive it ----------
 // The server listens on 127.0.0.1, but any web page in the user's browser can still send requests to it.
@@ -34,6 +40,15 @@ const SETTINGS_FILE = join(homedir(), ".yaaiorch", "ui.json");
 // Origin header must be a local page, and every /api call must carry this process's random token, which
 // only a same-origin page can read (from /api/token).
 const TOKEN = randomBytes(32).toString("hex");
+// The desktop app reads the token from this process's stdout and hands it to its webview, whose origins are not local
+// http(s) pages: tauri://localhost on macOS and Linux, http(s)://tauri.localhost on Windows. Only those get CORS headers.
+const APP = process.env.YAAIORCH_APP === "1";
+const APP_ORIGINS = new Set(
+  (process.env.YAAIORCH_APP_ORIGINS ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean),
+);
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const localHost = (host: string | undefined) => {
   try {
@@ -44,6 +59,7 @@ const localHost = (host: string | undefined) => {
 };
 const localOrigin = (origin: string | undefined) => {
   if (!origin) return true; // not sent by every request (same-origin GETs, curl); the token still applies
+  if (APP_ORIGINS.has(origin)) return true;
   try {
     const u = new URL(origin);
     return (u.protocol === "http:" || u.protocol === "https:") && LOCAL_HOSTS.has(u.hostname);
@@ -57,7 +73,8 @@ function refuse(req: http.IncomingMessage, url: URL): string | null {
   if (!localHost(req.headers.host)) return "forbidden host";
   if (!localOrigin(req.headers.origin)) return "forbidden origin";
   if (!url.pathname.startsWith("/api/")) return null;
-  if (url.pathname === "/api/token") return req.headers["sec-fetch-site"] === "cross-site" ? "forbidden" : null;
+  // The app hands its token to its webview itself; nothing else may ask for it then.
+  if (url.pathname === "/api/token") return APP ? "forbidden" : req.headers["sec-fetch-site"] === "cross-site" ? "forbidden" : null;
   return tokenOk(req.headers["x-orch-token"] ?? url.searchParams.get("token")) ? null : "missing or wrong session token; reload the page";
 }
 const MARK = "@@ORCH@@ ";
@@ -362,7 +379,7 @@ export function withAwake(args: string[], on: boolean): string[] {
 
 function startNow(s: Session, rawArgs: string[], label: string) {
   const args = withAwake(withBudget(rawArgs), keepAwake);
-  const p = spawn(process.execPath, [TSX_CLI, ORCH, ...args], {
+  const p = spawn(process.execPath, [...ORCH_CMD, ...args], {
     cwd: s.repo,
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
@@ -413,7 +430,7 @@ function stop(s: Session) {
     // Only when the ask fails (it has not taken its locks yet, or orch cannot start) is the tree killed.
     const pid = s.child.pid;
     pushLine(s, "-- stopping: the group parks both repos' work --");
-    execFile(process.execPath, [TSX_CLI, ORCH, "group", "stop", s.group.name], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err) => {
+    execFile(process.execPath, [...ORCH_CMD, "group", "stop", s.group.name], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err) => {
       if (err && s.child?.pid === pid) killTree(pid);
     });
     return;
@@ -554,7 +571,7 @@ const plugins = (s: Session, fresh: boolean) => {
   const list = new Promise<unknown>((ok, fail) =>
     execFile(
       process.execPath,
-      [TSX_CLI, ORCH, "plugins", "--json", "--details"],
+      [...ORCH_CMD, "plugins", "--json", "--details"],
       { cwd: s.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 },
       (err, stdout, stderr) => {
         const line = stdout.split(/\r?\n/).find((l) => l.startsWith("["));
@@ -576,7 +593,7 @@ const doctor = (s: Session, pr = false) =>
   new Promise<unknown>((ok) =>
     execFile(
       process.execPath,
-      [TSX_CLI, ORCH, "doctor", "--json", ...(pr ? ["--pr"] : [])],
+      [...ORCH_CMD, "doctor", "--json", ...(pr ? ["--pr"] : [])],
       { cwd: s.repo, encoding: "utf8", windowsHide: true },
       (_err, stdout) => {
         // exit 1 just means a "fail" finding; the JSON is still on stdout
@@ -592,7 +609,7 @@ const doctor = (s: Session, pr = false) =>
 /** Through `orch add`, which edits the queue under its lock, so a running loop never loses the new goal. */
 const addGoal = (s: Session, goal: string) =>
   new Promise<void>((ok, fail) =>
-    execFile(process.execPath, [TSX_CLI, ORCH, "add", goal], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+    execFile(process.execPath, [...ORCH_CMD, "add", goal], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     ),
   );
@@ -600,7 +617,7 @@ const addGoal = (s: Session, goal: string) =>
 /** `orch split --accept`: queue the (edited) goals of a split brief; brief and goals go on stdin. */
 const acceptSplit = (s: Session, b: { brief?: unknown; goals?: unknown }) =>
   new Promise<void>((ok, fail) => {
-    const child = execFile(process.execPath, [TSX_CLI, ORCH, "split", "--accept"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+    const child = execFile(process.execPath, [...ORCH_CMD, "split", "--accept"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     );
     child.stdin?.end(JSON.stringify({ brief: b.brief, goals: b.goals }));
@@ -613,7 +630,7 @@ const approvePlan = (s: Session, b: { plan?: unknown; reject?: string }) =>
       ...(typeof b.reject === "string" ? ["--reject", b.reject.slice(0, 4000)] : b.plan ? ["--plan-stdin"] : []),
       ...(s.group ? ["--group", s.group.name] : []),
     ];
-    const child = execFile(process.execPath, [TSX_CLI, ORCH, "approve", ...args], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+    const child = execFile(process.execPath, [...ORCH_CMD, "approve", ...args], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     );
     child.stdin?.end(b.plan && typeof b.reject !== "string" ? JSON.stringify(b.plan) : "");
@@ -621,7 +638,7 @@ const approvePlan = (s: Session, b: { plan?: unknown; reject?: string }) =>
 
 const answerQuestion = (s: Session, id: string, answer: string) =>
   new Promise<void>((ok, fail) => {
-    const child = execFile(process.execPath, [TSX_CLI, ORCH, "answer", id], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+    const child = execFile(process.execPath, [...ORCH_CMD, "answer", id], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     );
     child.stdin?.end(answer);
@@ -630,7 +647,7 @@ const answerQuestion = (s: Session, id: string, answer: string) =>
 /** Agent M: allow, deny or always-allow a command an agent wants to run (`orch decide`, which checks the ID). */
 const decideCommand = (s: Session, id: string, decision: string) =>
   new Promise<void>((ok, fail) =>
-    execFile(process.execPath, [TSX_CLI, ORCH, "decide", id, decision], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+    execFile(process.execPath, [...ORCH_CMD, "decide", id, decision], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     ),
   );
@@ -640,7 +657,7 @@ const orchOutput = (repo: string, args: string[], input?: string) =>
   new Promise<string>((ok, fail) => {
     const child = execFile(
       process.execPath,
-      [TSX_CLI, ORCH, ...args],
+      [...ORCH_CMD, ...args],
       { cwd: repo, encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
       (err, out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(out)),
     );
@@ -663,7 +680,7 @@ const askAgentM = (question: string, session?: string) =>
     const input = JSON.stringify({ question, session, repos: list.map((s) => s.repo), running: list.filter((s) => s.child).map((s) => s.repo) });
     const child = execFile(
       process.execPath,
-      [TSX_CLI, ORCH, "chat"],
+      [...ORCH_CMD, "chat"],
       { cwd: homedir(), encoding: "utf8", windowsHide: true, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },
       (err, out, stderr) => {
         if (err) return fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message));
@@ -684,7 +701,7 @@ let warming = false;
 const warmAgentM = () => {
   if (warming) return;
   warming = true;
-  const child = execFile(process.execPath, [TSX_CLI, ORCH, "chat", "--warm"], { cwd: homedir(), encoding: "utf8", windowsHide: true, timeout: 180_000 }, () => {
+  const child = execFile(process.execPath, [...ORCH_CMD, "chat", "--warm"], { cwd: homedir(), encoding: "utf8", windowsHide: true, timeout: 180_000 }, () => {
     warming = false;
   });
   child.stdin?.end(JSON.stringify({ repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo) }));
@@ -771,6 +788,21 @@ http
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(data));
     };
+    // The desktop app's webview calls from its own origin: allow it (and only it) to read the answers. A preflight
+    // carries no token; the real request still needs it.
+    const origin = req.headers.origin;
+    if (origin && APP_ORIGINS.has(origin)) {
+      res.setHeader("access-control-allow-origin", origin);
+      res.setHeader("vary", "origin");
+      if (req.method === "OPTIONS" && localHost(req.headers.host)) {
+        res.writeHead(204, {
+          "access-control-allow-methods": "GET, POST",
+          "access-control-allow-headers": "content-type, x-orch-token",
+          "access-control-max-age": "600",
+        });
+        return res.end();
+      }
+    }
     const refused = refuse(req, url);
     if (refused) return json(403, { error: refused });
     try {
@@ -790,7 +822,7 @@ http
       if (url.pathname === "/api/browser" && req.method === "GET") {
         const s = mustGet(url.searchParams.get("repo"));
         const result = await new Promise<string>((ok, fail) =>
-          execFile(process.execPath, [TSX_CLI, ORCH, "browser", "detect"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, stdout, stderr) =>
+          execFile(process.execPath, [...ORCH_CMD, "browser", "detect"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, stdout, stderr) =>
             err ? fail(new Error((stderr || err.message).trim())) : ok(stdout),
           ),
         );
@@ -803,7 +835,7 @@ http
         const result = await new Promise<string>((ok, fail) =>
           execFile(
             process.execPath,
-            [TSX_CLI, ORCH, "history", "--json", ...(id === null ? [] : [id])],
+            [...ORCH_CMD, "history", "--json", ...(id === null ? [] : [id])],
             { cwd: s.repo, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
             (err, stdout, stderr) => (err ? fail(new Error((stderr || err.message).trim())) : ok(stdout)),
           ),
@@ -978,7 +1010,7 @@ http
           await new Promise<void>((ok, fail) =>
             execFile(
               process.execPath,
-              [TSX_CLI, ORCH, "browser", b.action, ...(b.action === "enable" ? [b.id] : [])],
+              [...ORCH_CMD, "browser", b.action, ...(b.action === "enable" ? [b.id] : [])],
               { cwd: s.repo, encoding: "utf8", windowsHide: true },
               (err, _stdout, stderr) => (err ? fail(new Error((stderr || err.message).trim())) : ok()),
             ),
@@ -1029,7 +1061,7 @@ http
           await new Promise<void>((ok, fail) =>
             execFile(
               process.execPath,
-              [TSX_CLI, ORCH, "intake", "--github", b.github],
+              [...ORCH_CMD, "intake", "--github", b.github],
               { cwd: s.repo, encoding: "utf8", windowsHide: true },
               (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
             ),
@@ -1041,7 +1073,7 @@ http
           const id = Number(b.id);
           if (!Number.isInteger(id)) return json(400, { error: "goal id required" });
           await new Promise<void>((ok, fail) =>
-            execFile(process.execPath, [TSX_CLI, ORCH, "retry", String(id)], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+            execFile(process.execPath, [...ORCH_CMD, "retry", String(id)], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
               err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
             ),
           );
@@ -1054,7 +1086,7 @@ http
           await new Promise<void>((ok, fail) =>
             execFile(
               process.execPath,
-              [TSX_CLI, ORCH, "move", String(id), b.direction],
+              [...ORCH_CMD, "move", String(id), b.direction],
               { cwd: s.repo, encoding: "utf8", windowsHide: true },
               (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
             ),
@@ -1144,9 +1176,24 @@ http
       json(500, { error: (e as Error).message });
     }
   })
-  .listen(PORT, "127.0.0.1", () => console.log(`YAAIORCH ui  ${sessions.size} repo(s), ${maxParallel} at a time\n             http://localhost:${PORT}`));
+  .listen(PORT, "127.0.0.1", function (this: http.Server) {
+    const port = (this.address() as { port: number }).port;
+    if (APP) console.log(`@@READY@@ ${JSON.stringify({ port, token: TOKEN })}`);
+    console.log(`YAAIORCH ui  ${sessions.size} repo(s), ${maxParallel} at a time\n             http://localhost:${port}`);
+  });
 
 process.on("exit", () => {
   for (const s of sessions.values()) if (s.child?.pid) killTree(s.child.pid);
 });
 process.on("SIGINT", () => process.exit(0));
+process.on("SIGTERM", () => process.exit(0));
+// Started by the desktop app: when the app is gone (closed, or crashed), stop every run and exit.
+const parent = Number(process.env.YAAIORCH_PARENT_PID);
+if (parent > 0)
+  setInterval(() => {
+    try {
+      process.kill(parent, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 2000).unref();

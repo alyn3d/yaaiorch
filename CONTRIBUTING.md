@@ -58,7 +58,7 @@ npm run build                 # typecheck + build the UI (also typechecks server
 npm run build:orch            # bundle orch.ts; fails on syntax errors
 npm test                      # scenario tests with the fake claude
 npx tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext --types node --skipLibCheck ../orch.ts
-cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings   # if you touched main.rs
+cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings   # if you touched main.rs (run npm run build:app first)
 cd ../..
 node evals/run.ts --reference # if you touched evals/
 ```
@@ -102,11 +102,11 @@ node evals/run.ts --cases node-chunk-bug,api-post,py-roman --power economy --rep
 ## Conventions
 
 - **Keep the event protocol in sync.** A new or changed `@@ORCH@@` event must be handled in
-  `orch-ui/src/reduce.ts` and documented in `docs/ARCHITECTURE.md`. Both backends pass events through
+  `orch-ui/src/reduce.ts` and documented in `docs/ARCHITECTURE.md`. The server passes events through
   unchanged.
-- **Keep the backends in sync.** A new action needs a route in `server.ts`, a command in `main.rs` and
-  an entry in `transport.ts`. Put the logic in `orch.ts` as a subcommand where you can, so both
-  backends only spawn it.
+- **One backend.** A new action needs a route in `server.ts` and an entry in `transport.ts`; the desktop
+  app runs the same server, so `main.rs` stays a shell (window, native plugins, the server's lifetime). Put
+  the logic in `orch.ts` as a subcommand where you can, so the server only spawns it.
 - **Windows first.** Test paths with spaces and backslashes. Start `claude` only through `spawnClaude` /
   `claudeSync` (no shell); pass anything long or complicated through stdin or a file anyway.
 - **Trust exit codes and diffs, not agent reports.** New features that judge success should follow

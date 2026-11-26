@@ -489,3 +489,82 @@ else if (args[0] === "group" && args[1] === "run") {
     );
   });
 });
+
+describe("desktop app mode (the app starts this server as its backend)", { timeout: 60_000 }, () => {
+  let app, parent, dir, token;
+  const APP = "http://tauri.localhost";
+  before(async () => {
+    dir = mkdtempSync(join(tmpdir(), "yaaiorch-app-"));
+    // Stands in for the app: the server exits once this process is gone.
+    parent = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    app = spawn(process.execPath, [TSX, "server.ts"], {
+      cwd: ui,
+      env: {
+        ...process.env,
+        PORT: "0",
+        HOME: dir,
+        USERPROFILE: dir,
+        ORCH_REPO: "",
+        ORCH_REPOS: "",
+        YAAIORCH_APP: "1",
+        YAAIORCH_APP_ORIGINS: `tauri://localhost,${APP}`,
+        YAAIORCH_UI_SETTINGS: join(dir, "repos.json"),
+        YAAIORCH_PARENT_PID: String(parent.pid),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const ready = await new Promise((ok, fail) => {
+      const t = setTimeout(() => fail(new Error("no ready line")), 30_000);
+      let out = "";
+      app.stdout.on("data", (d) => {
+        out += d;
+        const m = /@@READY@@ (\{.*\})/.exec(out);
+        if (!m) return;
+        clearTimeout(t);
+        ok(JSON.parse(m[1]));
+      });
+      app.on("exit", (c) => fail(new Error(`server exited ${c}`)));
+    });
+    port = ready.port;
+    token = ready.token;
+  });
+  after(() => {
+    app?.kill();
+    parent?.kill();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("prints its port and token once listening; never hands the token out over HTTP", async () => {
+    assert.ok(port > 0);
+    assert.match(token, /^[0-9a-f]{64}$/);
+    assert.equal((await request("/api/token", { headers: { origin: `http://localhost:${port}`, "sec-fetch-site": "same-origin" } })).status, 403);
+  });
+
+  test("the app's origin may call it with the token (CORS), another origin may not", async () => {
+    const pre = await request("/api/settings", { method: "OPTIONS", headers: { origin: APP, "access-control-request-method": "POST" } });
+    assert.equal(pre.status, 204);
+    const ok = await request("/api/settings", {
+      method: "POST",
+      headers: { origin: APP, "x-orch-token": token, "content-type": "application/json" },
+      body: { keepAwake: false },
+    });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(JSON.parse(readFileSync(join(dir, "repos.json"), "utf8")).keepAwake, false, "settings go to the app's file");
+    const seen = await new Promise((ok) =>
+      http.get({ host: "127.0.0.1", port, path: "/api/state", headers: { origin: "tauri://localhost", "x-orch-token": token } }, (res) => {
+        res.resume();
+        ok(res.headers["access-control-allow-origin"]);
+      }),
+    );
+    assert.equal(seen, "tauri://localhost");
+    assert.equal((await request("/api/state", { headers: { origin: "https://evil.example", "x-orch-token": token } })).status, 403);
+    const foreignPre = await request("/api/settings", { method: "OPTIONS", headers: { origin: "https://evil.example" } });
+    assert.equal(foreignPre.status, 403, "no preflight for other origins");
+  });
+
+  test("exits when the app is gone", async () => {
+    const exited = new Promise((ok) => app.once("exit", ok));
+    parent.kill();
+    await Promise.race([exited, new Promise((_, fail) => setTimeout(() => fail(new Error("still running")), 15_000))]);
+  });
+});

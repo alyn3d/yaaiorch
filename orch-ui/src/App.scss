@@ -2404,3 +2404,5 @@ input.limit {
     }
   }
 }
+
+// The splash (src/Splash.tsx) is styled in index.html, so it shows before this stylesheet loads.

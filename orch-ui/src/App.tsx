@@ -16,6 +16,7 @@ import { About } from "./About";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { GroupDialog, GroupView } from "./GroupView";
 import type { GroupConfig } from "./types";
+import { Splash } from "./Splash";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
@@ -23,7 +24,7 @@ const OVERVIEW = "*overview";
 const AGENTS = "*agents";
 const AGENT_M = "*agent-m";
 export function App() {
-  const { sessions, order, groups, maxParallel, setMaxParallel, global, connected, canPickRepo } = useOrch();
+  const { sessions, order, groups, maxParallel, setMaxParallel, global, connected, ready, startError, canPickRepo } = useOrch();
   /** The group form: a new group (no `initial`) or an edit. */
   const [groupDialog, setGroupDialog] = useState<{ initial?: GroupConfig } | null>(null);
   /** A group just saved: shown once its session arrives. */
@@ -104,6 +105,7 @@ export function App() {
     }
   };
 
+  if (!ready) return <Splash error={startError} />;
   return (
     <div className="shell">
       <aside className="sidebar">

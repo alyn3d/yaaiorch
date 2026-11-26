@@ -40,6 +40,9 @@ export function useOrch() {
   const [groups, setGroups] = useState<string[]>([]);
   const [maxParallel, setMaxParallelState] = useState(2);
   const [connected, setConnected] = useState(false);
+  /** The first state has arrived (until then the window shows the splash), and why the server cannot be reached. */
+  const [ready, setReady] = useState(false);
+  const [startError, setStartError] = useState("");
   const [global, setGlobal] = useState<Global>({
     usageLimit: null,
     budget: { limit: null, spent: 0, day: "" },
@@ -60,6 +63,7 @@ export function useOrch() {
           setGroups(d.sessions.filter((s) => s.state.group).map((s) => s.state.repo));
           setMaxParallelState(d.maxParallel);
           if (d.global) setGlobal(d.global);
+          setReady(true);
         },
         onSession: (state) =>
           setSessions((all) => {
@@ -78,7 +82,10 @@ export function useOrch() {
           setSessions((all) => (all[repo] ? { ...all, [repo]: { ...all[repo], run: reduce(all[repo].run, e), ...(proposal ? { proposal } : {}) } } : all));
         },
         onGlobal: setGlobal,
-        onConnection: setConnected,
+        onConnection: (ok, error) => {
+          setConnected(ok);
+          setStartError(ok ? "" : (error ?? ""));
+        },
       }),
     [],
   );
@@ -87,7 +94,7 @@ export function useOrch() {
     await transport.setMaxParallel(n);
   }, []);
 
-  return { sessions, order, groups, maxParallel, setMaxParallel, global, connected, canPickRepo: transport.canPickRepo };
+  return { sessions, order, groups, maxParallel, setMaxParallel, global, connected, ready, startError, canPickRepo: transport.canPickRepo };
 }
 
 /** Doctor findings for one repo: on open, whenever its process ends, and when its pull request switch changes. */

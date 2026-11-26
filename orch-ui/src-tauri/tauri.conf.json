@@ -4,7 +4,7 @@
   "version": "0.6.4",
   "identifier": "dev.alinion.yaaiorch",
   "build": {
-    "beforeDevCommand": "node scripts/fetch-node.mjs && npm run build:orch && vite",
+    "beforeDevCommand": "node scripts/fetch-node.mjs && npm run build:orch && npm run build:server && vite",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "node scripts/fetch-node.mjs && npm run build:app",
     "frontendDist": "../dist"
@@ -17,7 +17,8 @@
         "width": 1100,
         "height": 820,
         "minWidth": 700,
-        "minHeight": 500
+        "minHeight": 500,
+        "backgroundColor": "#09090b"
       }
     ],
     "security": {
@@ -29,28 +30,18 @@
     "targets": "all",
     "copyright": "Copyright (C) 2026 alyn3d and contributors",
     "licenseFile": "../../LICENSE",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "resources": {
       "resources/orch.mjs": "resources/orch.mjs",
+      "resources/server.mjs": "resources/server.mjs",
       "../../LICENSE": "licenses/YAAIORCH-LICENSE.txt"
     },
-    "externalBin": [
-      "binaries/node"
-    ]
+    "externalBin": ["binaries/node"]
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc1MjM1MTg1RUFGOEFGNDUKUldSRnIvanFoVkVqZFljWVhJc3VlY1U3QTNmd09IM0w4LzZSQzZuSGN1YlJFeUhONnZuLzJEVDcK",
-      "endpoints": [
-        "https://github.com/alyn3d/yaaiorch/releases/latest/download/latest.json"
-      ]
+      "endpoints": ["https://github.com/alyn3d/yaaiorch/releases/latest/download/latest.json"]
     }
   }
 }
-

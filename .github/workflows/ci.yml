@@ -96,8 +96,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: orch-ui/src-tauri
-      # tauri-build needs the built frontend and the bundled orch.mjs resource to exist.
-      - name: Build frontend and orch.mjs, fetch the bundled Node.js
+      # tauri-build needs the built frontend and the bundled orch.mjs and server.mjs resources to exist.
+      - name: Build frontend, orch.mjs and server.mjs, fetch the bundled Node.js
         working-directory: orch-ui
         run: |
           npm ci
@@ -116,12 +116,13 @@ jobs:
       - name: Rust unit tests
         working-directory: orch-ui/src-tauri
         run: cargo test --locked
-      - name: Rust spawn test (desktop backend runs orch.mjs with the fake claude)
+      - name: Rust spawn test (the app's server.mjs runs a goal with orch.mjs and the fake claude)
         working-directory: orch-ui/src-tauri
         shell: pwsh
         run: |
           $repo = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "spawn-test-repo")
           $env:TEST_REPO = $repo.FullName
           $env:ORCH_PATH = (Resolve-Path ../src-tauri/resources/orch.mjs).Path
+          $env:SERVER_PATH = (Resolve-Path ../src-tauri/resources/server.mjs).Path
           $env:CLAUDE_BIN = (Resolve-Path ../../test/fake-claude/claude.cmd).Path
           cargo test --locked -- --ignored

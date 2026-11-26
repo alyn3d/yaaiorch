@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Changed
+- One backend: the desktop app now runs the same server as browser mode (`server.ts`, bundled as `server.mjs`) with its bundled Node.js, instead of a second backend written in Rust that had to be kept in sync by hand. The window shows a splash screen until the server is up. Open repos, limits and today's spend carry over (same settings file). The server only answers the app's own window, gets its session token over a private pipe (never in the environment that orch and the agents inherit), stops its runs when the app is gone, and is restarted if it crashes. Every feature now exists once, and the desktop app runs the code the test suite covers.
+
 ### Added
 - Keep the computer awake while agents work, so a run waiting out a usage limit is still going when the limit resets: `--keep-awake` on `orch run`, `loop`, `new --start` and `group run` (config `keepAwake`, `--no-keep-awake` to turn it off), and a **Keep computer awake while running** switch in the app's sidebar, on by default, that adds it to every such run. Only idle sleep is blocked: the screen may still turn off, and closing a laptop's lid still sleeps it. A small helper holds the request (Windows: `SetThreadExecutionState` from a hidden PowerShell; macOS: `caffeinate`; Linux: `systemd-inhibit`) and ends with orch, so a crashed run never keeps the machine awake.
 

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { AgentRoster, Finding, Global, HistoryEntry, HistoryRecording, OrchEvent, Plugin, State } from "./types";
@@ -26,7 +25,8 @@ export type Handlers = {
   onLog(repo: string, line: string): void;
   onEvent(repo: string, e: OrchEvent): void;
   onGlobal(g: Global): void;
-  onConnection(ok: boolean): void;
+  /** `error`: why the server cannot be reached (it is still being retried). */
+  onConnection(ok: boolean, error?: string): void;
 };
 export interface Transport {
   /** Desktop: a native folder picker. Browser: the user types a path. */
@@ -93,24 +93,39 @@ export type GroupForm = {
   env?: Record<string, string>;
 };
 
-// ---------- browser: local Node server (server.ts) over HTTP + SSE ----------
-// Every /api call carries the server's session token (see refuse() in server.ts); a restarted server has a
-// new one, so a 403 fetches it again and retries once.
-let tokenP: Promise<string> | null = null;
-function sessionToken(): Promise<string> {
-  tokenP ??= fetch("/api/token", { cache: "no-store" })
-    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`could not get the session token (${r.status})`))))
-    .then((d: { token: string }) => d.token)
-    .catch((e) => {
-      tokenP = null;
-      throw e;
-    });
-  return tokenP;
+// ---------- the server (server.ts) over HTTP + SSE ----------
+// Browser mode: the page and the API share the server's origin, and the page asks the server for its session token.
+// Desktop: the app starts the same server (bundled as server.mjs) on a free port and hands its address and token to
+// the webview (`server_info`). Every /api call carries the token (see refuse() in server.ts). A restarted server has a
+// new token (and in the app a new port), so a 403 or a dropped connection asks again and retries once.
+type Endpoint = { url: string; token: string };
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const findEndpoint = (): Promise<Endpoint> =>
+  isTauri
+    ? invoke<Endpoint>("server_info").catch((e) => Promise.reject(new Error(String(e))))
+    : fetch("/api/token", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`could not get the session token (${r.status})`))))
+        .then((d: { token: string }) => ({ url: "", token: d.token }));
+let endpointP: Promise<Endpoint> | null = null;
+function endpoint(): Promise<Endpoint> {
+  endpointP ??= findEndpoint().catch((e) => {
+    endpointP = null;
+    throw e;
+  });
+  return endpointP;
 }
 async function api(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
-  const r = await fetch(path, { ...init, headers: { ...(init.headers as Record<string, string>), "x-orch-token": await sessionToken() } });
+  const { url, token } = await endpoint();
+  let r: Response;
+  try {
+    r = await fetch(`${url}${path}`, { ...init, headers: { ...(init.headers as Record<string, string>), "x-orch-token": token } });
+  } catch (e) {
+    if (!retry) throw e;
+    endpointP = null; // the app's server restarted on another port
+    return api(path, init, false);
+  }
   if (r.status === 403 && retry) {
-    tokenP = null;
+    endpointP = null;
     return api(path, init, false);
   }
   return r;
@@ -146,21 +161,21 @@ const web: Transport = {
     let retry: ReturnType<typeof setTimeout> | undefined;
     const data = (e: Event) => JSON.parse((e as MessageEvent).data);
     const connect = async () => {
-      let token: string;
+      let ep: Endpoint;
       try {
-        token = await sessionToken();
-      } catch {
-        h.onConnection(false);
+        ep = await endpoint();
+      } catch (e) {
+        h.onConnection(false, String((e as Error).message ?? e));
         retry = setTimeout(connect, 2000);
         return;
       }
       if (stopped) return;
-      es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
+      es = new EventSource(`${ep.url}/api/events?token=${encodeURIComponent(ep.token)}`);
       es.onopen = () => h.onConnection(true);
       es.onerror = () => {
         h.onConnection(false);
         if (es?.readyState === EventSource.CLOSED && !stopped) {
-          tokenP = null;
+          endpointP = null;
           retry = setTimeout(connect, 2000);
         }
       };
@@ -246,100 +261,20 @@ const web: Transport = {
   removeGroup: (name) => post("group-remove", { name }),
 };
 
-// ---------- desktop: Tauri commands + events ----------
-const COMMANDS: Record<string, string> = {
-  run: "run_goal",
-  add: "add_goal",
-  loop: "run_loop",
-  stop: "stop",
-  "clear-log": "clear_log",
-  rollback: "rollback",
-  learn: "learn_repo",
-  share: "share_repo",
-  approve: "approve_plan",
-  answer: "answer_question",
-  "decide-command": "decide_command",
-  retry: "retry_goal",
-  move: "move_goal",
-  intake: "intake_goals",
-  split: "split_brief",
-  "split-accept": "accept_split",
-  "stop-after": "stop_after",
-};
-
-async function tauriInvoke<T = void>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
-  try {
-    return await invoke<T>(cmd, args); // JS camelCase keys map to Rust snake_case args
-  } catch (e) {
-    throw new Error(String(e), { cause: e });
-  }
-}
-
-const tauri: Transport = {
+// ---------- desktop: the same server, plus the native folder picker and file manager ----------
+const desktop: Transport = {
+  ...web,
   canPickRepo: true,
-  subscribe(h) {
-    let cancelled = false;
-    const unlisten: UnlistenFn[] = [];
-    (async () => {
-      const subs = await Promise.all([
-        listen<Init>("orch-init", (e) => h.onInit(e.payload)),
-        listen<State>("orch-session", (e) => h.onSession(e.payload)),
-        listen<{ repo: string; line: string }>("orch-log", (e) => h.onLog(e.payload.repo, e.payload.line)),
-        listen<{ repo: string; ev: OrchEvent }>("orch-ev", (e) => h.onEvent(e.payload.repo, e.payload.ev)),
-        listen<Global>("orch-global", (e) => h.onGlobal(e.payload)),
-      ]);
-      if (cancelled) return subs.forEach((u) => u());
-      unlisten.push(...subs);
-      h.onInit(await invoke<Init>("snapshot"));
-      h.onConnection(true);
-    })();
-    return () => {
-      cancelled = true;
-      unlisten.forEach((u) => u());
-    };
-  },
-  async call(path, body = {}) {
-    const cmd = COMMANDS[path];
-    if (!cmd) throw new Error(`unknown command ${path}`);
-    await tauriInvoke(cmd, body);
-  },
   async addRepo() {
     const p = await open({ directory: true, multiple: false, title: "Open a repo" });
-    if (typeof p === "string") await tauriInvoke("add_repo", { path: p });
+    if (typeof p === "string") await web.addRepo(p);
   },
-  newProject: (p) => tauriInvoke<string>("new_project", p),
   async pickFolder() {
     const p = await open({ directory: true, multiple: false, title: "Where to create the project" });
     return typeof p === "string" ? p : null;
   },
-  removeRepo: (repo) => tauriInvoke("remove_repo", { repo }),
   revealRepo: (repo) => revealItemInDir(repo).catch((e) => Promise.reject(new Error(`could not show the folder: ${e}`))),
-  setMaxParallel: (n) => tauriInvoke("set_max_parallel", { maxParallel: n }),
-  setDailyBudget: (usd) => tauriInvoke("set_daily_budget", { dailyBudget: usd }),
-  setUsageCap: (cap) => tauriInvoke("set_usage_cap", { fiveHour: cap.fiveHour, week: cap.week }),
-  setKeepAwake: (on) => tauriInvoke("set_keep_awake", { keepAwake: on }),
-  clearLimit: () => tauriInvoke("clear_limit"),
-  doctor: (repo, pr) => tauriInvoke<Finding[]>("doctor", { repo, pr: !!pr }),
-  browserSetup: (repo) => tauriInvoke<BrowserSetup>("browser_detect", { repo }),
-  configureBrowser: (repo, action, id) => tauriInvoke("browser_configure", { repo, action, id }),
-  plugins: (repo) => tauriInvoke<Plugin[]>("plugins", { repo }),
-  agents: (repo) => tauriInvoke<AgentRoster>("agents", { repo }),
-  history: (repo) => tauriInvoke<HistoryEntry[]>("history", { repo }),
-  historyRun: (repo, id) => tauriInvoke<HistoryRecording>("history", { repo, id }),
-  visualImage(repo, file) {
-    return tauriInvoke<number[]>("visual_image", { repo, file }).then((bytes) =>
-      URL.createObjectURL(new Blob([Uint8Array.from(bytes)], { type: "image/png" })),
-    );
-  },
-  saveAgent: (repo, name, content) => tauriInvoke("save_agent", { repo, name, content }),
-  swapAgent: (repo, role, target) => tauriInvoke("swap_agent", { repo, role, target }),
-  toggleRoster: (repo, kind, name, enabled) => tauriInvoke("toggle_roster", { repo, kind, name, enabled }),
-  allowed: (repo, remove) => tauriInvoke<{ allow: string[] }>("allowed_commands", { repo, remove: remove ?? null }),
-  agentMAsk: (question, session) => tauriInvoke<AgentMReply>("agent_m_ask", { question, session }),
-  agentMWarm: () => tauriInvoke("agent_m_warm"),
-  saveGroup: (g) => tauriInvoke("save_group", g),
-  removeGroup: (name) => tauriInvoke("remove_group", { name }),
 };
 
-export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-export const transport: Transport = isTauri ? tauri : web;
+export { isTauri };
+export const transport: Transport = isTauri ? desktop : web;
