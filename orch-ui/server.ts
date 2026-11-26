@@ -458,6 +458,7 @@ export function groupRunArgs(name: string, b: Record<string, unknown>): string[]
     ...(b.approvePlan ? ["--approve-plan"] : []),
     ...(b.fast === true ? ["--fast"] : b.fast === false ? ["--no-fast"] : []),
     ...(b.onLimit === "wait" || b.onLimit === "stop" ? ["--on-limit", b.onLimit] : []),
+    ...(b.pr === true ? ["--pr"] : b.branch === true ? ["--branch"] : []),
     String(b.goal).trim(),
   ];
 }

@@ -73,6 +73,11 @@ export function reduce(run: RunView | null, ev: OrchEvent): RunView | null {
             kept: ev.kept,
           }))
         : run;
+    case "group_branch":
+      return updGroup(run, (g) => ({
+        ...g,
+        branches: { ...g.branches, [ev.role]: defined({ branch: ev.branch, base: ev.base, url: ev.url, link: ev.link, error: ev.error }) },
+      }));
     case "group_rollback":
       return updGroup(run, (g) => ({ ...g, rolledBack: true, rolledBackParked: ev.parked }));
     case "goal_start":

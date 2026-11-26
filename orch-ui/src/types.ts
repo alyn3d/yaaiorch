@@ -227,6 +227,8 @@ export type GroupView = {
   /** `group_rollback`: the members were reset to the run's start; their later work is on these branches. */
   rolledBack?: boolean;
   rolledBackParked?: Partial<Record<GroupRole, string | null>>;
+  /** `group_branch` (--branch / --pr, after a pass): each member's group branch and its pull request or link. */
+  branches?: Partial<Record<GroupRole, { branch: string; base: string; url?: string; link?: string; error?: string }>>;
 };
 
 /** Agent M: a shell command an agent asked to run (--commands). `decision` once answered: allow, always, deny, timeout or cancelled. */

@@ -44,6 +44,10 @@ export type GroupOpts = {
   maxRounds?: number;
   /** On a Claude usage limit: wait for the reset and carry on (default), or park both repos and exit 3. */
   onLimit?: "wait" | "stop";
+  /** The work goes on a group branch in each repo (`groupBranchName`); the branches the run starts on never move. */
+  branch?: boolean;
+  /** With `branch`: push both group branches after a pass and open a pull request per repo, each linking the other. */
+  pr?: boolean;
 };
 export type GroupOutcome = "pass" | "fail" | "limit" | "stopped";
 export type GroupDeps = {
@@ -56,6 +60,8 @@ export const GROUP_EXIT: Record<GroupOutcome, number> = { pass: 0, fail: 1, limi
 
 type Event = Record<string, unknown> & { type: string };
 type Checkpoint = { branch: string; head: string };
+/** --branch: the member's group branch and the branch it started from. */
+type Branch = { branch: string; base: string };
 type GroupDecision = { round: number; action: "approve" | "reject"; note?: string; plan?: GroupPlan };
 
 const ROLES: GroupRole[] = ["backend", "frontend"];
@@ -303,6 +309,7 @@ type Run = {
   stamp: string;
   locks: Map<GroupRole, string>;
   checkpoints: Partial<Record<GroupRole, Checkpoint>>;
+  branches: Partial<Record<GroupRole, Branch>>;
   spent: number;
   stopped: boolean;
   /** Parking or dropping the checkpoints: a stop then is only recorded, so it never kills a park half way. */
@@ -342,6 +349,134 @@ async function checkpointAll(s: Run) {
     }
     s.checkpoints = {};
     throw e;
+  }
+}
+
+/**
+ * --branch: orch/group-<group>-<the goal's first words>, the same name in both repos (a taken name gets "-2", "-3" in
+ * that repo). Lowercase letters, digits and dashes only.
+ */
+export function groupBranchName(group: string, goal: string): string {
+  const slug =
+    goal
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40)
+      .replace(/-+$/, "") || "goal";
+  return `orch/group-${group}-${slug}`;
+}
+
+/** --branch: switch both repos to a new group branch (after their checkpoints, on the same commit). */
+async function branchAll(s: Run) {
+  const name = groupBranchName(s.g.name, s.goal);
+  for (const role of ROLES) {
+    const r = await member(repoOf(s, role), s.locks.get(role)!, ["branch", name, ...(s.o.pr ? ["pr"] : [])]);
+    s.branches[role] = { branch: String(r.branch), base: String(r.base) };
+    console.log(`${role}: group branch ${String(r.branch)} (from ${String(r.base)}, which this goal does not change)`);
+  }
+}
+
+/** Back to the base branch; returns whether the group branch has work on it (it is deleted when it has none). */
+async function unbranch(s: Run, role: GroupRole): Promise<boolean> {
+  const b = s.branches[role]!;
+  const r = await member(repoOf(s, role), s.locks.get(role)!, ["unbranch", b.branch, b.base]);
+  if (!r.kept) delete s.branches[role];
+  return !!r.kept;
+}
+
+/** A group pull request's description: this repo's goal, the group goal, the other repo's pull request, the contract. */
+export function groupPrBody(o: {
+  group: string;
+  goal: string;
+  role: GroupRole;
+  repoGoal?: string;
+  contract?: string;
+  other?: { role: GroupRole; branch: string; url?: string };
+  cost: number;
+}): string {
+  const other = o.other
+    ? `\n\nThe ${o.other.role}'s side: ${o.other.url ?? `branch \`${o.other.branch}\` (its pull request is not open yet)`}. ` +
+      `Merge the two together: each was built and checked against the other.`
+    : "";
+  return (
+    `${(o.repoGoal ?? o.goal).trim()}\n\n## Repo group\nThe ${o.role} part of the group goal "${o.goal.trim().replace(/\s+/g, " ").slice(0, 300)}" ` +
+    `(group \`${o.group}\`), built by YAAIORCH across a backend and a frontend repo.${other}\n\n` +
+    (o.contract?.trim() ? `<details><summary>API contract</summary>\n\n${clip(o.contract.trim(), 6000)}\n\n</details>\n\n` : "") +
+    `The whole group goal cost $${o.cost.toFixed(2)} in agent calls.\n\n` +
+    `Opened by [YAAIORCH](https://github.com/alyn3d/yaaiorch). Review it like any other pull request.\n`
+  );
+}
+
+/**
+ * After a pass with --branch: each repo goes back to its base, its group branch stays when it has work on it, and with
+ * --pr both are pushed and get a pull request, the backend's first; once the frontend's names it, the backend's
+ * description is rewritten to name the frontend's. Never throws: a failed push or pull request is reported.
+ */
+async function publishBranches(s: Run) {
+  const done: Partial<Record<GroupRole, Branch & { url?: string }>> = {};
+  for (const role of ROLES) {
+    if (!s.branches[role]) continue;
+    try {
+      if (!(await unbranch(s, role))) {
+        console.log(`${role}: the goal changed nothing here, so its group branch was deleted`);
+        continue;
+      }
+    } catch (e) {
+      console.warn(`warning: ${role}: could not switch back to ${s.branches[role]!.base}: ${msg(e)}`);
+      continue;
+    }
+    const b = s.branches[role]!;
+    done[role] = { ...b };
+    if (!s.o.pr) {
+      console.log(`${role}: back on ${b.base} (unchanged); the group's work is on ${b.branch}`);
+      emit("group_branch", { role, repo: repoOf(s, role).path, ...b });
+    }
+  }
+  if (!s.o.pr) return;
+  const body = (role: GroupRole) => {
+    const other = ROLES.find((r) => r !== role && done[r]);
+    return groupPrBody({
+      group: s.g.name,
+      goal: s.goal,
+      role,
+      repoGoal: s.plan?.goals[role],
+      contract: s.plan?.contract,
+      cost: s.spent,
+      ...(other ? { other: { role: other, branch: done[other]!.branch, url: done[other]!.url } } : {}),
+    });
+  };
+  for (const role of ROLES) {
+    const b = done[role];
+    if (!b) continue;
+    const title = `${s.goal.replace(/\s+/g, " ").trim().slice(0, 60)} (${role})`;
+    let r: Record<string, unknown>;
+    try {
+      r = await member(repoOf(s, role), s.locks.get(role)!, ["publish", b.branch, b.base], JSON.stringify({ title, body: body(role) }));
+    } catch (e) {
+      r = { error: msg(e) };
+    }
+    const result = {
+      ...(r.url ? { url: String(r.url) } : {}),
+      ...(r.link ? { link: String(r.link) } : {}),
+      ...(r.pushed ? { pushed: true } : {}),
+      ...(r.error ? { error: String(r.error) } : {}),
+    };
+    if (result.url) b.url = result.url;
+    console.log(
+      `${role}: ${result.url ? `pull request ${result.url}` : result.link ? `pushed ${b.branch}; open its pull request at ${result.link}` : result.error ? `no pull request (${result.error})` : `pushed ${b.branch}`}`,
+    );
+    emit("group_branch", { role, repo: repoOf(s, role).path, branch: b.branch, base: b.base, ...result });
+  }
+  // The backend's pull request was opened before the frontend's existed: name it now.
+  const be = done.backend;
+  if (be?.url && done.frontend?.url) {
+    try {
+      const r = await member(repoOf(s, "backend"), s.locks.get("backend")!, ["pr-body", be.url], body("backend"));
+      if (r.error) console.warn(`warning: could not link the backend's pull request to the frontend's: ${String(r.error)}`);
+    } catch (e) {
+      console.warn(`warning: could not link the backend's pull request to the frontend's: ${msg(e)}`);
+    }
   }
 }
 
@@ -790,25 +925,35 @@ async function endStep(s: Run, ok: boolean, kind: "failed" | "interrupted", reas
         step = "drop";
         await member(repo, s.locks.get(role)!, ["drop", cp.branch]);
         console.log(`${role}: ${parked[role] ? `work parked on ${parked[role]}` : "nothing to park"}; reset to ${cp.branch.replace(/^.*\//, "")}`);
+        // --branch: the group branch is back at the checkpoint, so it goes and the repo is on its base again.
+        if (s.branches[role]) {
+          step = "switch back";
+          await unbranch(s, role);
+        }
       }
     } catch (e) {
       // A park that failed leaves the repo as the run left it; a failed drop after a park leaves only the branch.
       if (!ok && step === "park") kept[role] = cp.branch;
+      if (step === "switch back") console.warn(`${role}: still on ${s.branches[role]?.branch}; switch back to ${s.branches[role]?.base} yourself`);
       console.warn(`warning: ${role}: could not ${step} (${cp.branch} kept): ${msg(e)}`);
     }
   }
+  if (ok) await publishBranches(s);
   const failedPark = Object.keys(kept).length > 0;
   if (failedPark)
     console.log(
       `${Object.keys(kept).join(" and ")}: the work could not be parked, so the repo is as the run left it. ` +
         `Fix the cause above, then reset it to where the group run started with: orch group rollback ${s.g.name}`,
     );
-  writeLast(s, { ok, ...(reason ? { reason } : {}), ...(ok ? { heads } : { parked, ...(failedPark ? { kept } : {}) }), ended: Date.now() });
+  // With --branch the bases never moved: a pass's work is on the group branches, which a rollback leaves to the person.
+  const branches = ok && Object.keys(s.branches).length ? { branches: s.branches } : {};
+  writeLast(s, { ok, ...(reason ? { reason } : {}), ...(ok ? { heads, ...branches } : { parked, ...(failedPark ? { kept } : {}) }), ended: Date.now() });
   emit("group_end", { ok, ...(reason ? { reason } : {}), ...(ok ? {} : { parked, ...(failedPark ? { kept } : {}) }) });
 }
 
 async function steps(s: Run): Promise<GroupOutcome> {
   await checkpointAll(s);
+  if (s.o.branch || s.o.pr) await branchAll(s);
   writeLast(s, { started: Date.now() });
   const plan = await planStep(s);
   s.plan = plan;
@@ -913,6 +1058,7 @@ export async function rollbackGroup(g: GroupConfig, deps: GroupDeps): Promise<vo
     checkpoints?: Record<string, string>;
     heads?: Record<string, string>;
     kept?: Record<string, string>;
+    branches?: Record<string, Branch>;
     rolledBack?: boolean;
   };
   let last: Last & Record<string, unknown>;
@@ -957,6 +1103,14 @@ export async function rollbackGroup(g: GroupConfig, deps: GroupDeps): Promise<vo
       finishRollback(g, deps, file, last, parked);
     });
   }
+  if (last.branches && Object.keys(last.branches).length)
+    throw new Error(
+      `the last run of group "${g.name}" built on its own branches (--branch), so the branches it started from never moved (` +
+        Object.entries(last.branches)
+          .map(([role, b]) => `${role}: ${b.branch}`)
+          .join(", ") +
+        `). To undo it, close its pull requests and delete those branches`,
+    );
   const sha = /^[0-9a-f]{7,40}$/i;
   const starts = ROLES.map((role) => ({ role, repo: memberOf(g, role), start: last.checkpoints?.[role], end: last.heads?.[role] }));
   for (const x of starts) if (!x.start || !sha.test(x.start)) throw new Error(`last-run.json has no start commit for the ${x.role} repo`);
@@ -994,7 +1148,7 @@ export async function runGroup(g: GroupConfig, goal: string, o: GroupOpts, deps:
   for (const r of g.repos) checkMember(r);
   const serve = groupServe(g);
   const dir = groupDir(g.name);
-  const s: Run = { g, goal, o, deps, dir, stamp: stampNow(), locks: new Map(), checkpoints: {}, spent: 0, stopped: false, ending: false, serve };
+  const s: Run = { g, goal, o, deps, dir, stamp: stampNow(), locks: new Map(), checkpoints: {}, branches: {}, spent: 0, stopped: false, ending: false, serve };
   // Registered before any lock, so on exit children die before the locks' own exit listeners release them.
   process.on("exit", killAll);
   const groupLockFile = join(dir, "run.lock");

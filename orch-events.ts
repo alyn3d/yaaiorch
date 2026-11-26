@@ -182,6 +182,11 @@ export interface OrchEventData {
     kept?: Partial<Record<EventGroupRole, string>>;
   };
   group_rollback: { group: string; parked: Partial<Record<EventGroupRole, string | null>> };
+  /**
+   * --branch / --pr, after a pass: a member's work on its group branch (its base never moved). `url`: the pull request
+   * opened; `link`: pushed without one, the host's page to open it; `error`: the push or pull request failed.
+   */
+  group_branch: { role: EventGroupRole; repo: string; branch: string; base: string; url?: string; link?: string; pushed?: boolean; error?: string };
 }
 
 export type OrchEventType = keyof OrchEventData;
@@ -248,6 +253,7 @@ const TYPES: { [K in OrchEventType]: true } = {
   group_fault: true,
   group_end: true,
   group_rollback: true,
+  group_branch: true,
 };
 export const EVENT_TYPES = Object.keys(TYPES) as OrchEventType[];
 

@@ -1262,6 +1262,11 @@ fn run_goal(
         if let Some(l) = on_limit.as_deref().filter(|l| *l == "wait" || *l == "stop") {
             args.extend(["--on-limit".into(), l.into()]);
         }
+        if pr.unwrap_or(false) {
+            args.push("--pr".into());
+        } else if branch.unwrap_or(false) {
+            args.push("--branch".into());
+        }
         let label = format!("group: {}", goal.chars().take(60).collect::<String>());
         args.push(goal);
         return request_start(&app, &repo, args, label);

@@ -131,7 +131,9 @@ Each item should show its effect in the evals before it becomes the default.
   (`clearGitLocks`).
 - [x] **Repo groups: `--on-limit wait`** (the default): member runs wait for the reset and resume their parked work,
   the group waits and asks the coordinator again; `--on-limit stop` (or **On limit: stop**) parks and exits 3 as before.
-- [ ] **Repo groups: PR mode** (a branch and pull request per repo, linked to each other).
+- [x] **Repo groups: PR mode** (`--branch` / `--pr`, **Lands as**): a group branch per repo, the bases never move;
+  with `--pr` both pushed and a pull request each, the backend's linked to the frontend's once it exists.
+- [ ] **Repo groups: watch the pull requests' CI** and run fix goals on the group branches, as `orch run --pr` does.
 - [x] **Repo groups: evals** (cases with a backend and a frontend repo, graded by hidden tests on both):
   `group-reviews`, `group-price-bugs`, `group-orders`; first run 5/6, one false pass from a member's QA
   ([results](docs/evals/2026-11-25.md)).

@@ -3,9 +3,11 @@
 //
 //   FAKE_GH_LOG=<file>   append the arguments (one JSON line) and the body read from stdin
 //   FAKE_GH_FAIL=1       exit 1 with an error, like gh without a login
+//   FAKE_GH_PR_BY_DIR=1  `gh pr create` names the repo after the current directory (two repos, two URLs)
 //   FAKE_GH_ISSUES=<json>  what `gh issue list` returns: [{number, title, body, labels?}] (labels: only listed
 //                        for those labels; without it, for any label)
 import { appendFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { basename } from "node:path";
 
 const args = process.argv.slice(2);
 const body = args.includes("--body-file") ? readFileSync(0, "utf8") : "";
@@ -49,8 +51,12 @@ if (args[0] === "auth" && args[1] === "status") process.exit(0);
 if (args[0] === "issue" && args[1] === "comment") process.exit(0);
 if (args[0] === "pr" && args[1] === "create") {
   const head = args[args.indexOf("--head") + 1];
-  console.log(`https://github.com/example/repo/pull/${head.length}`);
+  // FAKE_GH_PR_BY_DIR=1: the repo is the directory's name, so two repos' pull requests differ (repo groups).
+  const repo = process.env.FAKE_GH_PR_BY_DIR ? basename(process.cwd()) : "repo";
+  console.log(`https://github.com/example/${repo}/pull/${head.length}`);
   process.exit(0);
 }
+// `gh pr edit <url> --body-file -`: logged (args and body) above.
+if (args[0] === "pr" && args[1] === "edit") process.exit(0);
 process.stderr.write(`fake gh: unsupported command ${args.join(" ")}\n`);
 process.exit(1);

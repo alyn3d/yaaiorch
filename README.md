@@ -176,7 +176,7 @@ work, and refuse their own runs. On the command line:
 ```
 orch group add shop --repo /work/shop-api:backend --repo /work/shop-web:frontend \
   --serve-command "npm run dev" --serve-url http://localhost:3000 --env VITE_API_URL={backend}
-orch group run shop "users can upload an avatar" [--max-cost 8] [--power heavy] [--approve-plan]
+orch group run shop "users can upload an avatar" [--max-cost 8] [--power heavy] [--approve-plan] [--branch | --pr]
 ```
 
 `orch group list [--json]`, `orch group remove NAME`, `orch group stop NAME` and `orch group rollback NAME` do what
@@ -221,6 +221,15 @@ What a run does:
 4. Pass: each repo keeps its commits on its current branch. Failure: each repo's work is parked on
    `orchestrator/failed-group-*` and the repo is reset to where it started; stop parks as `interrupted-group-*`.
 
+With `--branch` (**Lands as: branches** in the app) the work goes on `orch/group-<name>-<goal>` in each repo instead,
+and both repos end back on the branch they started on, which never moves (a repo the goal did not change keeps no
+branch). `--pr` (**pull requests**) also pushes both branches to `origin` and opens a pull request per repo, the
+backend's first: each one's description has that repo's goal, the group goal, the contract and the other repo's pull
+request, so the two are reviewed and merged together. `--pr` needs an `origin` in both repos and checks that before
+anything is built. As for `orch run --pr`, `gh` opens the pull requests on GitHub; on other hosts (or without `gh`)
+the branches are pushed and the run prints the page to open each pull request. CI on those pull requests is not
+watched yet.
+
 `--max-cost` is split over the steps (60% for the build, the rest for integration and fixes). On a usage limit the group
 waits for the reset and carries on: each repo's run sets its work aside, waits and resumes it, and the coordinator is
 asked again (`--on-limit stop`, or **On limit: stop** in the app, parks both repos as interrupted and exits with code 3). To stop a group run, use
@@ -229,8 +238,8 @@ asked again (`--on-limit stop`, or **On limit: stop** in the app, parks both rep
 `orchestrator/discarded-group-*`, including commits you made since; it says so), and checks both repos before it resets
 either. After a failed run it resets only a repo whose work could not be parked (the run says so and keeps that repo's
 group checkpoint), and after a run that never finished (killed hard) each repo whose group checkpoint is still there.
-It refuses a failed run that parked both repos, and an already rolled back one. No pull requests: the result is
-commits on the local branches.
+It refuses a failed run that parked both repos, an already rolled back one, and a passed `--branch` / `--pr` run (the
+branches it started from never moved: close the pull requests and delete the group branches to undo it).
 
 ### Desktop app
 

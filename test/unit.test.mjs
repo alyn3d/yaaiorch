@@ -1049,6 +1049,20 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     const passed = reduce(fold([{ type: "group_start", group: "shop", goal: "g", repos }]), { type: "group_end", ok: true, t: 20 });
     assert.equal(passed.status, "passed");
     assert.equal(passed.group.ok, true);
+    let landed = reduce(passed, {
+      type: "group_branch",
+      role: "backend",
+      repo: "/be",
+      branch: "orch/group-shop-g",
+      base: "main",
+      url: "https://x/pull/1",
+      t: 21,
+    });
+    landed = reduce(landed, { type: "group_branch", role: "frontend", repo: "/fe", branch: "orch/group-shop-g", base: "main", error: "push failed", t: 22 });
+    assert.deepEqual(landed.group.branches, {
+      backend: { branch: "orch/group-shop-g", base: "main", url: "https://x/pull/1" },
+      frontend: { branch: "orch/group-shop-g", base: "main", error: "push failed" },
+    });
     assert.equal(reduce(null, { type: "group_plan", contract: "c", goals: {}, t: 1 }), null);
     let waiting = reduce(fold([{ type: "group_start", group: "shop", goal: "g", repos }]), {
       type: "group_approval_wait",
@@ -1061,7 +1075,7 @@ describe("run view (orch-ui/src/reduce.ts)", () => {
     waiting = reduce(waiting, { type: "group_approval", round: 2, action: "approve", t: 22 });
     assert.equal("approval" in waiting.group, false, "an answer clears the waiting plan");
     const plain = fold(start);
-    for (const type of ["group_plan", "group_fault", "group_end", "group_step", "group_rollback", "group_approval_wait", "group_approval"])
+    for (const type of ["group_plan", "group_fault", "group_end", "group_step", "group_rollback", "group_approval_wait", "group_approval", "group_branch"])
       assert.equal(reduce(plain, { type, cost: 1, ok: true, t: 1 }), plain, `${type} leaves a run without a group alone`);
   });
 });

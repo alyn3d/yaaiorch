@@ -7,6 +7,7 @@ import { transport, type GroupForm } from "./transport";
 import { baseName, groupWaits, usd } from "./repoStatus";
 import type { Session } from "./useOrch";
 import { AgentText } from "./AgentText";
+import { openExternal } from "./links";
 
 const POWERS: Power[] = ["max", "heavy", "balanced", "economy"];
 const ROLES: GroupRole[] = ["backend", "frontend"];
@@ -23,8 +24,17 @@ export const samePath = (a: string, b: string) => {
   return norm(a) === norm(b);
 };
 
-type GroupOpts = { power: Power; maxRounds: number; maxCost: string; approvePlan: boolean; fast: boolean; onLimit: "wait" | "stop" };
-const DEFAULTS: GroupOpts = { power: "heavy", maxRounds: 5, maxCost: "", approvePlan: false, fast: true, onLimit: "wait" };
+type GroupOpts = {
+  power: Power;
+  maxRounds: number;
+  maxCost: string;
+  approvePlan: boolean;
+  fast: boolean;
+  onLimit: "wait" | "stop";
+  /** Where the work lands: on each repo's current branch, a group branch per repo, or that plus a pull request each. */
+  land: "commit" | "branch" | "pr";
+};
+const DEFAULTS: GroupOpts = { power: "heavy", maxRounds: 5, maxCost: "", approvePlan: false, fast: true, onLimit: "wait", land: "commit" };
 
 /** A group's run options, remembered per group in this browser. */
 function useGroupOpts(name: string): [GroupOpts, (o: GroupOpts) => void] {
@@ -101,7 +111,8 @@ export function GroupView({
   const cap = Number(opts.maxCost);
   const running = run?.status === "running" && !!state.running;
   // A finished group run can be undone in both repos: a passed one, or a failed one whose park kept its checkpoint.
-  const canRollback = !busy && !!group && group.ok !== undefined && !group.rolledBack && (group.ok || !!(group.kept && Object.keys(group.kept).length));
+  const canRollback =
+    !busy && !!group && group.ok !== undefined && !group.rolledBack && (group.ok ? !group.branches : !!(group.kept && Object.keys(group.kept).length));
 
   return (
     <div className="repo-view group-view" hidden={hidden}>
@@ -255,6 +266,14 @@ export function GroupView({
               <option value="stop">stop</option>
             </select>
           </label>
+          <label title="Where the work lands: commits on each repo's current branch, a group branch per repo (the current branches never move), or those branches pushed with a pull request each, linked to the other">
+            Lands as
+            <select value={opts.land} onChange={(e) => setOpts({ ...opts, land: e.target.value as GroupOpts["land"] })}>
+              <option value="commit">commits</option>
+              <option value="branch">branches</option>
+              <option value="pr">pull requests</option>
+            </select>
+          </label>
           <label className="check" title="Show the coordinator's contract and goals before anything is built">
             <input type="checkbox" checked={opts.approvePlan} onChange={(e) => setOpts({ ...opts, approvePlan: e.target.checked })} /> Approve plan
           </label>
@@ -275,6 +294,8 @@ export function GroupView({
                 approvePlan: opts.approvePlan,
                 fast: opts.fast,
                 onLimit: opts.onLimit,
+                branch: opts.land !== "commit",
+                pr: opts.land === "pr",
               });
               if (ok) setGoal("");
             }}
@@ -415,6 +436,25 @@ function GroupRunCard({
         </aside>
       )}
       {group.ok === false && group.reason && <p className="error">{group.reason}</p>}
+      {group.branches && (
+        <ul className="group-goals">
+          {ROLES.filter((r) => group.branches![r]).map((r) => {
+            const b = group.branches![r]!;
+            const href = b.url ?? b.link;
+            return (
+              <li key={r}>
+                <span className={`badge ${r === "backend" ? "be" : "fe"}`}>{r}</span> <code>{b.branch}</code> (from <code>{b.base}</code>, unchanged){" "}
+                {href && (
+                  <a href={href} target="_blank" rel="noreferrer" onClick={(e) => openExternal(e, href)}>
+                    {b.url ? "pull request" : "open the pull request"}
+                  </a>
+                )}
+                {b.error && <span className="error"> no pull request: {b.error}</span>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {group.parked && Object.values(group.parked).some(Boolean) && (
         <p className="muted">
           Work parked:{" "}

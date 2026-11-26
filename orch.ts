@@ -53,7 +53,9 @@ import {
   clearGitLocks,
   costArgs as groupCostArgs,
   GROUP_EXIT,
+  groupBranchName,
   groupDir,
+  groupPrBody,
   limitWaitUntil,
   rollbackGroup,
   runGroup,
@@ -124,11 +126,13 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
                   options belong to the backend, --env to the frontend, "{backend}" = the backend's URL)
   orch group list [--json] | remove NAME   show or delete groups (~/.yaaiorch/groups)
   orch group run NAME "<goal>" [--max-cost USD] [--power P] [--model SPEC] [--approve-plan] [--fast|--no-fast]
-                  [--on-limit wait|stop]
+                  [--on-limit wait|stop] [--branch] [--pr]
                   one goal across the group: the coordinator writes the API contract and a goal per repo, both
                   repos build in parallel; on failure or stop each repo's work is parked on a branch and the repo
                   reset (exit 1, 130 when stopped). On a usage limit it waits for the reset and carries on
                   (default), or with --on-limit stop parks both repos and exits 3. --approve-plan: orch approve --group NAME
+                  --branch: the work goes on orch/group-NAME-<goal> in each repo (the current branches never move);
+                  --pr: also push both and open a pull request per repo, each linking the other
   orch group stop NAME   stop a running group goal (its work is parked as interrupted)
   orch browser [status | login [URL] | install]   the browser the checks use (status); log in to the app once in
                         a window on this repo's own browser profile, which the checks reuse (login); download
@@ -3081,6 +3085,8 @@ function changedFiles(): string[] {
 }
 
 const GROUP_CHECKPOINT = `${BRANCH_PREFIX}group-checkpoint-`;
+/** A group run's branch with --branch / --pr (`groupBranchName` in orch-group-run.ts), and a "-N" orch adds when it is taken. */
+const GROUP_BRANCH = /^orch\/group-[a-z0-9-]+$/;
 
 /** Commit what is left, keep HEAD on a side branch, and reset the current branch to `cp`. */
 function moveWorkAside(cp: string, kind: "failed" | "discarded" | "interrupted", message: string, savedAs?: string): string | null {
@@ -3133,7 +3139,7 @@ function finishGit(cp: string, goal: string, passed: boolean, park: boolean, int
 const checkpoints = () => git("branch", "--list", `${BRANCH_PREFIX}checkpoint-*`, "--format=%(refname:short)").split("\n").filter(Boolean).sort();
 
 /**
- * `orch group-member checkpoint|park|reset|verify|has|head|drop|coordinate`: the repo-level steps of a group run (hidden;
+ * `orch group-member checkpoint|park|reset|verify|has|head|drop|branch|unbranch|publish|pr-body|coordinate`: the repo-level steps of a group run (hidden;
  * the group process holds the run lock).
  */
 async function groupMember(args: string[], values: Record<string, string | boolean | string[] | undefined> = {}) {
@@ -3223,6 +3229,46 @@ ${dirty}`);
       }
       return out({ ahead: Number(git("rev-list", "--count", `${ref}..HEAD`)), ...(after === undefined ? {} : { after }) });
     }
+    case "branch": {
+      // --branch / --pr: the group's work goes on a new branch from the current one, which never moves.
+      if (!a || !GROUP_BRANCH.test(a)) throw new Error("usage: orch group-member branch <orch/name> [pr]");
+      let base: string;
+      try {
+        base = git("symbolic-ref", "--quiet", "--short", "HEAD");
+      } catch {
+        throw new Error("--branch needs a checked-out branch to start from (HEAD is detached)");
+      }
+      if (b === "pr" && !originUrl()) throw new Error('--pr needs an "origin" remote to push to; add one with "git remote add origin URL"');
+      let branch = a;
+      for (let n = 2; branchExists(branch); n++) branch = `${a}-${n}`;
+      git("switch", "-q", "-c", branch);
+      return out({ branch, base });
+    }
+    case "unbranch": {
+      // Back to the base branch; the group branch goes when it has nothing on it (a failed run's work is parked).
+      if (!a || !GROUP_BRANCH.test(a) || !b) throw new Error("usage: orch group-member unbranch <branch> <base>");
+      const dirty = dirtyFiles();
+      if (dirty)
+        throw new Error(`working tree has uncommitted changes, so it stays on ${a}:
+${dirty}`);
+      git("switch", "-q", b);
+      if (Number(git("rev-list", "--count", `${b}..${a}`)) > 0) return out({ kept: true, head: git("rev-parse", a) });
+      git("branch", "-D", a);
+      return out({ kept: false });
+    }
+    case "publish": {
+      // Push the group branch and open its pull request; stdin: {title, body}. Answers {url?, link?, error?, pushed?}.
+      if (!a || !GROUP_BRANCH.test(a) || !b) throw new Error("usage: orch group-member publish <branch> <base> (JSON {title, body} on stdin)");
+      const { title, body } = JSON.parse(readFileSync(0, "utf8")) as { title?: unknown; body?: unknown };
+      if (typeof title !== "string" || typeof body !== "string") throw new Error("publish: stdin must be JSON {title, body}");
+      return out(pushAndRequest({ branch: a, base: b }, title, body));
+    }
+    case "pr-body": {
+      // Rewrite a pull request's description (stdin) once the other repo's pull request exists.
+      if (!a || !/^https:\/\/\S+$/.test(a)) throw new Error("usage: orch group-member pr-body <url> (the body on stdin)");
+      const error = editPullRequestBody(a, readFileSync(0, "utf8"));
+      return out(error ? { error } : {});
+    }
     case "drop": {
       // After a pass: a member run that failed on the way (an integration round before its fix) kept its checkpoint.
       const leftovers = childCheckpoints(checkpoint(a));
@@ -3255,7 +3301,7 @@ ${dirty}`);
     }
     default:
       throw new Error(
-        "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint|sha stamp> | verify <sha> [end] | has <checkpoint> | head | drop <checkpoint> | coordinate <plan|fault> --group <name>",
+        "usage: orch group-member checkpoint <stamp> | park <checkpoint> <failed|interrupted> | reset <checkpoint|sha stamp> | verify <sha> [end] | has <checkpoint> | head | drop <checkpoint> | branch <orch/name> [pr] | unbranch <branch> <base> | publish <branch> <base> | pr-body <url> | coordinate <plan|fault> --group <name>",
       );
   }
 }
@@ -3555,6 +3601,15 @@ function originUrl(): string | undefined {
  * Returns the URL of a pull request that was opened; failures are reported, never thrown.
  */
 function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: string): string | undefined {
+  const r = pushAndRequest(gb, goal, body ?? prBody(goal, lr));
+  emit("pr", { branch: gb.branch, base: gb.base, ...r });
+  return r.url;
+}
+
+type PrResult = { url?: string; link?: string; error?: string; pushed?: boolean };
+
+/** `openPullRequest` without the event: push, then the pull request or the link to open it. Never throws. */
+function pushAndRequest(gb: GoalBranch, goal: string, body: string): PrResult {
   let url: string | undefined;
   let link: string | undefined;
   let error: string | undefined;
@@ -3578,13 +3633,12 @@ function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: strin
       link = manual();
       const why = forge === "github" ? "gh (GitHub CLI) was not found" : `orch opens pull requests itself only on GitHub`;
       console.log(`pushed ${gb.branch} to origin; ${why}: ${link ? `open the pull request at ${link}` : "open the pull request on your git host"}`);
-      emit("pr", { branch: gb.branch, base: gb.base, link, pushed: true });
-      return undefined;
+      return { link, pushed: true };
     }
     // The title is the only goal text on a command line; strip what a shell fallback could misread.
     const title = (gh.shell ? goal.replace(/[^\w .,:()/+-]/g, "") : goal).replace(/\s+/g, " ").trim().slice(0, 72) || "YAAIORCH goal";
     const r = spawnSync(gh.file, [...gh.pre, "pr", "create", "--base", gb.base, "--head", gb.branch, "--title", title, "--body-file", "-"], {
-      input: body ?? prBody(goal, lr),
+      input: body,
       encoding: "utf8",
       shell: gh.shell,
       windowsHide: true,
@@ -3604,8 +3658,21 @@ function openPullRequest(gb: GoalBranch, goal: string, lr: LastRun, body?: strin
     error = msg(e);
     console.warn(`warning: no pull request (${error})${link ? `; open it at ${link}` : ""}`);
   }
-  emit("pr", { branch: gb.branch, base: gb.base, url, link, error });
-  return url;
+  return { url, link, error };
+}
+
+/** `gh pr edit URL --body-file -`: a group links each pull request to the other's once both exist. Never throws. */
+function editPullRequestBody(url: string, body: string): string | undefined {
+  const gh = resolveCommand(process.env.GH_BIN ?? "gh");
+  if (gh.missing) return "gh (GitHub CLI) was not found";
+  const r = spawnSync(gh.file, [...gh.pre, "pr", "edit", url, "--body-file", "-"], {
+    input: body,
+    encoding: "utf8",
+    shell: gh.shell,
+    windowsHide: true,
+    timeout: 120_000,
+  });
+  return r.status === 0 ? undefined : (r.stderr || r.stdout || String(r.error ?? "gh pr edit failed")).trim().slice(0, 300);
 }
 
 // ---------- --pr: wait for the pull request's CI, and fix it when it fails ----------
@@ -6284,6 +6351,8 @@ type GroupFlags = {
   fast?: boolean;
   "no-fast"?: boolean;
   "on-limit"?: string;
+  branch?: boolean;
+  pr?: boolean;
 };
 
 /** `orch group run NAME "<goal>"`: exits 0 pass, 1 fail, 3 usage limit, 130 stopped. */
@@ -6311,6 +6380,8 @@ async function groupRun(name: string | undefined, goal: string, values: GroupFla
       maxRounds,
       approvePlan: !!values["approve-plan"],
       onLimit,
+      ...(values.branch || values.pr ? { branch: true } : {}),
+      ...(values.pr ? { pr: true } : {}),
       ...(maxCost !== undefined ? { maxCost } : {}),
       ...(values.model ? { model: values.model } : {}),
       ...(values["no-fast"] ? { fast: false } : values.fast ? { fast: true } : {}),
@@ -6778,6 +6849,8 @@ export {
   childShare,
   clearGitLocks,
   groupCostArgs,
+  groupBranchName,
+  groupPrBody,
   readDenyRules,
   acquireRunLock,
   releaseRunLock,

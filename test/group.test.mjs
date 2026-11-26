@@ -877,6 +877,37 @@ describe("clearGitLocks", () => {
   });
 });
 
+describe("group branches and pull requests", () => {
+  test("groupBranchName: orch/group-<group>-<the goal's first words>", () => {
+    assert.equal(o.groupBranchName("shop", "Users can upload an avatar!"), "orch/group-shop-users-can-upload-an-avatar");
+    assert.equal(
+      o.groupBranchName("shop", "- show the items, with prices in EUR and a total at the bottom"),
+      "orch/group-shop-show-the-items-with-prices-in-eur-and-a",
+    );
+    assert.equal(o.groupBranchName("shop", "!!!"), "orch/group-shop-goal");
+  });
+  test("groupPrBody: the repo's goal, the group goal, the other side, the contract, the cost", () => {
+    const body = o.groupPrBody({
+      group: "shop",
+      goal: "list the items",
+      role: "frontend",
+      repoGoal: "show the items",
+      contract: "GET /api/items",
+      other: { role: "backend", branch: "orch/group-shop-x", url: "https://github.com/example/be/pull/3" },
+      cost: 1.234,
+    });
+    assert.match(body, /^show the items\n/);
+    assert.match(body, /The frontend part of the group goal "list the items" \(group `shop`\)/);
+    assert.match(body, /The backend's side: https:\/\/github\.com\/example\/be\/pull\/3\./);
+    assert.match(body, /<summary>API contract<\/summary>\n\nGET \/api\/items/);
+    assert.match(body, /\$1\.23/);
+    const alone = o.groupPrBody({ group: "shop", goal: "list the items", role: "backend", other: { role: "frontend", branch: "orch/group-shop-x" }, cost: 0 });
+    assert.match(alone, /^list the items\n/);
+    assert.match(alone, /branch `orch\/group-shop-x` \(its pull request is not open yet\)/);
+    assert.doesNotMatch(alone, /API contract/);
+  });
+});
+
 describe("group budget shares", () => {
   test("the build gets 60% of what is left, split over the repos that build", () => {
     assert.deepEqual(o.groupCostArgs(undefined), []);
@@ -1041,6 +1072,129 @@ describe("orch group run", { timeout: 600_000 }, () => {
       assert.deepEqual(git(s.be, "branch", "--list", "orch/*", "--format=%(refname:short)"), "");
       assert.equal(existsSync(ghLog), false, "no gh call");
       assert.equal(existsSync(join(s.be, ".orchestrator", "plan-pending.json")), false);
+    } finally {
+      clean(s);
+    }
+  });
+
+  /** A bare repo as dir's origin, shown as a GitHub address and reached through url.<bare>.insteadOf. */
+  const bareOrigin = (s, dir, url) => {
+    const origin = join(s.home, `${basename(dir)}-origin.git`);
+    mkdirSync(origin);
+    git(origin, "init", "-q", "--bare");
+    git(dir, "remote", "add", "origin", url);
+    git(dir, "config", `url.${origin.replace(/\\/g, "/")}.insteadOf`, url);
+    return origin;
+  };
+  const groupBranches = (dir) => git(dir, "branch", "--list", "orch/*", "--format=%(refname:short)").split("\n").filter(Boolean);
+
+  test("--pr: both repos' work on a group branch, pushed, one pull request each, linked to the other; the bases never move", () => {
+    const s = setup();
+    const ghLog = join(s.home, "gh.log");
+    try {
+      const origins = { be: bareOrigin(s, s.be, "https://github.com/example/be.git"), fe: bareOrigin(s, s.fe, "https://github.com/example/fe.git") };
+      const gh = join(root, "test", "fake-gh", process.platform === "win32" ? "gh.cmd" : "gh");
+      const r = group(s, ["run", "shop", "list the items", "--pr"], { GH_BIN: gh, FAKE_GH_LOG: ghLog, FAKE_GH_PR_BY_DIR: "1" });
+      assert.equal(r.code, 0, r.out);
+      assert.equal(r.ev("group_end").at(-1).ok, true, r.out);
+      const branch = "orch/group-shop-list-the-items";
+      for (const [dir, start, origin] of [
+        [s.be, s.heads.be, origins.be],
+        [s.fe, s.heads.fe, origins.fe],
+      ]) {
+        assert.equal(git(dir, "symbolic-ref", "--short", "HEAD"), "main");
+        assert.equal(head(dir), start, "main never moved");
+        assert.deepEqual(groupBranches(dir), [branch]);
+        assert.notEqual(git(dir, "rev-parse", branch), start, "the work is on the group branch");
+        assert.equal(git(origin, "rev-parse", branch), git(dir, "rev-parse", branch), "pushed");
+        assert.deepEqual(branches(dir), [], "no checkpoint left");
+      }
+      const ev = r.ev("group_branch");
+      assert.deepEqual(
+        ev.map((e) => [e.role, e.branch, e.base, e.url]),
+        [
+          ["backend", branch, "main", `https://github.com/example/be/pull/${branch.length}`],
+          ["frontend", branch, "main", `https://github.com/example/fe/pull/${branch.length}`],
+        ],
+      );
+      const calls = readFileSync(ghLog, "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+      const creates = calls.filter((c) => c.args[0] === "pr" && c.args[1] === "create");
+      assert.equal(creates.length, 2);
+      assert.match(creates[0].args.join(" "), /--title list the items \(backend\)/);
+      assert.match(creates[0].body, /The frontend's side: branch `orch\/group-shop-list-the-items`/);
+      assert.match(creates[1].body, /The backend's side: https:\/\/github\.com\/example\/be\/pull\//);
+      assert.match(creates[1].body, /API contract[\s\S]*GET \/api\/items/);
+      const edits = calls.filter((c) => c.args[0] === "pr" && c.args[1] === "edit");
+      assert.equal(edits.length, 1, "the backend's pull request is linked to the frontend's once that exists");
+      assert.equal(edits[0].args[2], ev[0].url);
+      assert.match(edits[0].body, /The frontend's side: https:\/\/github\.com\/example\/fe\/pull\//);
+      const last = JSON.parse(readFileSync(join(s.gdir, "last-run.json"), "utf8"));
+      assert.deepEqual(last.branches, { backend: { branch, base: "main" }, frontend: { branch, base: "main" } });
+      // Nothing to reset: the bases never moved, and the branches are the person's to close.
+      const rb = group(s, ["rollback", "shop"]);
+      assert.notEqual(rb.code, 0);
+      assert.match(rb.out, /built on its own branches \(--branch\)[\s\S]*backend: orch\/group-shop-list-the-items/);
+      assert.deepEqual(groupBranches(s.be), [branch], "rollback touched nothing");
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("--branch: a taken name gets -2; without --pr nothing is pushed", () => {
+    const s = setup();
+    try {
+      git(s.fe, "branch", "orch/group-shop-list-the-items");
+      const r = group(s, ["run", "shop", "list the items", "--branch"]);
+      assert.equal(r.code, 0, r.out);
+      assert.deepEqual(
+        r.ev("group_branch").map((e) => [e.role, e.branch, e.url]),
+        [
+          ["backend", "orch/group-shop-list-the-items", undefined],
+          ["frontend", "orch/group-shop-list-the-items-2", undefined],
+        ],
+      );
+      assert.equal(head(s.be), s.heads.be);
+      assert.equal(head(s.fe), s.heads.fe);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("--branch: a failed goal parks both repos and leaves no group branch; each repo is back on main", () => {
+    const s = setup();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--branch", "--no-fast", "--max-rounds", "1"], { FAKE_FAIL_AGENT: "be" });
+      assert.equal(r.code, 1, r.out);
+      assert.equal(r.ev("group_branch").length, 0);
+      for (const [dir, start] of [
+        [s.be, s.heads.be],
+        [s.fe, s.heads.fe],
+      ]) {
+        assert.equal(git(dir, "symbolic-ref", "--short", "HEAD"), "main");
+        assert.equal(head(dir), start);
+        assert.deepEqual(groupBranches(dir), []);
+      }
+      assert.match(r.ev("group_end").at(-1).parked.backend, /^orchestrator\/failed-group-/);
+    } finally {
+      clean(s);
+    }
+  });
+
+  test("--pr without an origin fails before anything is built; both repos stay on main", () => {
+    const s = setup();
+    try {
+      const r = group(s, ["run", "shop", "list the items", "--pr"]);
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.ev("group_end").at(-1).reason, /needs an "origin" remote/);
+      assert.equal(r.ev("group_plan").length, 0, "no coordinator call");
+      for (const dir of [s.be, s.fe]) {
+        assert.equal(git(dir, "symbolic-ref", "--short", "HEAD"), "main");
+        assert.deepEqual(groupBranches(dir), []);
+        assert.deepEqual(branches(dir), []);
+      }
     } finally {
       clean(s);
     }
