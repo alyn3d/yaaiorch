@@ -5,6 +5,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-26
+
 ### Added
 - Repo groups wait out a Claude usage limit instead of giving up: `orch group run` takes `--on-limit wait|stop` (**On limit** on the group page), and `wait` is the default, as for `orch run`. A member run that hits the limit sets its work aside, waits for the reset and carries on from it, while the other repo keeps building; a coordinator call that hits it waits and asks again. The group page says who is waiting and until when, and a member repo waiting inside a group shows that wait instead of just "in group". Stopping the group during such a wait parks the work that run had set aside on the group's `orchestrator/interrupted-group-*` branch, like any other stopped group. `--on-limit stop` keeps the old behaviour: both repos are parked as interrupted and the run exits with code 3.
 - Eval cases for repo groups: `group-reviews`, `group-price-bugs` and `group-orders` run `orch group run` on a backend and a frontend repo and grade both with hidden tests. The frontend's hidden tests drive the web client against the backend the same run built, so a contract the two sides read differently fails even when each repo's own tests pass. The goals leave the API's pagination and error shape to be found in the backend. `node evals/run.ts --cases group-reviews,group-price-bugs,group-orders` runs them; `--reference` checks each repo's hidden tests on their own. First run at `economy`: 5 of 6 passed at $1.62 per group goal; the one false pass came from a member run's QA, not the contract ([results](docs/evals/2026-11-25.md)).
@@ -476,7 +478,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/alyn3d/yaaiorch/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/alyn3d/yaaiorch/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/alyn3d/yaaiorch/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/alyn3d/yaaiorch/compare/v0.6.0...v0.6.1
