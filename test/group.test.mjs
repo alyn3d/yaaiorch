@@ -1582,6 +1582,9 @@ describe("orch group run", { timeout: 600_000 }, () => {
       );
       assert.match(integ.event.goal, /mcp__probe__request/);
       assert.match(integ.event.goal, /could not check live is a failure/);
+      // It also gets the frontend's own goal, so it keeps the names and shapes that goal states.
+      assert.match(integ.event.goal, /just built for this goal:\n(- )?show the items from GET \/api\/items/);
+      assert.match(integ.event.goal, /never rename, remove or change the shape/);
       assert.deepEqual(
         readdirSync(join(s.fe, ".orchestrator")).filter((f) => f.startsWith("probe-")),
         [],

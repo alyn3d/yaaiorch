@@ -260,5 +260,53 @@
     "goal": "Add GET /tickets/export, which returns the tickets as CSV with status 200 and Content-Type text/csv; charset=utf-8. It takes the same optional status and assignee query parameters as GET /tickets, combined the same way, lists the tickets in id order, and answers an invalid status with the same 400 JSON error. The first line is the header id,title,priority,status,assignee,createdAt; then one line per ticket with those fields, where a ticket without an assignee has an empty field. Every line, the last one included, ends with \r\n. A field that contains a comma, a double quote, a carriage return or a line feed is enclosed in double quotes, with every double quote inside it doubled; other fields are not quoted. So that spreadsheets do not run a title as a formula, a title that starts with =, +, - or @ gets a single quote (') in front of it, before any quoting. Titles may contain line breaks, which creating a ticket keeps. Put the CSV formatting in its own module, src/csv.js, and add tests.",
     "grade": "node --test test/__hidden__/export.test.js test/service.test.js test/http.test.js && node --test \"{gate}/export.gate.test.js\"",
     "gate": "node --test \"{gate}/export.gate.test.js\""
+  },
+  {
+    "id": "group-reviews",
+    "group": {
+      "backend": "group-shop-api",
+      "frontend": "group-shop-web",
+      "serve": "node src/index.js {port}",
+      "health": "/health"
+    },
+    "kind": "group",
+    "difficulty": "medium: a feature across both repos; the API's list pagination and error shape are conventions the goal does not repeat",
+    "goal": "Customers can review products. In the shop API: a review belongs to a product and has a rating (a whole number from 1 to 5), a comment (trimmed, at most 500 characters, may be empty) and the time it was created. POST /products/:id/reviews creates one and GET /products/:id/reviews lists a product's reviews, newest first. Invalid input is a 400 and an unknown product a 404, the way the API reports errors elsewhere. Every product the API returns gains averageRating (the mean rating rounded to one decimal, null when there are no reviews) and reviewCount. In the web shop: in src/api.js add addReview(productId, { rating, comment }), which resolves to the created review { id, productId, rating, comment, createdAt } (createdAt an ISO 8601 string), and listReviews(productId), which resolves to every review of the product, newest first; both reject with an ApiError carrying the API's status. Products from getProduct and listProducts include averageRating and reviewCount. In src/render.js add renderRating(product), which returns \"★ 4.5 (12 reviews)\" (the average with one decimal, and \"1 review\" for one) or \"No reviews yet\" when there are none. Add tests on both sides.",
+    "grade": {
+      "backend": "node --test test/__hidden__/reviews-api.test.js test/server.test.js",
+      "frontend": "node --test test/__hidden__/reviews.test.mjs test/web.test.js"
+    }
+  },
+  {
+    "id": "group-price-bugs",
+    "group": {
+      "backend": "group-shop-api",
+      "frontend": "group-shop-web",
+      "serve": "node src/index.js {port}",
+      "health": "/health"
+    },
+    "kind": "group",
+    "difficulty": "medium: three bugs, two in the web shop and one in the API; the contract stays as it is",
+    "goal": "Bug reports from the shop. 1) The web shop's product list shows only the first 10 products, although the API has more. 2) A product created from the web admin form with the price 12.5 is saved at $1.25 (12.50 works); 0.5 has the same problem. 3) The API accepts a priceCents that is not a whole number, such as 12.5, and stores it; it must reject anything that is not a non-negative whole number of cents with its usual validation error. Fix each where it belongs and add tests.",
+    "grade": {
+      "backend": "node --test test/__hidden__/price-api.test.js test/server.test.js",
+      "frontend": "node --test test/__hidden__/price.test.mjs test/web.test.js"
+    }
+  },
+  {
+    "id": "group-orders",
+    "group": {
+      "backend": "group-shop-api",
+      "frontend": "group-shop-web",
+      "serve": "node src/index.js {port}",
+      "health": "/health"
+    },
+    "kind": "group",
+    "difficulty": "medium: stock, a 409 whose code and message the web shop must pass on, and a paginated order list",
+    "goal": "Customers can order products. In the shop API: POST /orders with { productId, quantity } places an order for one product; quantity is a whole number of at least 1. Placing an order takes the quantity from the product's stock, and the order's totalCents is the product's price times the quantity. Ordering more than the stock left fails with status 409 and the error code out_of_stock, with a message that says how many are left (for example \"only 2 left\"), and changes nothing. A bad quantity is a 400 and an unknown product a 404, the way the API reports errors elsewhere. GET /orders lists the orders, newest first. Orders are { id, productId, quantity, totalCents, createdAt } with createdAt an ISO 8601 string. In the web shop: in src/api.js add placeOrder(productId, quantity), which resolves to the order and rejects with an ApiError carrying the API's status, code and message, and listOrders(), which resolves to every order, newest first. In src/render.js add renderOrderError(error), which turns what placeOrder rejected with into a sentence for the customer: for out_of_stock the API's message, for a 404 \"This product no longer exists.\", and for anything else \"Something went wrong, please try again.\" Add tests on both sides.",
+    "grade": {
+      "backend": "node --test test/__hidden__/orders-api.test.js test/server.test.js",
+      "frontend": "node --test test/__hidden__/orders.test.mjs test/web.test.js"
+    }
   }
 ]

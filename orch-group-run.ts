@@ -645,12 +645,24 @@ function childrenPassed(s: Run, ends: ChildEnd[], what: string) {
  * must be checked live through it, and a check that could not run is a failure, so integration never passes on code
  * reading alone.
  */
-export function integrationGoal(base: string): string {
+export function integrationGoal(base: string, frontendGoal?: string): string {
   return (
     `Verify the frontend works against the running backend at ${base} for this contract; fix the frontend if it does not. ` +
     `Call the backend with the mcp__probe__request tool (it reaches only that backend) for every endpoint and case the frontend relies on, ` +
     `and compare each status and body with the contract and with what the frontend expects. ` +
-    `Report each call you made and what came back. A case you could not check live is a failure, not a pass.`
+    `Report each call you made and what came back. A case you could not check live is a failure, not a pass.` +
+    // Without it the run only knows the contract, which covers the HTTP side: it has renamed the frontend's
+    // functions and changed what they return to match the API's shapes, breaking the goal the build had met.
+    (frontendGoal?.trim()
+      ? `
+
+The frontend was just built for this goal:
+${frontendGoal.trim()}
+
+` +
+        `Keep every name, parameter and return value it states exactly as stated. Change the frontend only where a live call shows it disagrees with the backend, ` +
+        `and never rename, remove or change the shape of what the goal names. Check those by reading the code (the frontend's own code cannot reach the backend, only the probe tool can): a stated name that does not do what the goal says is a failure.`
+      : "")
   );
 }
 
@@ -695,7 +707,7 @@ async function integrationStep(s: Run): Promise<void> {
         report = `The backend did not come up, so the frontend was not checked against it:\n${clip(down)}`;
       } else {
         const base = s.serve.baseUrl ?? new URL(server.url).origin;
-        const goal = integrationGoal(base);
+        const goal = integrationGoal(base, s.plan?.goals.frontend);
         const findings: Findings = { failures: [], checks: [], problems: [] };
         const ends = await runChildren(
           s,

@@ -132,7 +132,11 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Repo groups: `--on-limit wait`** (the default): member runs wait for the reset and resume their parked work,
   the group waits and asks the coordinator again; `--on-limit stop` (or **On limit: stop**) parks and exits 3 as before.
 - [ ] **Repo groups: PR mode** (a branch and pull request per repo, linked to each other).
-- [ ] **Repo groups: evals** (cases with a backend and a frontend repo, graded by hidden tests on both).
+- [x] **Repo groups: evals** (cases with a backend and a frontend repo, graded by hidden tests on both):
+  `group-reviews`, `group-price-bugs`, `group-orders`; first run 5/6, one false pass from a member's QA
+  ([results](docs/evals/2026-11-25.md)).
+- [ ] **Group evals: a case only live integration catches** (behaviour the backend's code does not show, so the
+  integration check fails and the fault call runs), and more repeats.
 
 ## Greenfield
 

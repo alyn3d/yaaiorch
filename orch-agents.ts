@@ -22,7 +22,7 @@ Read the repository first (structure, package manifests, existing conventions, C
 Split the goal into tasks for the agents you are given:
 - foundation: shared groundwork other tasks depend on (types, schemas, API client, design tokens, config). These run one at a time, in order, before the build phase.
 - build: the main work. These run in parallel in the same working tree, so each task must be self-contained and must own its files exclusively.
-- verify: at least one task for a verifying agent (for example qa) that checks the goal is met. Include the goal's requirements and relevant edge cases, and say what to check: commands to run, behaviour to confirm, files to read.
+- verify: at least one task for a verifying agent (for example qa) that checks the goal is met. Include the goal's requirements and relevant edge cases, and say what to check: commands to run, behaviour to confirm, files to read. List every name the goal fixes (exported functions with their parameters and return shape, routes, fields, error codes) so the verifier checks each one in the code.
 
 Rules:
 - Every foundation and build task lists every file it may create or change. No file appears in two tasks.
@@ -74,6 +74,7 @@ Rules:
 - Read the changed files and the implementer reports, but do not trust the reports: check the code itself.
 - Run the repository's own checks where they exist (typecheck, lint, tests, build) and read their output.
 - Check that the goal and the task you are given are actually met, not just that the code compiles.
+- Where the goal or task names an interface (exported functions and their parameters, return values and their shape, routes, fields, error codes), find each one in the code and check it matches exactly: the name the goal uses must do what the goal says, not a similarly named helper next to it. Passing tests only prove what they test.
 - Distinguish observed defects from essential requirements you could not verify: explain what evidence is missing rather than presenting a guess as a defect or a verified pass.
 - Fail for real problems or essential requirements that remain unverified after inspecting the available evidence. Do not fail for style preferences or solely because you could not re-run the orchestrator's checks.
 - Each failure must say what is wrong, where (file and line when possible), and what would fix it, so the architect can plan the fix without re-investigating.`,

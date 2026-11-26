@@ -45,8 +45,27 @@ import { resolveClaude } from "../claude-bin.ts";
  * (orch's `gateChecks`, which agents cannot run); `{gate}` in it and in `grade` stands for the case's gate suite,
  * `evals/gate/<id>/`, kept outside the repo.
  */
-type Case = { id: string; fixture: string; kind: string; difficulty: string; goal?: string; goals?: string[]; grade: string; gate?: string };
+type Role = "backend" | "frontend";
+/**
+ * `group`: a repo-group case, run with `orch group run` across a backend and a frontend fixture. `group.serve` starts the
+ * backend for the integration step (`{port}` is the run's own port) and `group.health` is the path that answers when it
+ * is up. Its `grade` has a command per repo; the frontend's runs with EVAL_BACKEND set to the run's backend repo, so its
+ * hidden tests can drive the web client against the backend the same run built.
+ */
+type GroupSpec = Record<Role, string> & { serve: string; health: string };
+type Case = {
+  id: string;
+  fixture?: string;
+  group?: GroupSpec;
+  kind: string;
+  difficulty: string;
+  goal?: string;
+  goals?: string[];
+  grade: string | Record<Role, string>;
+  gate?: string;
+};
 const goalsOf = (c: Case): string[] => c.goals ?? [c.goal!];
+const ROLES: Role[] = ["backend", "frontend"];
 /** `power` is the configuration label: an orch tier ("economy"), or "single:<model>" for the control group. */
 type Run = {
   case: string;
@@ -62,6 +81,8 @@ type Run = {
   seconds: number;
   goals?: number;
   stuck: number;
+  /** Group cases: integration fix calls (the coordinator blamed a side after a failed integration check). */
+  faults?: number;
   finalPower?: string;
   error?: string;
   exit: number | null;
@@ -173,7 +194,23 @@ for (const p of powers) {
         .join(", ")}, or none`,
     );
 }
-for (const c of allCases) if (!c.goal && !c.goals?.length) fail(`case ${c.id} has neither goal nor goals`);
+for (const c of allCases) {
+  if (!c.goal && !c.goals?.length) fail(`case ${c.id} has neither goal nor goals`);
+  if (
+    c.group &&
+    (c.goals || c.gate || typeof c.grade !== "object" || !ROLES.every((r) => c.group![r] && typeof (c.grade as Record<Role, string>)[r] === "string"))
+  )
+    fail(`group case ${c.id} needs one goal, no gate, and group and grade entries for backend and frontend`);
+  if (!c.group && (!c.fixture || typeof c.grade !== "string")) fail(`case ${c.id} needs a fixture and a grade command`);
+}
+// orch group run takes the tier and --fast/--no-fast only: the other suffixes are options of orch run.
+const groupPowers = powers.filter((p) =>
+  p
+    .split("+")
+    .slice(1)
+    .some((x) => x !== "fast"),
+);
+if (cases.some((c) => c.group) && groupPowers.length) fail(`group cases take a tier with optional +fast only, not ${groupPowers.join(", ")}`);
 const singles = (a.single ?? "")
   .split(",")
   .map((s) => s.trim())
@@ -192,19 +229,51 @@ function fail(message: string): never {
 }
 
 /** Fresh git repo with the fixture committed, plus any overlay directories copied on top. */
-function setupRepo(dir: string, c: Case, ...overlays: string[]) {
+function setupRepo(dir: string, c: Case, overlays: string[] = [], fixture = c.fixture!) {
   mkdirSync(dir, { recursive: true });
-  cpSync(join(EVALS, "fixtures", c.fixture), dir, { recursive: true });
+  cpSync(join(EVALS, "fixtures", fixture), dir, { recursive: true });
   const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
   servePort(dir);
   if (c.gate) gateSetup(dir, c);
   git("init", "-q", "-b", "main");
   git("-c", "user.name=evals", "-c", "user.email=evals@localhost", "add", "-A");
-  git("-c", "user.name=evals", "-c", "user.email=evals@localhost", "commit", "-q", "-m", `fixture ${c.fixture}`);
+  git("-c", "user.name=evals", "-c", "user.email=evals@localhost", "commit", "-q", "-m", `fixture ${fixture}`);
   // Commits made by orch use the repo's identity; give the throwaway repo one.
   git("config", "user.name", "evals");
   git("config", "user.email", "evals@localhost");
   for (const o of overlays) cpSync(o, dir, { recursive: true });
+}
+
+/** A group case's repos and the YAAIORCH_HOME that holds its group config ("eval"), all inside `dir`. */
+const groupDirs = (dir: string) => ({ backend: join(dir, "backend"), frontend: join(dir, "frontend"), home: join(dir, "home") });
+
+/**
+ * A group case: both fixtures as fresh repos (with `<overlay>/backend` and `<overlay>/frontend` on top, for
+ * --reference) and the group config, whose backend serve gets a port of its own so parallel runs never meet.
+ */
+function setupGroup(dir: string, c: Case, overlay?: string) {
+  const d = groupDirs(dir);
+  for (const role of ROLES) setupRepo(d[role], c, overlay ? [join(overlay, role)] : [], c.group![role]);
+  const port = nextPort++;
+  mkdirSync(join(d.home, "groups"), { recursive: true });
+  const repos = [
+    {
+      path: d.backend,
+      role: "backend",
+      serve: { command: c.group!.serve.replaceAll("{port}", String(port)), url: `http://127.0.0.1:${port}${c.group!.health}`, timeout: 60 },
+    },
+    { path: d.frontend, role: "frontend", env: { API_URL: "{backend}" } },
+  ];
+  writeFileSync(join(d.home, "groups", "eval.json"), JSON.stringify({ name: "eval", repos }, null, 2));
+  // orch group run has no plugin flags: the member runs and the coordinator read them from each repo's config
+  // (git-ignored, so it is no change to commit).
+  if (!a["user-plugins"])
+    for (const role of ROLES) {
+      const file = join(d[role], ".orchestrator", "config.json");
+      mkdirSync(dirname(file), { recursive: true });
+      const cfg = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+      writeFileSync(file, JSON.stringify({ ...cfg, plugins: { off: true, hooks: false } }, null, 2));
+    }
 }
 
 /**
@@ -248,9 +317,9 @@ function gateSetup(dir: string, c: Case) {
 }
 
 /** Run a shell command in the repo; the whole output and its tail. */
-function shell(cmd: string, dir: string) {
-  // Browser-graded cases (web-*) load evals/lib/page.mjs from here.
-  const env = { ...process.env, YAAIORCH_EVALS: EVALS };
+function shell(cmd: string, dir: string, extraEnv: Record<string, string> = {}) {
+  // Browser-graded cases (web-*) load evals/lib/page.mjs from here, group cases evals/lib/backend.mjs.
+  const env = { ...process.env, YAAIORCH_EVALS: EVALS, ...extraEnv };
   const r = spawnSync(cmd, { cwd: dir, shell: true, encoding: "utf8", timeout: 180_000, windowsHide: true, env });
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n${r.error.message}` : ""}`;
   return { pass: r.status === 0, output, tail: output.trim().split(/\r?\n/).slice(-8).join("\n") };
@@ -260,11 +329,30 @@ function shell(cmd: string, dir: string) {
 const gateRun = (dir: string, c: Case) => shell(withGate(c.gate!, gateSource(c)), dir);
 
 function grade(dir: string, c: Case) {
+  if (c.group) {
+    const g = gradeGroup(dir, c);
+    return { pass: g.backend.pass && g.frontend.pass, tail: g.tail };
+  }
   cpSync(join(EVALS, "hidden", c.id), dir, { recursive: true });
   // Gate cases grade with the pristine suite, never the run's copy.
-  const r = shell(withGate(c.grade, gateSource(c)), dir);
+  const r = shell(withGate(c.grade as string, gateSource(c)), dir);
   writeFileSync(join(dir, "..", `${dir.split(/[\\/]/).pop()}.grade.log`), r.output);
   return { pass: r.pass, tail: r.tail };
+}
+
+/** Both repos of a group case, each with its own hidden tests; the frontend's drive the run's backend (EVAL_BACKEND). */
+function gradeGroup(dir: string, c: Case) {
+  const d = groupDirs(dir);
+  const out = {} as Record<Role, ReturnType<typeof shell>>;
+  for (const role of ROLES) {
+    cpSync(join(EVALS, "hidden", c.id, role), d[role], { recursive: true });
+    out[role] = shell((c.grade as Record<Role, string>)[role], d[role], role === "frontend" ? { EVAL_BACKEND: d.backend } : {});
+  }
+  writeFileSync(join(dir, "..", `${dir.split(/[\\/]/).pop()}.grade.log`), ROLES.map((r) => `===== ${r}\n${out[r].output}`).join("\n"));
+  const tail = ROLES.filter((r) => !out[r].pass)
+    .map((r) => `[${r}]\n${out[r].tail}`)
+    .join("\n");
+  return { ...out, tail };
 }
 
 // ---------- --reference: validate the suite itself ----------
@@ -276,10 +364,24 @@ if (a.reference) {
     if (!existsSync(join(EVALS, "hidden", c.id))) fail(`${c.id}: no hidden tests in evals/hidden/${c.id}`);
     if (!existsSync(ref)) fail(`${c.id}: no reference solution in evals/reference/${c.id}`);
     const untouched = join(workRoot, `${c.id}-untouched`);
+    const solved = join(workRoot, `${c.id}-reference`);
+    if (c.group) {
+      setupGroup(untouched, c);
+      setupGroup(solved, c, ref);
+      const [before, after] = [gradeGroup(untouched, c), gradeGroup(solved, c)];
+      // Each side's hidden tests must tell the fixture from the reference on their own.
+      const weak = ROLES.filter((r) => before[r].pass);
+      const broken = ROLES.filter((r) => !after[r].pass);
+      if (weak.length || broken.length) bad++;
+      console.log(
+        `${weak.length || broken.length ? "BAD " : "ok  "} ${c.id.padEnd(20)} untouched fixture: ${weak.length ? `PASSES on ${weak.join(", ")} (tests too weak)` : "fails"}   reference: ${broken.length ? `FAILS on ${broken.join(", ")}` : "passes"}`,
+      );
+      if (broken.length) console.log(after.tail.replace(/^/gm, "       "));
+      continue;
+    }
     setupRepo(untouched, c);
     const before = grade(untouched, c);
-    const solved = join(workRoot, `${c.id}-reference`);
-    setupRepo(solved, c, ref);
+    setupRepo(solved, c, [ref]);
     const after = grade(solved, c);
     // A gate case's gate must also tell the two apart on its own: it is what forces the fix round.
     const gate = c.gate ? { before: gateRun(untouched, c), after: gateRun(solved, c) } : null;
@@ -312,32 +414,70 @@ function killTree(pid?: number) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function runOrch(dir: string, goal: string, power: string): Promise<{ exit: number | null; events: any[]; seconds: number; timedOut: boolean }> {
-  return new Promise((resolve) => {
-    const start = Date.now();
-    const args = [
-      ...orchArgs,
+type OrchResult = { exit: number | null; events: any[]; seconds: number; timedOut: boolean };
+
+function runOrch(dir: string, goal: string, power: string): Promise<OrchResult> {
+  return spawnOrch(dir, [
+    "run",
+    goal,
+    "--power",
+    tierOf(power),
+    ...suffixArgs(power),
+    ...commonArgs(),
+    "--max-rounds",
+    a["max-rounds"]!,
+    ...(a["usage-cap"] ? ["--usage-cap", a["usage-cap"]] : []),
+    // Your own Claude Code plugins and hooks (skills, session-start instructions) would change what every agent
+    // sees and costs, so results would depend on the machine. Off unless --user-plugins.
+    ...(a["user-plugins"] ? [] : ["--plugins", "off", "--no-hooks"]),
+  ]);
+}
+
+/** Options orch run and orch group run share. */
+const commonArgs = () => [
+  // The runner handles the usage limit itself (stop or --wait-on-limit), so orch must not wait.
+  "--on-limit",
+  "stop",
+  ...(a["orch-model"] ? ["--model", a["orch-model"]] : []),
+  "--max-cost",
+  a["max-cost"]!,
+  "--agent-timeout",
+  a["agent-timeout"]!,
+];
+
+/**
+ * A group case: `orch group run eval "<goal>"` from the run dir, with the run's own YAAIORCH_HOME. --max-cost covers
+ * the whole group (orch splits it between the coordinator and the member runs); --max-rounds goes to every member
+ * run; plugins are off through each repo's config (setupGroup). It gets twice the eval timeout: it runs a
+ * coordinator, two builds, an integration check and maybe fixes.
+ */
+function runGroupOrch(dir: string, goal: string, power: string): Promise<OrchResult> {
+  const parts = power.split("+").slice(1);
+  return spawnOrch(
+    dir,
+    [
+      "group",
       "run",
-      goal,
+      "eval",
       "--power",
       tierOf(power),
-      ...suffixArgs(power),
-      // The runner handles the usage limit itself (stop or --wait-on-limit), so orch must not wait.
-      "--on-limit",
-      "stop",
-      ...(a["orch-model"] ? ["--model", a["orch-model"]] : []),
+      parts.includes("fast") ? "--fast" : "--no-fast",
+      ...commonArgs(),
       "--max-rounds",
       a["max-rounds"]!,
-      "--max-cost",
-      a["max-cost"]!,
-      "--agent-timeout",
-      a["agent-timeout"]!,
-      ...(a["usage-cap"] ? ["--usage-cap", a["usage-cap"]] : []),
-      // Your own Claude Code plugins and hooks (skills, session-start instructions) would change what every agent
-      // sees and costs, so results would depend on the machine. Off unless --user-plugins.
-      ...(a["user-plugins"] ? [] : ["--plugins", "off", "--no-hooks"]),
-    ];
-    const env = { ...process.env, ORCH_EVENTS: "1", FORCE_COLOR: "0", ...(a["claude-bin"] ? { CLAUDE_BIN: a["claude-bin"] } : {}) };
+      "--",
+      goal,
+    ],
+    { YAAIORCH_HOME: groupDirs(dir).home },
+    2,
+  );
+}
+
+function spawnOrch(dir: string, orchCmd: string[], extraEnv: Record<string, string> = {}, timeoutFactor = 1): Promise<OrchResult> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const args = [...orchArgs, ...orchCmd];
+    const env = { ...process.env, ORCH_EVENTS: "1", FORCE_COLOR: "0", ...(a["claude-bin"] ? { CLAUDE_BIN: a["claude-bin"] } : {}), ...extraEnv };
     const p = spawn(process.execPath, args, { cwd: dir, env, windowsHide: true, detached: process.platform !== "win32" });
     const log = join(dir, "..", `${dir.split(/[\\/]/).pop()}.orch.log`);
     const events: any[] = [];
@@ -363,7 +503,7 @@ function runOrch(dir: string, goal: string, power: string): Promise<{ exit: numb
         timedOut = true;
         killTree(p.pid);
       },
-      Number(a["eval-timeout"]) * 60_000,
+      Number(a["eval-timeout"]) * 60_000 * timeoutFactor,
     );
     p.on("close", (exit) => {
       clearTimeout(timer);
@@ -580,8 +720,58 @@ async function oneSingle(job: Job, model: string) {
   });
 }
 
+/**
+ * A group case's run: the group's own events plus its member runs' (`group_child`, unwrapped). Cost is the
+ * coordinator's (group_plan, group_fault) plus every member run's goal_end; rounds are summed over the member runs,
+ * and `goals` is the number of member runs, so "round 2+" means one of them needed a fix round.
+ */
+async function oneGroup(job: Job) {
+  const { c, power, rep } = job;
+  const dir = join(workRoot, `${c.id}-${power}-${rep}`);
+  rmSync(dir, { recursive: true, force: true });
+  setupGroup(dir, c);
+  const capped = capReached();
+  if (capped) return onLimit(job, capped.resetAt, capped.what);
+  const r = await runGroupOrch(dir, c.goal!, power);
+  const own = r.events.filter((e) => e.type !== "group_child");
+  const members = r.events.filter((e) => e.type === "group_child" && e.event).map((e) => e.event);
+  noteUsage(members);
+  const end = [...own].reverse().find((e) => e.type === "group_end");
+  const memberEnds = members.filter((e) => e.type === "goal_end");
+  // Usage limit (--on-limit stop): the group parks both repos and exits 3; not a result.
+  if (r.exit === 3 || memberEnds.some((e) => e.usageLimit)) return onLimit(job, memberEnds.find((e) => e.resetAt)?.resetAt);
+  const cost =
+    own.filter((e) => e.type === "group_plan" || e.type === "group_fault").reduce((s, e) => s + (Number(e.cost) || 0), 0) +
+    memberEnds.reduce((s, e) => s + (Number(e.cost) || 0), 0);
+  const rounds = members.filter((e) => e.type === "round_start");
+  const g = grade(dir, c);
+  record({
+    case: c.id,
+    kind: c.kind,
+    difficulty: c.difficulty,
+    power,
+    rep,
+    runner: "orch",
+    claimed: !!end?.ok,
+    hidden: g.pass,
+    rounds: rounds.length,
+    cost: Math.round(cost * 10_000) / 10_000,
+    seconds: r.seconds,
+    goals: memberEnds.length,
+    stuck: members.filter((e) => e.type === "stuck").length,
+    faults: own.filter((e) => e.type === "group_fault").length,
+    finalPower: rounds.at(-1)?.power,
+    error: r.timedOut ? "eval timeout" : end ? (end.ok ? undefined : (end.reason ?? "group failed")) : `orch exited ${r.exit} without group_end`,
+    exit: r.exit,
+    timedOut: r.timedOut,
+    dir,
+    gradeTail: g.pass ? "" : g.tail,
+  });
+}
+
 async function one(job: Job) {
   const { c, power, rep } = job;
+  if (c.group) return oneGroup(job);
   if (power.startsWith("single:")) return oneSingle(job, power.slice("single:".length));
   const dir = join(workRoot, `${c.id}-${power}-${rep}`);
   rmSync(dir, { recursive: true, force: true }); // a retried run starts from a clean copy
@@ -635,7 +825,10 @@ async function one(job: Job) {
 }
 
 for (const c of cases)
-  for (const power of configs) for (let rep = 1; rep <= Number(a.repeat); rep++) if (!done.has(key(c.id, power, rep))) jobs.push({ c, power, rep });
+  for (const power of configs)
+    for (let rep = 1; rep <= Number(a.repeat); rep++)
+      // The single-agent control works in one repo; a group case has two, so it has no control run.
+      if (!done.has(key(c.id, power, rep)) && !(c.group && power.startsWith("single:"))) jobs.push({ c, power, rep });
 console.log(`${jobs.length} run(s) to do: ${cases.length} case(s) x ${configs.join("/")} x ${a.repeat}, ${a.parallel} at a time`);
 console.log(`work dirs: ${workRoot}\nresults:   ${jsonl}\n`);
 
@@ -700,6 +893,13 @@ if (cases.some((c) => c.goals))
     "Series cases run several goals in a row on one repo; their rounds and cost are totals over all goals, and they count as claimed only if every goal passed.",
     "",
   );
+if (cases.some((c) => c.group))
+  lines.push(
+    "Group cases run `orch group run` across a backend and a frontend repo and pass only when both repos' hidden tests do (the frontend's drive the web client against the backend the run built). " +
+      "Their rounds are summed over the member runs (builds, integration check, fixes), round 2+ means a member run needed a fix round, and claimed is the group's own verdict. " +
+      "In the table, `Nfix` counts integration fix calls (a failed integration check blamed a side). They have no single-agent control run.",
+    "",
+  );
 lines.push("## By case", "");
 lines.push(`| case | kind | ${configs.join(" | ")} |`);
 lines.push(`|---|---|${configs.map(() => "---").join("|")}|`);
@@ -707,7 +907,7 @@ for (const c of cases) {
   const cell = (p: string) =>
     runs
       .filter((r) => r.case === c.id && r.power === p)
-      .map((r) => `${r.hidden ? "✓" : r.claimed ? "✗ (claimed ✓)" : "✗"} ${r.rounds}r $${r.cost.toFixed(2)}`)
+      .map((r) => `${r.hidden ? "✓" : r.claimed ? "✗ (claimed ✓)" : "✗"} ${r.rounds}r${r.faults ? ` ${r.faults}fix` : ""} $${r.cost.toFixed(2)}`)
       .join("<br>") || "-";
   lines.push(`| ${c.id} | ${c.kind} | ${configs.map(cell).join(" | ")} |`);
 }

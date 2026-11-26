@@ -106,6 +106,9 @@ means QA or the checks are too lenient.
 | lib-intervals-perf | node-lib | multi-round | gate: random inputs against an oracle, 200,000 intervals per side within a time budget, house rules (JSDoc, error messages) |
 | lib-recurrence-fuzz | node-lib | multi-round | gate: 3,000 random recurrence rules against a day-by-day oracle, house rules (JSDoc, error messages) |
 | tickets-export-e2e | node-tickets | multi-round | gate: CSV export driven end to end through the API, every filter, awkward titles, download rules (BOM, attachment) |
+| group-reviews | group-shop-api + group-shop-web | group | medium: reviews across both repos; the API's pagination and error shape are conventions the goal does not repeat |
+| group-price-bugs | group-shop-api + group-shop-web | group | medium: three bugs, two in the web shop and one in the API, contract unchanged |
+| group-orders | group-shop-api + group-shop-web | group | medium: stock, a 409 whose code and message the web shop passes on, a paginated order list |
 
 **Series** cases (`goals` instead of `goal`) run several goals one after another on the same repo, like a
 user working through a backlog, and are graded once at the end with hidden tests covering every goal. A
@@ -139,6 +142,24 @@ the ordinary checks pass, the agents cannot). `{gate}` in `gate` and `grade` sta
 `gate/<id>/`, which is never in the repo: each run gets a copy next to its work dir (`<work dir>.gate/`), and grading
 and `--reference` use the pristine one. `--reference` also requires the gate alone to fail on the fixture and pass with
 the reference.
+
+The **group** cases (`group` in `cases.json`) run `orch group run` on a backend and a frontend repo (the
+`group-shop-api` and `group-shop-web` fixtures), each a fresh git repo inside the run's work dir, with a group config
+of their own (`<work dir>/home`, passed as `YAAIORCH_HOME`) whose backend serve gets a port of its own. They grade each
+repo with its own hidden tests (`hidden/<id>/backend`, `hidden/<id>/frontend`; references the same way), and the
+frontend's drive the web client against the backend the same run built (`EVAL_BACKEND`, `evals/lib/backend.mjs`), so
+a contract the two sides read differently fails the grade even when each repo's own tests pass. The goals name the
+HTTP routes and the client's functions but not the API's conventions (pagination, error shape), which the coordinator
+has to find in the backend and put into the contract. A run passes only when both repos do; `claimed` is the group's
+verdict, rounds and cost are summed over the member runs, and the by-case table shows integration fix calls as
+`Nfix`. They take a tier with `+fast` only (the other suffixes are `orch run` options), get no single-agent control run
+and no `--usage-cap` (the runner still checks its cap between runs), run with twice `--eval-timeout`, and `--max-cost`
+is for the whole group. Plugins are off through each repo's config. `--reference` requires each repo's hidden tests to
+fail on the fixtures and pass with the reference on their own.
+
+```bash
+node evals/run.ts --cases group-reviews,group-price-bugs,group-orders --power economy --max-cost 6 --repeat 2
+```
 
 `greenfield-inventory` starts from an almost empty repo (`fixtures/empty`): its first goal sets up a Node project, its
 second builds a module in it. It measures building from nothing, including checks the agents create themselves.
