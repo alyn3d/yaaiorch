@@ -408,6 +408,14 @@ export function App() {
             />
           )}
 
+          {!connected && startError && (
+            <section className="callout bad banner" role="alert">
+              <div className="callout-text">
+                <strong>Not connected</strong>
+                <span>{startError}</span>
+              </div>
+            </section>
+          )}
           {!client.remote && <PairRequests remote={remote} guard={guard} />}
           {client.remote && (
             <section className="callout banner" role="status">

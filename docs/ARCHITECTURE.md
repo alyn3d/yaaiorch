@@ -337,7 +337,14 @@ picker (dialog), reveal and editor links (opener), notifications and the updater
 
 ### Remote access (`remote.ts`, `tunnel.ts`)
 
-Off by default; **Remote** in the sidebar (`RemoteAccess.tsx`), persisted as `remoteEnabled` in the settings file.
+Off at every start (never remembered); **Remote** in the sidebar (`RemoteAccess.tsx`).
+
+- **Addresses and devices.** A quick tunnel gets a new address every time it starts, and a device's cookie only goes to
+  the address it paired at. So the server drops every device at start (`remote.forget()`) and whenever the tunnel's
+  address changes (`addressChanged`, from the tunnel's `on` state), keeping only name, browser and role (`former` in
+  `devices.json`, at most 20). `cleared` counts the dropped devices for the PC's note until one pairs again; a pairing
+  request from a known name and browser carries `before`, and the PC can allow it with that role
+  (`/api/remote/decide {role}`). A phone that gets no answer for 30 s shows why (`LOST_PC`).
 
 - **Tunnel.** `Tunnel` runs `cloudflared tunnel --no-autoupdate --url http://127.0.0.1:<port>` (a quick tunnel, no
   account) and reads the `https://<name>.trycloudflare.com` address from its output. `cloudflared` is downloaded on

@@ -83,7 +83,7 @@ export interface Transport {
   /** Remote access (PC only): turn the tunnel on or off, make a pairing link, answer a request, change or remove a device. */
   remoteEnable(on: boolean): Promise<RemoteStatus>;
   remotePairLink(): Promise<{ url: string; expiresIn: number }>;
-  remoteDecide(id: string, allow: boolean): Promise<void>;
+  remoteDecide(id: string, allow: boolean, role?: "view" | "control"): Promise<void>;
   remoteDevice(id: string, change: { role: "view" | "control" } | { revoke: true }): Promise<void>;
   /** Create a repo group, or save over one of that name (`orch group add`). */
   saveGroup(g: GroupForm): Promise<void>;
@@ -112,6 +112,8 @@ type Endpoint = { url: string; token: string };
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 export const isRemotePage = !isTauri && typeof location !== "undefined" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 export const NOT_PAIRED = "This device is not paired with YAAIORCH, or it was removed. Pair it again from the PC.";
+export const LOST_PC =
+  "Lost the PC. If YAAIORCH restarted or remote access was turned off and on, its address changed: show a new QR code on the PC and pair this device again.";
 const findEndpoint = (): Promise<Endpoint> =>
   isTauri
     ? invoke<Endpoint>("server_info").catch((e) => Promise.reject(new Error(String(e))))
@@ -172,6 +174,8 @@ export type NewProject = {
 function pollSubscribe(h: Handlers): () => void {
   let stopped = false;
   let since = 0;
+  /** When the PC last answered: after 30 s of silence the phone says why it may be gone. */
+  let lastOk = Date.now();
   const ctl = new AbortController();
   const dispatch = (event: string, data: any) => {
     if (event === "init") h.onInit(data);
@@ -194,10 +198,11 @@ function pollSubscribe(h: Handlers): () => void {
         const d: { seq: number; events: { event: string; data: unknown }[] } = await r.json();
         for (const e of d.events) dispatch(e.event, e.data);
         since = d.seq;
+        lastOk = Date.now();
         h.onConnection(true);
       } catch {
         if (stopped) return;
-        h.onConnection(false);
+        h.onConnection(false, Date.now() - lastOk > 30_000 ? LOST_PC : undefined);
         await new Promise((ok) => setTimeout(ok, 3000));
       }
     }
@@ -276,7 +281,7 @@ const web: Transport = {
   clearLimit: () => post("clear-limit", {}),
   remoteEnable: (on) => post("remote/enable", { on }),
   remotePairLink: () => post("remote/pair-code", {}),
-  remoteDecide: (id, allow) => post("remote/decide", { id, allow }),
+  remoteDecide: (id, allow, role) => post("remote/decide", { id, allow, role }),
   remoteDevice: (id, change) => post("remote/device", { id, ...change }),
   async doctor(repo, pr) {
     const r = await api(`/api/doctor?repo=${encodeURIComponent(repo)}${pr ? "&pr=1" : ""}`);

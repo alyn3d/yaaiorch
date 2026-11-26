@@ -694,6 +694,10 @@ describe("remote access through the tunnel (fake cloudflared)", { timeout: 60_00
     assert.equal(r.status, 403);
   });
 
+  test("remote access is never remembered: the next start begins with it off", () => {
+    assert.ok(!readFileSync(join(dir, "ui.json"), "utf8").includes("remote"), "nothing about remote access in the settings");
+  });
+
   test("turning it off stops the tunnel and refuses tunnel requests again", async () => {
     assert.equal((await pc("/api/remote/enable", { on: false })).json().tunnel.status, "off");
     assert.equal((await remoteReq("/api/state")).status, 403);

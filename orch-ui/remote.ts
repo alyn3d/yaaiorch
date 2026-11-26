@@ -22,7 +22,10 @@ export type Role = "view" | "control";
 export type Device = { id: string; name: string; role: Role; keyHash: string; agent: string; createdAt: number; lastSeen: number };
 /** A device as the PC's UI sees it: never its key hash. */
 export type DeviceInfo = Omit<Device, "keyHash">;
-export type PairRequest = { id: string; name: string; agent: string; createdAt: number };
+/** `before`: the role a device of the same name and browser had before the address changed (the PC may give it back). */
+export type PairRequest = { id: string; name: string; agent: string; createdAt: number; before?: Role };
+/** What is kept of a device once the tunnel's address changed and its key died with it: never the key. */
+type Former = { name: string; agent: string; role: Role };
 
 export const COOKIE = "yaai_device";
 export const CODE_TTL = 5 * 60_000;
@@ -85,10 +88,16 @@ export function deviceCookie(value: string, maxAge = COOKIE_MAX_AGE): string {
   return `${COOKIE}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`;
 }
 
-type Pending = PairRequest & { pollHash: string; status: "waiting" | "allowed" | "denied"; ip: string };
+type Pending = PairRequest & { pollHash: string; status: "waiting" | "allowed" | "denied"; ip: string; role?: Role };
 
 export class Remote {
   devices: Device[] = [];
+  /** Devices from before the last address change (name, browser, role), so re-pairing can offer the old role. */
+  private former: Former[] = [];
+  /** How many devices the last address change cut off; shown on the PC until a device pairs again. */
+  cleared = 0;
+  /** The tunnel address the devices were paired at (cookies only work there). */
+  private address: string | null = null;
   private code: { hash: string; expires: number } | null = null;
   private pending = new Map<string, Pending>();
   private attempts = new Map<string, number[]>();
@@ -100,10 +109,12 @@ export class Remote {
   ) {
     try {
       if (existsSync(file)) {
-        const d = JSON.parse(readFileSync(file, "utf8")) as { devices?: Device[] };
+        const d = JSON.parse(readFileSync(file, "utf8")) as { devices?: Device[]; former?: Former[]; address?: string };
         this.devices = (d.devices ?? []).filter(
           (x) => x && typeof x.id === "string" && typeof x.keyHash === "string" && (x.role === "view" || x.role === "control"),
         );
+        this.former = (d.former ?? []).filter((x) => x && typeof x.name === "string" && (x.role === "view" || x.role === "control"));
+        this.address = typeof d.address === "string" ? d.address : null;
       }
     } catch {
       this.devices = []; // unreadable: every device pairs again, which is the safe side
@@ -113,7 +124,7 @@ export class Remote {
   private save() {
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ devices: this.devices }, null, 2), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ address: this.address, devices: this.devices, former: this.former }, null, 2), { mode: 0o600 });
     renameSync(tmp, this.file);
   }
 
@@ -121,6 +132,33 @@ export class Remote {
     const t = this.now();
     if (this.code && this.code.expires <= t) this.code = null;
     for (const [id, p] of this.pending) if (t - p.createdAt > REQUEST_TTL) this.pending.delete(id);
+  }
+
+  /**
+   * The tunnel now answers at `url`. A device's cookie belongs to the address it paired at, so at a new address every
+   * device is cut off: they are dropped, and only their name, browser and role are kept for when they pair again.
+   */
+  addressChanged(url: string) {
+    if (url === this.address) return;
+    this.address = url;
+    this.forget();
+  }
+
+  /**
+   * Drop every device (their keys no longer work), keeping name, browser and role. The server calls it at every start:
+   * remote access starts off, and the next tunnel gets a new address anyway.
+   */
+  forget() {
+    // The note on the PC keeps counting the devices dropped at start until one pairs again.
+    if (this.devices.length) this.cleared = this.devices.length;
+    const key = (x: { name: string; agent: string }) => JSON.stringify([x.name, x.agent]);
+    const kept = new Map(this.former.map((f) => [key(f), f]));
+    for (const d of this.devices) kept.set(key(d), { name: d.name, agent: d.agent, role: d.role });
+    this.former = [...kept.values()].slice(-20);
+    this.devices = [];
+    this.pending.clear();
+    this.code = null;
+    this.save();
   }
 
   /** A new pairing code (the previous one stops working). Goes into the QR link's fragment. */
@@ -166,14 +204,21 @@ export class Remote {
   /** Requests waiting for the PC. */
   requests(): PairRequest[] {
     this.sweep();
-    return [...this.pending.values()].filter((p) => p.status === "waiting").map(({ id, name, agent, createdAt }) => ({ id, name, agent, createdAt }));
+    return [...this.pending.values()]
+      .filter((p) => p.status === "waiting")
+      .map(({ id, name, agent, createdAt }) => {
+        const before = this.former.find((f) => f.name === name && f.agent === agent)?.role;
+        return { id, name, agent, createdAt, ...(before ? { before } : {}) };
+      });
   }
 
-  decide(id: string, allow: boolean): boolean {
+  /** The PC's answer; `role`: what the device may do (view unless the PC says control). */
+  decide(id: string, allow: boolean, role: Role = "view"): boolean {
     this.sweep();
     const p = this.pending.get(id);
     if (!p || p.status !== "waiting") return false;
     p.status = allow ? "allowed" : "denied";
+    p.role = role === "control" ? "control" : "view";
     return true;
   }
 
@@ -187,8 +232,10 @@ export class Remote {
     if (p.status === "denied") return { status: "denied" };
     const key = token(32);
     const t = this.now();
-    const device: Device = { id: token(9), name: p.name, role: "view", keyHash: sha(key), agent: p.agent, createdAt: t, lastSeen: t };
+    const device: Device = { id: token(9), name: p.name, role: p.role ?? "view", keyHash: sha(key), agent: p.agent, createdAt: t, lastSeen: t };
     this.devices.push(device);
+    this.former = this.former.filter((f) => !(f.name === p.name && f.agent === p.agent));
+    this.cleared = 0;
     this.save();
     return { status: "allowed", cookie: `${device.id}.${key}`, device: info(device) };
   }

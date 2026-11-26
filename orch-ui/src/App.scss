@@ -2564,6 +2564,11 @@ fieldset.contents {
       font-size: 20px;
     }
   }
+  // The work board's lanes one under the other, not scrolled sideways.
+  .agent-board .board-lanes {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-x: visible;
+  }
   // The live log: a screenful at most, and small enough to read a line whole.
   .log {
     height: auto;

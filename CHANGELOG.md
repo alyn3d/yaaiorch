@@ -7,7 +7,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ### Added
 
-- Remote access from a phone (**Remote** in the sidebar, off by default): a Cloudflare quick tunnel (no account; `cloudflared` is downloaded on first use from a pinned release and checked against its SHA-256) and pairing by QR code. The code works once for 5 minutes, the PC allows or denies each device, and a device gets its own key in an HttpOnly, Secure, SameSite=Strict cookie (only a hash is stored). New devices only view; Control is a switch per device; folders, limits, always-allow rules and remote access stay on the PC; Remove cuts a device off at once. Phones get updates by long polling, since quick tunnels hold back event streams. A phone layout, and the pairing page.
+- Remote access from a phone (**Remote** in the sidebar, off by default): a Cloudflare quick tunnel (no account; `cloudflared` is downloaded on first use from a pinned release and checked against its SHA-256) and pairing by QR code. The code works once for 5 minutes, the PC allows or denies each device, and a device gets its own key in an HttpOnly, Secure, SameSite=Strict cookie (only a hash is stored). New devices only view; Control is a switch per device; folders, limits, always-allow rules and remote access stay on the PC; Remove cuts a device off at once. Remote access starts off at every start, and every new address drops the paired devices (their cookies belonged to the old one): the PC says how many, a device that pairs again is offered its old role (**Allow with control (as before)**), and a phone that cannot reach the PC for 30 s says why. Phones get updates by long polling, since quick tunnels hold back event streams. A phone layout, and the pairing page.
 
 ### Changed
 

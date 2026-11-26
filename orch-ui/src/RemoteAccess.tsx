@@ -49,9 +49,18 @@ export function PairRequests({ remote, guard }: { remote: RemoteStatus | null; g
             <span>Allow it only if you are pairing that device right now. It will be able to view your repos and runs; control is a separate switch.</span>
           </div>
           <div className="row">
-            <button className="primary" onClick={() => guard(() => transport.remoteDecide(r.id, true))}>
-              Allow
-            </button>
+            {r.before === "control" ? (
+              <>
+                <button className="primary" onClick={() => guard(() => transport.remoteDecide(r.id, true, "control"))}>
+                  Allow with control (as before)
+                </button>
+                <button onClick={() => guard(() => transport.remoteDecide(r.id, true))}>Allow view only</button>
+              </>
+            ) : (
+              <button className="primary" onClick={() => guard(() => transport.remoteDecide(r.id, true))}>
+                Allow
+              </button>
+            )}
             <button onClick={() => guard(() => transport.remoteDecide(r.id, false))}>Deny</button>
           </div>
         </section>
@@ -101,9 +110,15 @@ export function RemoteAccess({ remote, guard }: { remote: RemoteStatus | null; g
           {tunnel.url && <code className="remote-url">{tunnel.url}</code>}
         </div>
         {tunnel.error && <p className="error">{tunnel.error}</p>}
+        {!!remote?.cleared && (
+          <p className="callout warn">
+            {remote.cleared === 1 ? "1 device" : `${remote.cleared} devices`} paired earlier can no longer connect: the address changes every time remote access
+            starts. Pair {remote.cleared === 1 ? "it" : "them"} again with a new QR code; a device that had control is offered it back.
+          </p>
+        )}
         <p className="muted small">
-          While it is on, your PC is reachable at that address, and traffic passes through Cloudflare. The address changes whenever the app restarts; paired
-          phones then need a new QR scan here. Turning it off closes the tunnel at once.
+          While it is on, your PC is reachable at that address, and traffic passes through Cloudflare. It starts off every time the app starts, and each start
+          gets a new address, so phones pair again then. Turning it off closes the tunnel at once.
         </p>
       </section>
 

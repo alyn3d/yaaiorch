@@ -409,6 +409,40 @@ describe("remote access: pairing and roles (orch-ui/remote.ts, tunnel.ts)", () =
     assert.equal(remote.requests().length, 0, "an unanswered request expires");
   });
 
+  test("a new address (or a new start) drops every device but remembers its role for when it pairs again", () => {
+    const file = join(dir, "d.json");
+    const remote = new r.Remote(file);
+    remote.addressChanged("https://one.trycloudflare.com");
+    const a = pair(remote, "Pixel");
+    remote.decide(a.id, true);
+    const { device } = remote.status(a.id, a.poll);
+    remote.setRole(device.id, "control");
+    remote.addressChanged("https://one.trycloudflare.com");
+    assert.equal(remote.list().length, 1, "the same address keeps the devices");
+
+    remote.addressChanged("https://two.trycloudflare.com");
+    assert.equal(remote.list().length, 0, "their cookies belonged to the old address");
+    assert.equal(remote.cleared, 1);
+    const again = pair(remote, "Pixel");
+    assert.equal(remote.requests()[0].before, "control", "the PC is offered the old role");
+    assert.ok(remote.decide(again.id, true, "control"));
+    assert.equal(remote.status(again.id, again.poll).device.role, "control");
+    assert.equal(remote.cleared, 0, "the note goes once a device pairs again");
+
+    const other = pair(remote, "Tablet");
+    assert.equal(remote.requests()[0].before, undefined, "an unknown device gets no offer");
+    remote.decide(other.id, true);
+    assert.equal(remote.status(other.id, other.poll).device.role, "view");
+
+    const restarted = new r.Remote(file);
+    restarted.forget();
+    assert.equal(restarted.list().length, 0, "a new start drops every device");
+    assert.equal(restarted.cleared, 2);
+    restarted.forget();
+    assert.equal(restarted.cleared, 2, "the count survives the first tunnel's address change");
+    assert.ok(!readFileSync(file, "utf8").includes("keyHash"), "nothing of the dropped keys is kept");
+  });
+
   test("view devices only read; control devices act; some routes stay on the PC", () => {
     const no = (role, method, path, decision) => r.remoteRefusal(role, method, path, decision);
     assert.equal(no("view", "GET", "/api/state"), null);

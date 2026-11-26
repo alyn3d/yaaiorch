@@ -86,8 +86,11 @@ export type RemoteDevice = { id: string; name: string; role: "view" | "control";
 export type RemoteStatus = {
   enabled: boolean;
   tunnel: { status: "off" | "downloading" | "starting" | "on" | "error"; url?: string; error?: string };
-  requests: { id: string; name: string; agent: string; createdAt: number }[];
+  /** `before`: the role a device of that name and browser had before its key stopped working (offered back on Allow). */
+  requests: { id: string; name: string; agent: string; createdAt: number; before?: "view" | "control" }[];
   devices: RemoteDevice[];
+  /** Devices dropped at this start or when the tunnel's address changed, until one pairs again. */
+  cleared: number;
 };
 export type Power = "max" | "heavy" | "balanced" | "economy";
 /** One of the user's Claude Code plugins (`orch plugins --json --details`). `enabled`: on in Claude Code itself. */

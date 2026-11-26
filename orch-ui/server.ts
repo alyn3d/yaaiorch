@@ -175,7 +175,7 @@ function saveSettings() {
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify(
-        { repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap, keepAwake, remoteEnabled },
+        { repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap, keepAwake },
         null,
         2,
       ),
@@ -208,14 +208,20 @@ const sendLocal = (event: string, data: unknown) => {
 };
 
 // ---------- remote access: a phone through a Cloudflare quick tunnel (remote.ts, tunnel.ts) ----------
-/** On (the tunnel runs) while the PC has turned remote access on; remembered with the settings. */
+/** On (the tunnel runs) while the PC has turned remote access on. Never remembered: every start begins with it off. */
 let remoteEnabled = false;
 let listenPort = 0;
 const remote = new Remote(join(dirname(SETTINGS_FILE), "devices.json"));
-const remoteStatus = () => ({ enabled: remoteEnabled, tunnel: tunnel.state, requests: remote.requests(), devices: remote.list() });
+// Devices paired before this start belong to a tunnel address that is gone: they pair again (their role is offered back).
+remote.forget();
+const remoteStatus = () => ({ enabled: remoteEnabled, tunnel: tunnel.state, requests: remote.requests(), devices: remote.list(), cleared: remote.cleared });
 const tunnel = new Tunnel(
   join(homedir(), ".yaaiorch", "bin"),
-  () => sendLocal("remote", remoteStatus()),
+  (state) => {
+    // A new address (every start, every restart of cloudflared): the devices' cookies belong to the old one.
+    if (state.status === "on" && state.url) remote.addressChanged(state.url);
+    sendLocal("remote", remoteStatus());
+  },
   (line) => console.log(`remote: ${line}`),
 );
 /** Close a revoked device's event streams at once. */
@@ -789,9 +795,7 @@ const stored = readJson<{
   spent?: { day: string; usd: number };
   usageCap?: Partial<Record<Window, number | null>>;
   keepAwake?: boolean;
-  remoteEnabled?: boolean;
 }>(SETTINGS_FILE, {});
-remoteEnabled = stored.remoteEnabled === true;
 if (stored.keepAwake === false) keepAwake = false;
 if (!process.env.MAX_PARALLEL && stored.maxParallel) maxParallel = Math.max(1, stored.maxParallel);
 if (typeof stored.dailyBudget === "number" && stored.dailyBudget > 0) dailyBudget = stored.dailyBudget;
@@ -1033,7 +1037,8 @@ http
           return json(200, { url: `${tunnel.state.url}/pair#${remote.newCode()}`, expiresIn: 5 * 60 });
         }
         if (url.pathname === "/api/remote/decide") {
-          if (!remote.decide(String(b.id), b.allow === true)) return json(400, { error: "no such pairing request (it may have expired)" });
+          if (!remote.decide(String(b.id), b.allow === true, b.role === "control" ? "control" : "view"))
+            return json(400, { error: "no such pairing request (it may have expired)" });
           sendLocal("remote", remoteStatus());
           return json(200, { ok: true });
         }
@@ -1352,7 +1357,6 @@ http
   .listen(PORT, "127.0.0.1", function (this: http.Server) {
     const port = (this.address() as { port: number }).port;
     listenPort = port;
-    if (remoteEnabled) void tunnel.start(port);
     if (APP) console.log(`@@READY@@ ${JSON.stringify({ port, token: TOKEN })}`);
     console.log(`YAAIORCH ui  ${sessions.size} repo(s), ${maxParallel} at a time\n             http://localhost:${port}`);
   });

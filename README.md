@@ -427,9 +427,10 @@ github:LABEL` (and **Loop (watch)** with a label) keeps pulling new issues in, a
   with the phone, name the device and tap Pair, then **Allow** it on the PC. A new device can only watch (runs,
   logs, queue, history, costs); switch on **Control** for it to start and stop runs, approve plans, answer agents
   and allow commands. Opening folders, limits, always-allow rules and remote access itself stay on the PC.
-  **Remove** cuts a device off at once. Good to know: traffic passes through Cloudflare, the address changes when
-  the app restarts (pair the phone again then), and while it is on anyone with the address reaches the pairing
-  page, which needs a fresh one-time code from your PC.
+  **Remove** cuts a device off at once. Good to know: traffic passes through Cloudflare; remote access starts off
+  every time the app starts, and each start gets a new address, so phones pair again then (a phone that had
+  control is offered it back on the Allow card, and a phone that loses the PC says so); while it is on, anyone
+  with the address reaches the pairing page, which needs a fresh one-time code from your PC.
 - **Checks** come from `.orchestrator/config.json` in your repo, or from the `typecheck`, `lint`,
   `test` and `build` scripts in `package.json`:
 
