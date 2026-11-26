@@ -116,7 +116,7 @@ Still open, moved on:
 ## 0.7: product and packaging
 
 - Run history and replay, per-task output, diff viewer, token counts, agent roster editor.
-- One backend instead of two in sync.
+- One backend instead of two in sync (shipped in 0.6.5: the desktop app runs the same server as browser mode).
 - More agent runtimes behind the same `run()` contract (Codex CLI, Gemini CLI, OpenCode), so roles can
   mix providers and the evals can compare them.
 - Installers for Windows, macOS and Linux built in CI, with Node bundled and auto-update.

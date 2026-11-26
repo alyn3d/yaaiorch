@@ -219,8 +219,10 @@ Each item should show its effect in the evals before it becomes the default.
   project agents or save repo-local overrides without changing global Claude Code definitions.
 - [x] **Per-repo settings** (power, max rounds, budget) remembered by the desktop app.
 - [x] **Cross-repo work board** in Overview: working tasks, user input, verification/PR review and completed queue goals.
-- [ ] **One backend**: share line parsing and event buffering instead of keeping `server.ts` and
-  `main.rs` in sync (or let the desktop app start `server.ts`).
+- [x] **One backend** (0.6.5): the desktop app starts the bundled `server.ts` (`server.mjs`) with its own Node.js;
+  `main.rs` is only the shell.
+- [x] **Remote access from a phone** (0.6.5): a Cloudflare quick tunnel, pairing by QR code, view and control roles,
+  long polling for devices, a phone layout.
 - [x] **Shared event types** between `orch.ts` and the UI (one discriminated union, `orch-events.ts`).
 - [ ] **More agent runtimes**: put Codex CLI, Gemini CLI and OpenCode behind the `run()` contract
   (prompt in, `{text, cost}` out, permission mode mapped per runtime), choosable per role, and add

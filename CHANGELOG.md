@@ -5,6 +5,8 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-26
+
 ### Added
 
 - Remote access from a phone (**Remote** in the sidebar, off by default): a Cloudflare quick tunnel (no account; `cloudflared` is downloaded on first use from a pinned release and checked against its SHA-256) and pairing by QR code. The code works once for 5 minutes, the PC allows or denies each device, and a device gets its own key in an HttpOnly, Secure, SameSite=Strict cookie (only a hash is stored). New devices only view; Control is a switch per device; folders, limits, always-allow rules and remote access stay on the PC; Remove cuts a device off at once. Remote access starts off at every start, and every new address drops the paired devices (their cookies belonged to the old one): the PC says how many, a device that pairs again is offered its old role (**Allow with control (as before)**), and a phone that cannot reach the PC for 30 s says why. Phones get updates by long polling, since quick tunnels hold back event streams. A phone layout, and the pairing page.
@@ -535,7 +537,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/alyn3d/yaaiorch/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/alyn3d/yaaiorch/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/alyn3d/yaaiorch/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/alyn3d/yaaiorch/compare/v0.6.1...v0.6.2
