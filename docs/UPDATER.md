@@ -121,9 +121,9 @@ Examples: `v0.6.1`, `v1.0.0`
 
 **Update the version in two places before tagging:**
 
-1. **`orch-ui/package.json`**: `"version": "0.6.5"`
-2. **`orch-ui/src-tauri/Cargo.toml`**: `version = "0.6.5"`
-3. **`orch-ui/src-tauri/tauri.conf.json`**: `"version": "0.6.5"`
+1. **`orch-ui/package.json`**: `"version": "0.6.6"`
+2. **`orch-ui/src-tauri/Cargo.toml`**: `version = "0.6.6"`
+3. **`orch-ui/src-tauri/tauri.conf.json`**: `"version": "0.6.6"`
 
 ### Publishing Steps
 
@@ -132,9 +132,9 @@ Examples: `v0.6.1`, `v1.0.0`
 2. **Commit and tag:**
    ```bash
    git add orch-ui/package.json orch-ui/src-tauri/Cargo.toml orch-ui/src-tauri/tauri.conf.json
-   git commit -m "chore: bump version to v0.6.5"
-   git tag v0.6.5
-   git push origin main v0.6.5
+   git commit -m "chore: bump version to v0.6.6"
+   git tag v0.6.6
+   git push origin main v0.6.6
    ```
 
 3. **Monitor the GitHub Actions workflow** (`.github/workflows/release.yml`):
@@ -150,7 +150,7 @@ Examples: `v0.6.1`, `v1.0.0`
 
 5. **Publish the release:**
    ```bash
-   gh release edit v0.6.5 --draft=false
+   gh release edit v0.6.6 --draft=false
    ```
 
    Or use the web interface: GitHub Releases → Edit Draft → "Publish release"
@@ -165,7 +165,7 @@ When a user clicks **Check for updates** in **About YAAIORCH**:
 
 1. The app fetches `latest.json` from GitHub Releases
 2. If it lists a newer version, the **Update available** state is shown
-3. The user clicks **Update to v0.6.5** to download it
+3. The user clicks **Update to v0.6.6** to download it
 4. The app checks the download against its signature in `latest.json` (public key embedded in the app) and installs only if it matches
 
 ### Update Channels
@@ -236,7 +236,7 @@ Updater-signed (not code-signed), updated through **About YAAIORCH**:
 
 Unsigned, requires manual download:
 
-- **All platforms**: `yaaiorch-cli-v0.6.5.mjs` (Node.js 20+ required)
+- **All platforms**: `yaaiorch-cli-v0.6.6.mjs` (Node.js 20+ required)
 - Includes `SHA256SUMS.txt` for integrity verification
 
 ## Local Testing

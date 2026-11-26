@@ -5,6 +5,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-11-26
+
+### Fixed
+
+- The macOS and Linux desktop builds compile again (0.6.5's release failed on a missing import in the PATH fix-up that only runs there).
+- Keep awake on Linux starts `systemd-inhibit` by the full path found on PATH, as the unit test expects.
+
 ## [0.6.5] - 2026-11-26
 
 ### Added
@@ -537,7 +544,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/alyn3d/yaaiorch/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/alyn3d/yaaiorch/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/alyn3d/yaaiorch/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/alyn3d/yaaiorch/compare/v0.6.2...v0.6.3
