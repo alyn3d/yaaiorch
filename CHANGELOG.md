@@ -5,6 +5,9 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+- Keep the computer awake while agents work, so a run waiting out a usage limit is still going when the limit resets: `--keep-awake` on `orch run`, `loop`, `new --start` and `group run` (config `keepAwake`, `--no-keep-awake` to turn it off), and a **Keep computer awake while running** switch in the app's sidebar, on by default, that adds it to every such run. Only idle sleep is blocked: the screen may still turn off, and closing a laptop's lid still sleeps it. A small helper holds the request (Windows: `SetThreadExecutionState` from a hidden PowerShell; macOS: `caffeinate`; Linux: `systemd-inhibit`) and ends with orch, so a crashed run never keeps the machine awake.
+
 ## [0.6.4] - 2026-11-26
 
 ### Added

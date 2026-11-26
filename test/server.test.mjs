@@ -454,7 +454,7 @@ else if (args[0] === "group" && args[1] === "run") {
     await until(() => called().some((a) => a[1] === "run"));
     assert.deepEqual(
       called().find((a) => a[1] === "run"),
-      ["group", "run", "shop", "--power", "economy", "--max-rounds", "2", "--approve-plan", "checkout"],
+      ["group", "run", "--keep-awake", "shop", "--power", "economy", "--max-rounds", "2", "--approve-plan", "checkout"],
     );
     const own = await post("run", { repo: be, goal: "x" });
     assert.equal(own.status, 500);

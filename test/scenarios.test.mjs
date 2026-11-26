@@ -127,6 +127,20 @@ const writeConfig = (dir, cfg) => {
 
 // spawnSync blocks, so the scenarios run one after another; the timeout makes a hang fail instead of stalling CI.
 describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
+  test("--keep-awake holds the computer awake for a run only, and config keepAwake gives way to --no-keep-awake", () => {
+    const AWAKE = /keeping this computer awake|keep awake: /;
+    const dir = repo();
+    const r = orch(dir, ["run", "x", "--max-rounds", "1", "--keep-awake"], { FAKE_QA: "pass" });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, AWAKE, "the run says it keeps the computer awake (or why it cannot)");
+    assert.doesNotMatch(orch(dir, ["status", "--keep-awake"]).out, AWAKE, "a short command does not");
+    writeConfig(dir, { keepAwake: true });
+    const y = orch(dir, ["run", "y", "--max-rounds", "1"], { FAKE_QA: "pass" });
+    assert.equal(y.code, 0, y.out);
+    assert.match(y.out, AWAKE, "config keepAwake");
+    assert.doesNotMatch(orch(dir, ["run", "z", "--max-rounds", "1", "--no-keep-awake"], { FAKE_QA: "pass" }).out, AWAKE, "--no-keep-awake wins");
+  });
+
   test("a custom agent can replace QA while keeping the QA role read-only", () => {
     const dir = repo();
     writeConfig(dir, { keep: true });

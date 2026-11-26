@@ -76,6 +76,8 @@ export type Global = {
   usage: Partial<Record<UsageWindow, { pct: number; resetsAt: number }>>;
   /** Percent caps per window; null = none. */
   usageCap: Record<UsageWindow, number | null>;
+  /** Long runs keep the computer from sleeping (--keep-awake). */
+  keepAwake: boolean;
 };
 export type Power = "max" | "heavy" | "balanced" | "economy";
 /** One of the user's Claude Code plugins (`orch plugins --json --details`). `enabled`: on in Claude Code itself. */

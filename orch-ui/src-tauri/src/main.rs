@@ -60,6 +60,8 @@ struct Inner {
     usage: [Option<(f64, u64)>; 2],
     /// Percent caps per window (None: no cap); passed to runs as --usage-cap and holding new starts.
     usage_cap: [Option<f64>; 2],
+    /// Keep the computer from sleeping while a long run works (--keep-awake). On by default.
+    keep_awake: bool,
 }
 
 /// The subscription's usage windows: (key in events and the UI, label, --usage-cap key).
@@ -77,6 +79,7 @@ impl Default for Inner {
             spent_usd: 0.0,
             usage: [None; 2],
             usage_cap: [None; 2],
+            keep_awake: true,
         }
     }
 }
@@ -144,6 +147,7 @@ impl Inner {
             "budget": { "limit": self.daily_budget, "spent": (self.spent_usd * 10_000.0).round() / 10_000.0, "day": self.spent_day },
             "usage": WINDOWS.iter().zip(self.usage).filter_map(|((k, _, _), u)| u.map(|(pct, resets)| (k.to_string(), json!({ "pct": pct, "resetsAt": resets })))).collect::<serde_json::Map<_, _>>(),
             "usageCap": { "fiveHour": self.usage_cap[0], "week": self.usage_cap[1] },
+            "keepAwake": self.keep_awake,
         })
     }
 }
@@ -422,6 +426,7 @@ fn persist<R: Runtime>(app: &AppHandle<R>) {
             "maxParallel": g.max_parallel,
             "dailyBudget": g.daily_budget,
             "usageCap": { "fiveHour": g.usage_cap[0], "week": g.usage_cap[1] },
+            "keepAwake": g.keep_awake,
             "spent": { "day": g.spent_day, "usd": g.spent_usd },
         })
     };
@@ -551,6 +556,25 @@ fn request_start<R: Runtime>(app: &AppHandle<R>, repo: &str, args: Vec<String>, 
     }
 }
 
+/// The commands that work for a long time keep the computer awake (`--keep-awake`) while the switch is on. The flag
+/// goes right after the command words (`group run --keep-awake ...`), so whatever reads them stays as it was.
+fn with_awake(mut args: Vec<String>, on: bool) -> Vec<String> {
+    if !on || args.is_empty() || args.iter().any(|a| a == "--keep-awake") {
+        return args;
+    }
+    let long = match args[0].as_str() {
+        "run" | "loop" => true,
+        "new" => args.iter().any(|a| a == "--start"),
+        "group" => args.get(1).is_some_and(|a| a == "run"),
+        _ => false,
+    };
+    if long {
+        let at = if args[0] == "group" { 2 } else { 1 };
+        args.insert(at, "--keep-awake".into());
+    }
+    args
+}
+
 /// Run and loop get the global limits: --usage-cap from the caps (`caps`, "" for none), and with a daily
 /// budget a --max-cost of at most what is left today (their own --max-cost, if lower).
 fn with_budget(mut args: Vec<String>, left: Option<f64>, caps: &str) -> Vec<String> {
@@ -627,12 +651,12 @@ fn start_next<R: Runtime>(app: &AppHandle<R>) {
 
 fn spawn_orch<R: Runtime>(app: &AppHandle<R>, key: &str, args: Vec<String>, label: String) -> Result<(), String> {
     let repo = repo_of(app, key)?;
-    let (left, caps) = {
+    let (left, caps, awake) = {
         let st = app.state::<AppState>();
         let g = st.0.lock().unwrap();
-        (g.daily_budget.map(|b| (b - g.spent_usd).max(0.01)), g.cap_spec())
+        (g.daily_budget.map(|b| (b - g.spent_usd).max(0.01)), g.cap_spec(), g.keep_awake)
     };
-    let args = with_budget(args, left, &caps);
+    let args = with_awake(with_budget(args, left, &caps), awake);
     let mut cmd = node_cmd(app, &repo, &args)?;
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -1185,6 +1209,14 @@ fn set_usage_cap(app: AppHandle, state: State<AppState>, five_hour: Option<f64>,
     emit_global(&app);
     start_next(&app);
     Ok(())
+}
+
+/// Keep the computer awake while long runs work; applies to the runs started from now on.
+#[tauri::command]
+fn set_keep_awake(app: AppHandle, state: State<AppState>, keep_awake: bool) {
+    state.0.lock().unwrap().keep_awake = keep_awake;
+    persist(&app);
+    emit_global(&app);
 }
 
 /// "Try now": lift the usage-limit hold before its reset time, and forget readings over a cap.
@@ -2121,6 +2153,7 @@ fn main() {
                 for (i, (k, _, _)) in WINDOWS.iter().enumerate() {
                     g.usage_cap[i] = saved["usageCap"][*k].as_f64().filter(|c| *c > 0.0 && *c <= 100.0);
                 }
+                g.keep_awake = saved["keepAwake"].as_bool().unwrap_or(true);
                 if saved["spent"]["day"].as_str() == Some(today().as_str()) {
                     g.spent_usd = saved["spent"]["usd"].as_f64().unwrap_or(0.0);
                 }
@@ -2176,6 +2209,7 @@ fn main() {
             set_max_parallel,
             set_daily_budget,
             set_usage_cap,
+            set_keep_awake,
             clear_limit,
             run_goal,
             run_loop,
@@ -2400,6 +2434,25 @@ mod tests {
             with_budget(v(&["run", "g", "--usage-cap", "5h=50"]), None, "5h=80"),
             v(&["run", "g", "--usage-cap", "5h=50"])
         );
+    }
+
+    #[test]
+    fn keep_awake_flag() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(with_awake(v(&["run", "g"]), true), v(&["run", "--keep-awake", "g"]));
+        assert_eq!(
+            with_awake(v(&["loop", "--power", "heavy"]), true),
+            v(&["loop", "--keep-awake", "--power", "heavy"])
+        );
+        assert_eq!(
+            with_awake(v(&["group", "run", "shop", "g"]), true),
+            v(&["group", "run", "--keep-awake", "shop", "g"])
+        );
+        assert_eq!(with_awake(v(&["new", ".", "--start"]), true), v(&["new", "--keep-awake", ".", "--start"]));
+        assert_eq!(with_awake(v(&["new", "."]), true), v(&["new", "."]), "a new project that does not start");
+        assert_eq!(with_awake(v(&["learn"]), true), v(&["learn"]));
+        assert_eq!(with_awake(v(&["group", "rollback", "shop"]), true), v(&["group", "rollback", "shop"]));
+        assert_eq!(with_awake(v(&["run", "g"]), false), v(&["run", "g"]), "switch off");
     }
 
     #[test]

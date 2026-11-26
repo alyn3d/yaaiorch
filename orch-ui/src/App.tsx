@@ -285,6 +285,16 @@ export function App() {
               <input type="checkbox" role="switch" checked={notifyOn} onChange={(e) => void setNotifyOn(e.target.checked).then(setNotifyOnState)} /> Notify
             </label>
           </div>
+          <div className="foot-row">
+            <label
+              className="check switch"
+              title="While a goal, queue, new project or group goal runs, this computer does not go to sleep on its own, so a run waiting out the usage limit carries on after the reset. The screen may still turn off; closing a laptop's lid or choosing Sleep still sleeps it. Applies to runs started from now on."
+            >
+              <input type="checkbox" role="switch" checked={global.keepAwake} onChange={(e) => guard(() => transport.setKeepAwake(e.target.checked))} /> Keep
+              computer awake
+            </label>
+            {global.keepAwake && running > 0 && <span className="muted">· awake</span>}
+          </div>
           <button ref={aboutButton} className="ghost" onClick={() => setAbout(true)}>
             About YAAIORCH
           </button>

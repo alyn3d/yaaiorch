@@ -64,6 +64,7 @@ import {
 import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
 import type { OrchEventData, OrchEventType } from "./orch-events";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
+import { keepAwake } from "./orch-awake";
 import {
   DevServer,
   MAX_TARGETS,
@@ -145,6 +146,9 @@ Options: --max-rounds N (5)  --power max|heavy|balanced|economy (heavy)
                   also "models" in .orchestrator/config.json. Aliases step up with the tier on escalation.
          --on-limit wait|stop   on a Claude usage limit: wait for the reset and retry (default), or stop
                   (exit code 3); also "onLimit" in .orchestrator/config.json
+         --keep-awake   keep the computer from sleeping while run, loop, new --start or group run works, so a
+                  goal waiting out a usage limit carries on after the reset (the screen may still turn off; closing
+                  a laptop's lid still sleeps it); also "keepAwake" in config, --no-keep-awake to turn it off
          --usage-cap 5h=80,week=90   pause (or, with --on-limit stop, stop) before an agent call once the
                   Claude subscription's 5-hour or weekly usage is at that percentage; also "usageCap" in config
          --plugins off   agents run without any Claude Code plugins  --disable-plugins ID,ID  without these
@@ -775,6 +779,8 @@ type Config = {
   models?: Partial<Record<Role, string>> & { agents?: Record<string, string> };
   swap?: Record<string, string>;
   onLimit?: "wait" | "stop";
+  /** Keep the computer from sleeping while run, loop, new --start or group run works (orch-awake.ts). */
+  keepAwake?: boolean;
   usageCap?: { "5h"?: number; week?: number };
   plugins?: { off?: boolean; disable?: string[]; hooks?: boolean };
   /** Skills turned off in this repo: left out of the architect's list, and "off" in every agent's skillOverrides. */
@@ -6457,6 +6463,16 @@ async function groupCommand(args: string[], values: GroupFlags) {
   throw new Error('usage: orch group add NAME --repo PATH:ROLE ... | list [--json] | remove NAME | run NAME "<goal>" | stop NAME');
 }
 
+/**
+ * Whether this command keeps the computer awake: only the ones that work for a long time (run, loop, new --start,
+ * group run), with --keep-awake or config keepAwake (--no-keep-awake wins). A group's member runs leave it to the group.
+ */
+function wantsAwake(cmd: string | undefined, rest: string[], values: { "keep-awake"?: boolean; "no-keep-awake"?: boolean; start?: boolean }): boolean {
+  if (values["no-keep-awake"] || process.env.ORCH_GROUP_LOCK) return false;
+  const long = cmd === "run" || cmd === "loop" || (cmd === "new" && !!values.start) || (cmd === "group" && rest[0] === "run");
+  return long && (!!values["keep-awake"] || readJsonFile<Config>(CONFIG_FILE, {}).keepAwake === true);
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -6474,6 +6490,8 @@ async function main() {
       "no-fast": { type: "boolean", default: false },
       model: { type: "string" },
       "on-limit": { type: "string" },
+      "keep-awake": { type: "boolean", default: false },
+      "no-keep-awake": { type: "boolean", default: false },
       "usage-cap": { type: "string" },
       plugins: { type: "string" },
       "disable-plugins": { type: "string" },
@@ -6542,6 +6560,7 @@ async function main() {
   });
   const [cmd, ...rest] = positionals;
   const goal = rest.join(" ");
+  if (wantsAwake(cmd, rest, values)) keepAwake();
 
   switch (cmd) {
     case "run":
@@ -6804,6 +6823,7 @@ async function main() {
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
 export {
   failureDigest,
+  wantsAwake,
   loadGateChecks,
   gateHint,
   gateOverlap,

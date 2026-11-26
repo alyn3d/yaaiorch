@@ -340,6 +340,63 @@ describe("Agent M answers: Markdown subset (orch-ui/src/markdown.ts)", () => {
   });
 });
 
+describe("keep awake (orch-awake.ts)", () => {
+  let a;
+  before(async () => {
+    const { tsImport } = await tsxApi(root);
+    a = await tsImport(pathToFileURL(join(root, "orch-awake.ts")).href, import.meta.url);
+  });
+
+  test("Windows: the system PowerShell by full path, the script base64-encoded and tied to orch's PID", () => {
+    const c = a.awakeCommand(4242, "win32", { SystemRoot: "D:\\Win" });
+    assert.equal(c.file, "D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    assert.deepEqual(c.args.slice(0, 3), ["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    const script = Buffer.from(c.args[3], "base64").toString("utf16le");
+    assert.equal(script, a.windowsAwakeScript(4242));
+    assert.match(script, /Get-Process -Id 4242 /);
+    assert.match(script, /SetThreadExecutionState\(\[uint32\]2147483649\)/, "ES_CONTINUOUS | ES_SYSTEM_REQUIRED, never the display");
+  });
+
+  test("macOS: caffeinate waits on orch's PID; idle sleep only", () => {
+    assert.deepEqual(a.awakeCommand(7, "darwin", {}), { file: "/usr/bin/caffeinate", args: ["-i", "-w", "7"] });
+  });
+
+  test("Linux: systemd-inhibit from PATH around a loop that ends with orch, or nothing without it", () => {
+    const bin = mkdtempSync(join(tmpdir(), "yaaiorch-awake-"));
+    try {
+      assert.equal(a.awakeCommand(7, "linux", { PATH: bin }), null);
+      writeFileSync(join(bin, "systemd-inhibit"), "#!/bin/sh\n");
+      chmodSync(join(bin, "systemd-inhibit"), 0o755);
+      const c = a.awakeCommand(7, "linux", { PATH: bin });
+      if (process.platform !== "win32") {
+        assert.equal(c.file, join(bin, "systemd-inhibit"));
+        assert.ok(c.args.includes("--what=idle"));
+        assert.equal(c.args.at(-1), "while kill -0 7 2>/dev/null; do sleep 30; done");
+      }
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  test("no command for a bad PID or another platform", () => {
+    assert.equal(a.awakeCommand(0, "win32", {}), null);
+    assert.equal(a.awakeCommand(Number.NaN, "darwin", {}), null);
+    assert.equal(a.awakeCommand(7, "freebsd", {}), null);
+  });
+
+  test("wantsAwake: only long commands, and --no-keep-awake wins", () => {
+    const on = { "keep-awake": true };
+    assert.equal(o.wantsAwake("run", ["x"], on), true);
+    assert.equal(o.wantsAwake("loop", [], on), true);
+    assert.equal(o.wantsAwake("new", ["."], { ...on, start: true }), true);
+    assert.equal(o.wantsAwake("new", ["."], on), false);
+    assert.equal(o.wantsAwake("group", ["run", "shop", "g"], on), true);
+    assert.equal(o.wantsAwake("group", ["rollback", "shop"], on), false);
+    assert.equal(o.wantsAwake("status", [], on), false);
+    assert.equal(o.wantsAwake("run", ["x"], { ...on, "no-keep-awake": true }), false);
+  });
+});
+
 describe("claude-bin: start claude without a shell on Windows", () => {
   let cb, dir;
   before(async () => {

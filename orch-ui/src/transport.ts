@@ -48,6 +48,8 @@ export interface Transport {
   setDailyBudget(usd: number | null): Promise<void>;
   /** Percent caps on the subscription's 5-hour and weekly usage; null removes one. */
   setUsageCap(cap: Global["usageCap"]): Promise<void>;
+  /** Long runs keep the computer awake (applies to runs started from now on). */
+  setKeepAwake(on: boolean): Promise<void>;
   /** Lift the usage-limit hold now ("Try now"). */
   clearLimit(): Promise<void>;
   /** First-run checks (`orch doctor`) for one repo; `pr`: the repo opens pull requests (`--pr`). */
@@ -195,6 +197,7 @@ const web: Transport = {
   setMaxParallel: (n) => post("settings", { maxParallel: n }),
   setDailyBudget: (usd) => post("settings", { dailyBudget: usd }),
   setUsageCap: (cap) => post("settings", { usageCap: cap }),
+  setKeepAwake: (on) => post("settings", { keepAwake: on }),
   clearLimit: () => post("clear-limit", {}),
   async doctor(repo, pr) {
     const r = await api(`/api/doctor?repo=${encodeURIComponent(repo)}${pr ? "&pr=1" : ""}`);
@@ -314,6 +317,7 @@ const tauri: Transport = {
   setMaxParallel: (n) => tauriInvoke("set_max_parallel", { maxParallel: n }),
   setDailyBudget: (usd) => tauriInvoke("set_daily_budget", { dailyBudget: usd }),
   setUsageCap: (cap) => tauriInvoke("set_usage_cap", { fiveHour: cap.fiveHour, week: cap.week }),
+  setKeepAwake: (on) => tauriInvoke("set_keep_awake", { keepAwake: on }),
   clearLimit: () => tauriInvoke("clear_limit"),
   doctor: (repo, pr) => tauriInvoke<Finding[]>("doctor", { repo, pr: !!pr }),
   browserSetup: (repo) => tauriInvoke<BrowserSetup>("browser_detect", { repo }),

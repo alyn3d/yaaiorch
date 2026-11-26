@@ -103,6 +103,8 @@ type Window = "fiveHour" | "week";
 type Reading = { pct: number; resetsAt: number };
 let usage: Partial<Record<Window, Reading>> = {};
 let usageCap: Record<Window, number | null> = { fiveHour: null, week: null };
+/** Keep the computer from sleeping while a run, loop, new project or group goal works (--keep-awake). On by default. */
+let keepAwake = true;
 const WINDOW_LABEL: Record<Window, string> = { fiveHour: "5-hour", week: "weekly" };
 const WINDOW_CLI: Record<Window, string> = { fiveHour: "5h", week: "week" };
 
@@ -115,6 +117,7 @@ const globalState = () => ({
   budget: { limit: dailyBudget, spent: Math.round(spent.usd * 10_000) / 10_000, day: spent.day },
   usage,
   usageCap,
+  keepAwake,
 });
 /** The first window whose latest reading is at or over its cap and has not reset yet. */
 function overCap(): (Reading & { window: Window }) | null {
@@ -151,7 +154,11 @@ function saveSettings() {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
     writeFileSync(
       SETTINGS_FILE,
-      JSON.stringify({ repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap }, null, 2),
+      JSON.stringify(
+        { repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap, keepAwake },
+        null,
+        2,
+      ),
     );
   } catch {
     /* not fatal: the list just is not remembered */
@@ -342,8 +349,19 @@ function withBudget(args: string[]): string[] {
   return [...rest, key, Math.min(own, left).toFixed(2)];
 }
 
+/**
+ * The commands that work for a long time keep the computer awake (`--keep-awake`) while the switch is on. The flag goes
+ * right after the command words (`group run --keep-awake ...`), so whatever reads them stays as it was.
+ */
+export function withAwake(args: string[], on: boolean): string[] {
+  if (!on || args.includes("--keep-awake")) return args;
+  const long = ["run", "loop"].includes(args[0]) || (args[0] === "new" && args.includes("--start")) || (args[0] === "group" && args[1] === "run");
+  const at = args[0] === "group" ? 2 : 1;
+  return long ? [...args.slice(0, at), "--keep-awake", ...args.slice(at)] : args;
+}
+
 function startNow(s: Session, rawArgs: string[], label: string) {
-  const args = withBudget(rawArgs);
+  const args = withAwake(withBudget(rawArgs), keepAwake);
   const p = spawn(process.execPath, [TSX_CLI, ORCH, ...args], {
     cwd: s.repo,
     stdio: ["ignore", "pipe", "pipe"],
@@ -701,7 +719,9 @@ const stored = readJson<{
   dailyBudget?: number | null;
   spent?: { day: string; usd: number };
   usageCap?: Partial<Record<Window, number | null>>;
+  keepAwake?: boolean;
 }>(SETTINGS_FILE, {});
+if (stored.keepAwake === false) keepAwake = false;
 if (!process.env.MAX_PARALLEL && stored.maxParallel) maxParallel = Math.max(1, stored.maxParallel);
 if (typeof stored.dailyBudget === "number" && stored.dailyBudget > 0) dailyBudget = stored.dailyBudget;
 if (stored.spent?.day === today() && typeof stored.spent.usd === "number") spent = stored.spent;
@@ -900,6 +920,10 @@ http
               next[w] = v;
             }
             usageCap = next;
+          }
+          if ("keepAwake" in b) {
+            if (typeof b.keepAwake !== "boolean") return json(400, { error: "keepAwake must be true or false" });
+            keepAwake = b.keepAwake;
           }
           saveSettings();
           sendInit();

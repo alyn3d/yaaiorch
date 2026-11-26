@@ -45,6 +45,7 @@ export function useOrch() {
     budget: { limit: null, spent: 0, day: "" },
     usage: {},
     usageCap: { fiveHour: null, week: null },
+    keepAwake: true,
   });
 
   /** The goal each repo is running, for notification texts (live events only; replays never notify). */
