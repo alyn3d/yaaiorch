@@ -510,6 +510,98 @@
         transform-origin: left;
       }
 
+      /* Remote access: the copy beside a phone. */
+      .remote-highlight {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+        align-items: center;
+        gap: 72px;
+        padding: 96px 0 40px;
+      }
+
+      .remote-highlight h2 {
+        margin: 14px 0 18px;
+        font-size: clamp(30px, 4vw, 44px);
+        line-height: 1.12;
+        letter-spacing: -0.02em;
+      }
+
+      .remote-highlight p {
+        margin: 0 0 22px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .remote-points {
+        display: grid;
+        gap: 14px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .remote-points li {
+        position: relative;
+        padding: 14px 16px 14px 42px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgb(18 22 34 / 70%);
+        color: var(--muted);
+      }
+
+      .remote-points li::before {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        color: var(--green);
+        content: "✓";
+      }
+
+      .remote-points b {
+        color: var(--text);
+      }
+
+      .remote-phone {
+        margin: 0;
+        justify-self: center;
+        width: 100%;
+        max-width: 300px;
+      }
+
+      .phone-frame {
+        overflow: hidden;
+        aspect-ratio: 390 / 760;
+        padding: 10px;
+        border: 1px solid #3a435b;
+        border-radius: 42px;
+        background: #05060a;
+        box-shadow: 0 34px 90px rgb(0 0 0 / 55%), 0 0 70px rgb(91 112 255 / 14%);
+      }
+
+      .phone-frame img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border-radius: 32px;
+        object-fit: cover;
+        object-position: top;
+      }
+
+      .remote-phone figcaption {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 14px;
+        text-align: center;
+      }
+
+      @media (max-width: 800px) {
+        .remote-highlight {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 44px;
+          padding-top: 64px;
+        }
+      }
+
       .trust-strip {
         border-top: 1px solid rgb(255 255 255 / 8%);
         border-bottom: 1px solid rgb(255 255 255 / 8%);
@@ -1368,6 +1460,45 @@
         </div>
       </div>
 
+      <section class="wrap remote-highlight" id="remote" aria-labelledby="remote-title">
+        <div class="remote-copy">
+          <span class="eyebrow">New · Remote access</span>
+          <h2 id="remote-title">Step away. <span class="gradient">Keep the loop in your pocket.</span></h2>
+          <p>
+            Turn on remote access, scan a QR code, and your phone shows what the agents are doing: every repo, plan,
+            log and cost, as it happens. Approve a plan, allow a command, stop a run or queue the next goal without
+            walking back to your desk.
+          </p>
+          <ul class="remote-points">
+            <li>
+              <b>No account, no router setup.</b> The app starts a Cloudflare quick tunnel for you, and turning it off
+              closes it. It starts off every time the app starts. Traffic passes through Cloudflare.
+            </li>
+            <li>
+              <b>Only the devices you allow.</b> A one-time QR code, then Allow on your PC. New devices can only watch
+              until you switch on control; folders, limits and pairing never leave the PC.
+            </li>
+            <li>
+              <b>Runs through the night.</b> Keep computer awake holds off sleep while agents work, so a run waiting
+              out a usage limit carries on after the reset, and you can check on it from bed.
+            </li>
+          </ul>
+        </div>
+        <figure class="remote-phone">
+          <div class="phone-frame">
+            <img
+              src="assets/app-phone.webp"
+              width="1170"
+              height="2532"
+              loading="lazy"
+              decoding="async"
+              alt="YAAIORCH on a paired phone: the Overview with three simulated repos, one building, one waiting for plan approval, one with two queued goals, under a banner saying the phone has control."
+            />
+          </div>
+          <figcaption>Simulated: three repos seen from a paired phone.</figcaption>
+        </figure>
+      </section>
+
       <section class="wrap content" id="how-it-works" aria-labelledby="how-title">
         <div class="section-heading">
           <span class="eyebrow">A loop, not a one-shot prompt</span>
@@ -1419,8 +1550,8 @@
             <span class="feature-mark" aria-hidden="true">05</span>
             <h3>Use it your way</h3>
             <p>
-              Run the CLI, manage projects in the browser, or use the desktop app, which brings its own Node.js. Queue
-              goals, work across repos, and bring your own Claude Code agents and skills.
+              Run the CLI, manage projects in the browser, or use the desktop app, which brings its own Node.js, and check
+              in from your phone. Queue goals, work across repos, and bring your own Claude Code agents and skills.
             </p>
           </article>
           <article class="feature">
