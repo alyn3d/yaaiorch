@@ -99,7 +99,8 @@ Each item should show its effect in the evals before it becomes the default.
   on one repo) and runner configs `+nomem` and `+critic`.
 - [ ] **Measure these** (brief and notes on the two series cases: no difference, 6/6 either way at the same cost,
   [results](docs/evals/2026-11-18.md); session resume on the gate cases: no difference, [results](docs/evals/2026-11-21.md);
-  still open: context between rounds, per-task escalation, plan and diff critic, review lens; configs `+nomem`, `+noresume`, `+critic`, `+diffcritic`, `+review`): they were built
+  plan and diff critic, review lens and resume on `api-patch-contract` and `lib-retry-lint`: 30/30 in round 1, +25–44% cost, nothing to catch, [results](docs/evals/2026-11-27.md);
+  still open: context between rounds, per-task escalation, and the critics on cases that fail round 1; configs `+nomem`, `+noresume`, `+critic`, `+diffcritic`, `+review`): they were built
   without an eval, because the current cases all pass in round 1. Needs cases that take several
   rounds and a multi-goal case; then compare with `--no-brief` and the old behaviour.
 
@@ -152,7 +153,8 @@ Each item should show its effect in the evals before it becomes the default.
 - [x] **Budget and progress** for a whole queue: **Budget $** (`--max-cost-total`) in the UI, the brief's progress
   (done, failed, blocked, cost, time left) above the queue and in the overview.
 - [x] **Multi-round eval cases**: `api-patch-contract`, `lib-retry-lint` (house rules only the checks enforce).
-- [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds).
+- [ ] **Measure** `orch new` on a few specs (pass rate of the hidden tests, cost, rounds). `greenfield-inventory`: 3/3,
+  each goal first time, $0.72 a run ([results](docs/evals/2026-11-27.md)); more specs still to write.
 - [ ] **Structured agent text**: ask the architect, the coordinator and QA for short task sentences with bulleted
   acceptance criteria, a contract as a list of endpoints, reports with headings. The UI already renders Markdown and
   splits long paragraphs (0.6.1); measure on the evals before shipping, since it changes the prompts.
@@ -206,8 +208,9 @@ Each item should show its effect in the evals before it becomes the default.
 - [ ] **Refute pass**: a fresh read-only agent tries to disprove each QA or review failure before it fails the
   round (fewer wasted rounds); measure false fails on the evals.
 - [x] **Eval cases** `web-dashboard-bug` and `web-pricing`, graded in a browser; `+novisual` to compare.
-- [ ] **Measure** them: `--power economy,economy+novisual --repeat 3`, and decide whether browser checks are worth
-  their cost by default.
+- [x] **Measure** them: `--power economy,economy+novisual --repeat 3`, and decide whether browser checks are worth
+  their cost by default. 12/12 either way, about $0.01 a run for the checks, so they stay on; a case only a rendered
+  page shows is still needed to measure their value ([results](docs/evals/2026-11-27.md)).
 - [ ] **Baseline**: capture the checkpoint's pages too, so observations that predate the goal are labelled as such.
 
 ## 0.7: product and packaging

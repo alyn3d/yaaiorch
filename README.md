@@ -41,7 +41,7 @@ goal ──► architect ──► foundation ──► build (parallel) ──�
   model tier or stops, and a queue that waits out Claude usage limits.
 - **It is measured.** `evals/` grades real runs with hidden tests the agents never see, per power
   tier, including "false passes" (the orchestrator said done but the code is wrong). The results are
-  published: [November 2026](docs/evals/2026-11-18.md), 55 runs, no false passes.
+  published: [November 2026](docs/evals/), 164 single-repo runs, no false passes.
 - **Least privilege.** The architect and QA run read-only; implementers can only edit, plus run the
   repo's check commands. With **Agent M** on, they can ask to run other commands, and each one waits
   for you to allow it.
@@ -500,8 +500,10 @@ node evals/run.ts --cases node-chunk-bug --power economy   # real run, costs mon
 28 cases over small fixture repos (Node, Python, Go, static web; features, bugfixes, refactors, long and multi-goal
 tasks), graded by hidden tests the agents never see. See [evals/README.md](evals/README.md).
 
-Latest results ([November 2026](docs/evals/2026-11-18.md)): 55 runs, every one passed the hidden tests and none was a
-false pass. One direct attempt did as well as the full loop at about half the cost and time, so it is the default.
+Latest results ([27 November 2026](docs/evals/2026-11-27.md)): 46 runs on browser checks, the review options, greenfield
+and repo groups, every one passed the hidden tests and none was a false pass; 164 single-repo runs in November, all
+passed ([all results](docs/evals/)). One direct attempt did as well as the full loop at about half the cost and time
+([18 November](docs/evals/2026-11-18.md)), so it is the default.
 
 ## Roadmap
 
