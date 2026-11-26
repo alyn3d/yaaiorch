@@ -1004,6 +1004,10 @@
         grid-column: span 2;
       }
 
+      .feature-full {
+        grid-column: 1 / -1;
+      }
+
       .feature h3 {
         font-size: 18px;
         line-height: 1.35;
@@ -1047,6 +1051,11 @@
 
         .feature-wide {
           grid-column: 1 / -1;
+        }
+
+        /* Two columns: next to card 11, which would otherwise sit alone in its row. */
+        .feature-full {
+          grid-column: auto;
         }
       }
 
@@ -1345,8 +1354,8 @@
           <button type="button" aria-controls="shot-group" aria-pressed="false">Repo groups</button>
         </div>
         <div class="eval-proof" role="group" aria-label="Evaluation results, November 2026">
-          <span class="eval-proof-count">95</span>
-          <div class="eval-proof-copy"><strong>hidden-test runs</strong><span>All passed · zero false passes · agents never saw the tests</span></div>
+          <span class="eval-proof-count">119</span>
+          <div class="eval-proof-copy"><strong>single-repo hidden-test runs</strong><span>All passed · zero false passes · agents never saw the tests</span></div>
           <a href="https://github.com/alyn3d/yaaiorch/tree/main/docs/evals">Read the evaluations ↗</a>
         </div>
       </section>
@@ -1441,7 +1450,8 @@
               a goal for each side, both repos build in parallel against it, then the frontend is checked against the
               running backend with live calls to every case it relies on. A failure goes back to the side at fault; if
               it still fails, both repos are reset and the work is kept on a branch. Approve the contract first, stop
-              at any time, or roll back both repos in one step.
+              at any time, or roll back both repos in one step. Or land the goal as a branch in each repo, with a pull
+              request each that links to the other, so both sides are reviewed and merged together.
             </p>
           </article>
           <article class="feature">
@@ -1473,14 +1483,16 @@
               chat that answers questions about your setup, MCP servers, queues and failed runs.
             </p>
           </article>
-          <article class="feature">
+          <article class="feature feature-full">
             <span class="feature-mark" aria-hidden="true">12</span>
             <h3>Measured in the open</h3>
             <p>
               Real runs are graded by hidden tests the agents never see, counting false passes too. The
-              <a class="text-link" href="https://github.com/alyn3d/yaaiorch/tree/main/docs/evals">November 2026 results</a>: 95 runs, all passed, none falsely. A single direct
+              <a class="text-link" href="https://github.com/alyn3d/yaaiorch/tree/main/docs/evals">November 2026 results</a>: 119 single-repo runs, all passed, none falsely. A single direct
               attempt matched the full loop at about half the cost, so it now goes first. On cases with CI-style checks
               the agents can't run, every run failed its first round and usually fixed itself in the next, about $1 per goal.
+              Repo groups passed 16 of their first 18 runs; the 2 false passes came from the integration step rewriting a
+              correctly built client, which is fixed, and every run since has passed.
             </p>
           </article>
         </div>
