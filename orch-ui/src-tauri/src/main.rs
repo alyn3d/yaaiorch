@@ -96,12 +96,15 @@ fn home_dir() -> PathBuf {
 
 /// The server's command: node, server.mjs, and where it finds orch and keeps its settings (`repos.json` in the app's
 /// config dir, the file this app has always used). Port 0: the system picks a free one, which the server prints.
-fn server_cmd(node: PathBuf, server: PathBuf, orch: PathBuf, settings: PathBuf) -> Command {
+fn server_cmd(node: PathBuf, server: PathBuf, orch: PathBuf, settings: PathBuf, dist: Option<PathBuf>) -> Command {
     let mut origins = APP_ORIGINS.to_string();
     if cfg!(debug_assertions) {
         origins = format!("{origins},{DEV_ORIGIN}");
     }
     let mut cmd = Command::new(node);
+    if let Some(d) = dist {
+        cmd.env("YAAIORCH_DIST", d);
+    }
     cmd.arg(server)
         .current_dir(home_dir())
         .env("PORT", "0")
@@ -154,7 +157,9 @@ fn supervise<R: Runtime>(app: AppHandle<R>) {
             let orch = resource(&app, "ORCH_PATH", "orch.mjs")?;
             let settings = app.path().app_config_dir().map_err(|e| e.to_string())?;
             std::fs::create_dir_all(&settings).map_err(|e| e.to_string())?;
-            server_cmd(node_bin(), server, orch, settings.join("repos.json"))
+            // The built UI, which the server serves to a paired phone (the window itself loads the copy inside the app).
+            let dist = resource(&app, "YAAIORCH_DIST", "dist").ok();
+            server_cmd(node_bin(), server, orch, settings.join("repos.json"), dist)
                 .spawn()
                 .map_err(|e| format!("{NODE_HINT}: {e}"))
         })();
@@ -387,7 +392,7 @@ mod tests {
         );
         var("CLAUDE_BIN");
         let settings = repo.join("settings.json");
-        let mut child = server_cmd(node_bin(), server, orch, settings.clone()).spawn().expect(NODE_HINT);
+        let mut child = server_cmd(node_bin(), server, orch, settings.clone(), None).spawn().expect(NODE_HINT);
         let out = BufReader::new(child.stdout.take().unwrap());
         let (port, token) = out.lines().map_while(Result::ok).find_map(|l| parse_ready(&l)).expect("a ready line");
 

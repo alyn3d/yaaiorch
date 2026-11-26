@@ -24,13 +24,15 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 // Every agent call reports its cost once: the plan (architect, critic), each task_end, diff reviews, learn, notes tidy,
 // share; a repo group's coordinator in group_plan and group_fault. A group member's events arrive wrapped (unwrapGroupEvent).
 import { COST_EVENTS } from "../orch-events";
+import { Remote, cookieValue, deviceCookie, remoteRefusal, type Device } from "./remote";
+import { Tunnel } from "./tunnel";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ORCH = resolve(process.env.ORCH_PATH ?? join(here, "..", "orch.ts"));
 const PORT = Number(process.env.PORT ?? 4317);
 /** How to start orch: the TypeScript source through tsx, or the bundled orch.mjs directly (the desktop app). */
 const ORCH_CMD = ORCH.endsWith(".ts") ? [createRequire(import.meta.url).resolve("tsx/cli"), ORCH] : [ORCH];
-const DIST = join(here, "dist");
+const DIST = resolve(process.env.YAAIORCH_DIST || join(here, "dist"));
 /** Remembered open repos and the parallel limit. */
 const SETTINGS_FILE = process.env.YAAIORCH_UI_SETTINGS || join(homedir(), ".yaaiorch", "ui.json");
 
@@ -107,7 +109,8 @@ type Session = {
 const sessions = new Map<string, Session>();
 const startQueue: string[] = []; // repo keys waiting for a slot, oldest first
 let maxParallel = Math.max(1, Number(process.env.MAX_PARALLEL) || 2);
-const clients = new Set<http.ServerResponse>();
+/** Open event streams; a remote one carries its device, so revoking the device can close it. */
+const clients = new Map<http.ServerResponse, { device?: string }>();
 
 // ---------- global state shared by all repos: the Claude usage limit and a daily budget ----------
 /** Set when any repo hits the usage limit; new starts in every repo wait until `until`. */
@@ -172,7 +175,7 @@ function saveSettings() {
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify(
-        { repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap, keepAwake },
+        { repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap, keepAwake, remoteEnabled },
         null,
         2,
       ),
@@ -182,9 +185,50 @@ function saveSettings() {
   }
 }
 
+// Long polling for paired devices: Cloudflare's quick tunnels hold back a streamed response (the event stream gets its
+// headers through, never its body), so a device asks GET /api/poll?since=N instead and gets every event after N in one
+// complete response, at once or as soon as there is one (up to POLL_WAIT). Only `send` events go into the ring, never
+// `sendLocal` ones. A device too far behind gets a fresh init.
+type Polled = { seq: number; event: string; data: unknown };
+const RING = 3000;
+const POLL_WAIT = 25_000;
+const ring: Polled[] = [];
+let seq = 0;
+const pollers = new Set<{ since: number; device?: string; done: (events: Polled[] | null) => void }>();
+
 const send = (event: string, data: unknown) => {
-  for (const c of clients) c.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  for (const c of clients.keys()) c.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  ring.push({ seq: ++seq, event, data });
+  if (ring.length > RING) ring.splice(0, ring.length - RING);
+  for (const p of pollers) p.done(ring.filter((e) => e.seq > p.since));
 };
+/** To the PC's own windows only (pairing requests, devices): never to a remote device. */
+const sendLocal = (event: string, data: unknown) => {
+  for (const [c, who] of clients) if (!who.device) c.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+};
+
+// ---------- remote access: a phone through a Cloudflare quick tunnel (remote.ts, tunnel.ts) ----------
+/** On (the tunnel runs) while the PC has turned remote access on; remembered with the settings. */
+let remoteEnabled = false;
+let listenPort = 0;
+const remote = new Remote(join(dirname(SETTINGS_FILE), "devices.json"));
+const remoteStatus = () => ({ enabled: remoteEnabled, tunnel: tunnel.state, requests: remote.requests(), devices: remote.list() });
+const tunnel = new Tunnel(
+  join(homedir(), ".yaaiorch", "bin"),
+  () => sendLocal("remote", remoteStatus()),
+  (line) => console.log(`remote: ${line}`),
+);
+/** Close a revoked device's event streams at once. */
+const dropDevice = (id: string) => {
+  for (const [c, who] of clients) if (who.device === id) c.end();
+  for (const p of pollers) if (p.device === id) p.done(null);
+};
+/**
+ * A request that came through the tunnel: cloudflared forwards Cloudflare's headers (which no remote client can strip)
+ * and the tunnel's host name. Such a request never gets the local guard's trust, whatever its Host says.
+ */
+const viaTunnel = (req: http.IncomingMessage) =>
+  !!(req.headers["cf-connecting-ip"] || req.headers["cf-ray"]) || (!!tunnel.host && req.headers.host === tunnel.host);
 
 /** The running (or waiting) group that has this repo as a member, if any. */
 const busyGroupOf = (repo: string) =>
@@ -707,10 +751,18 @@ const warmAgentM = () => {
   child.stdin?.end(JSON.stringify({ repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo) }));
 };
 
+/** Request bodies are small JSON (a brief at most): anything over 2 MB is refused, so nobody can fill the memory. */
+const MAX_BODY = 2 * 1024 * 1024;
 const body = (req: http.IncomingMessage) =>
   new Promise<any>((ok, bad) => {
     let s = "";
-    req.on("data", (d) => (s += d));
+    req.on("data", (d) => {
+      s += d;
+      if (s.length > MAX_BODY) {
+        bad(new Error("request body too large"));
+        req.destroy();
+      }
+    });
     req.on("end", () => {
       try {
         ok(s ? JSON.parse(s) : {});
@@ -737,7 +789,9 @@ const stored = readJson<{
   spent?: { day: string; usd: number };
   usageCap?: Partial<Record<Window, number | null>>;
   keepAwake?: boolean;
+  remoteEnabled?: boolean;
 }>(SETTINGS_FILE, {});
+remoteEnabled = stored.remoteEnabled === true;
 if (stored.keepAwake === false) keepAwake = false;
 if (!process.env.MAX_PARALLEL && stored.maxParallel) maxParallel = Math.max(1, stored.maxParallel);
 if (typeof stored.dailyBudget === "number" && stored.dailyBudget > 0) dailyBudget = stored.dailyBudget;
@@ -803,18 +857,109 @@ http
         return res.end();
       }
     }
-    const refused = refuse(req, url);
-    if (refused) return json(403, { error: refused });
+    // Through the tunnel: pairing, or a paired device's cookie; never the local token or the local guard.
+    let device: Device | null = null;
+    let parsed: any = undefined;
+    if (viaTunnel(req)) {
+      const host = tunnel.host;
+      if (!remoteEnabled || !host || req.headers.host !== host) return json(403, { error: "remote access is off" });
+      res.setHeader("x-frame-options", "DENY");
+      res.setHeader("referrer-policy", "no-referrer");
+      res.setHeader("x-content-type-options", "nosniff");
+      // A browser's writes must come from the tunnel's own page (the cookie is SameSite=Strict as well).
+      if (req.method !== "GET" && req.method !== "HEAD" && req.headers.origin !== `https://${host}`) return json(403, { error: "forbidden origin" });
+      const ip = String(req.headers["cf-connecting-ip"] ?? req.socket.remoteAddress ?? "?");
+      try {
+        if (url.pathname === "/api/pair" && req.method === "POST") {
+          const b = await body(req);
+          const r = remote.request(b.code, b.name, req.headers["user-agent"], ip);
+          if ("error" in r) return json(r.error.startsWith("too many") ? 429 : 403, r);
+          sendLocal("remote", remoteStatus());
+          return json(200, r);
+        }
+        if (url.pathname === "/api/pair/status" && req.method === "POST") {
+          const b = await body(req);
+          const r = remote.status(b.id, b.poll);
+          if (r.status === "allowed") {
+            res.setHeader("set-cookie", deviceCookie(r.cookie));
+            sendLocal("remote", remoteStatus());
+            return json(200, { status: "allowed", device: r.device });
+          }
+          return json(200, r);
+        }
+        if (url.pathname.startsWith("/api/")) {
+          device = remote.authenticate(req.headers.cookie);
+          if (!device) return json(401, { error: "this device is not paired (or was removed); pair it again from the PC", pair: true });
+          if (req.method === "POST") parsed = await body(req);
+          const no = remoteRefusal(device.role, req.method ?? "GET", url.pathname, parsed?.decision);
+          if (no) return json(403, { error: no });
+          // Rolling: a device in use stays paired.
+          res.setHeader("set-cookie", deviceCookie(cookieValue(req.headers.cookie)!));
+        }
+      } catch (e) {
+        return json(400, { error: (e as Error).message });
+      }
+    } else {
+      const refused = refuse(req, url);
+      if (refused) return json(403, { error: refused });
+    }
     try {
       if (url.pathname === "/api/token") {
         res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
         return res.end(JSON.stringify({ token: TOKEN }));
       }
       if (url.pathname === "/api/events") {
-        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+        // no-transform: Cloudflare (the tunnel) would otherwise compress the stream and hold events back.
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache, no-transform",
+          "x-accel-buffering": "no",
+          connection: "keep-alive",
+        });
         res.write(`event: init\ndata: ${JSON.stringify(initPayload())}\n\n`);
-        clients.add(res);
+        clients.set(res, { device: device?.id });
         req.on("close", () => clients.delete(res));
+        // Who this window is: the UI hides what a view-only device may not do.
+        res.write(`event: client\ndata: ${JSON.stringify(device ? { remote: true, role: device.role, name: device.name } : { remote: false })}\n\n`);
+        if (!device) res.write(`event: remote\ndata: ${JSON.stringify(remoteStatus())}\n\n`);
+        return;
+      }
+      if (url.pathname === "/api/poll") {
+        const since = Number(url.searchParams.get("since") ?? 0);
+        const who = device ? { remote: true, role: device.role, name: device.name } : { remote: false };
+        const reply = (code: number, d: unknown) => {
+          const b = JSON.stringify(d);
+          res.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(b), "cache-control": "no-store, no-transform" });
+          res.end(b);
+        };
+        // First poll, or too far behind (the ring moved on, or the server restarted): the whole state again.
+        const behind = !(since > 0) || since > seq || (ring.length > 0 ? since < ring[0].seq - 1 : since < seq);
+        if (behind)
+          return reply(200, {
+            seq,
+            events: [
+              { seq, event: "client", data: who },
+              { seq, event: "init", data: initPayload() },
+            ],
+          });
+        const ready = ring.filter((e) => e.seq > since);
+        if (ready.length) return reply(200, { seq, events: ready });
+        const p = {
+          since,
+          device: device?.id,
+          done: (events: Polled[] | null) => {
+            pollers.delete(p);
+            clearTimeout(timer);
+            if (events === null) reply(401, { error: "this device was removed on the PC", pair: true });
+            else reply(200, { seq, events });
+          },
+        };
+        const timer = setTimeout(() => p.done([]), POLL_WAIT);
+        pollers.add(p);
+        req.on("close", () => {
+          pollers.delete(p);
+          clearTimeout(timer);
+        });
         return;
       }
       if (url.pathname === "/api/state") return json(200, initPayload());
@@ -870,8 +1015,36 @@ http
         const s = mustGet(url.searchParams.get("repo"));
         return json(200, JSON.parse(await orchOutput(s.repo, ["agents", "--json"])));
       }
+      if (url.pathname === "/api/remote" && req.method === "GET") return json(200, remoteStatus());
       if (req.method === "POST") {
-        const b = await body(req);
+        const b = parsed ?? (await body(req));
+        // Remote access, from the PC only (a device is refused before this by remoteRefusal).
+        if (url.pathname === "/api/remote/enable") {
+          remoteEnabled = b.on === true;
+          saveSettings();
+          if (remoteEnabled) void tunnel.start(listenPort);
+          else tunnel.stop();
+          sendLocal("remote", remoteStatus());
+          return json(200, remoteStatus());
+        }
+        if (url.pathname === "/api/remote/pair-code") {
+          if (tunnel.state.status !== "on" || !tunnel.state.url) return json(400, { error: "turn remote access on and wait for its address first" });
+          // The code goes after #: browsers never send the fragment, so it stays out of logs and the address bar's history.
+          return json(200, { url: `${tunnel.state.url}/pair#${remote.newCode()}`, expiresIn: 5 * 60 });
+        }
+        if (url.pathname === "/api/remote/decide") {
+          if (!remote.decide(String(b.id), b.allow === true)) return json(400, { error: "no such pairing request (it may have expired)" });
+          sendLocal("remote", remoteStatus());
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/remote/device") {
+          const id = String(b.id);
+          const ok = b.revoke === true ? remote.revoke(id) : remote.setRole(id, b.role);
+          if (!ok) return json(400, { error: "no such device" });
+          if (b.revoke === true) dropDevice(id);
+          sendLocal("remote", remoteStatus());
+          return json(200, { ok: true });
+        }
         if (url.pathname === "/api/agents") {
           const s = mustGet(typeof b.repo === "string" ? b.repo : null);
           if (typeof b.name !== "string" || typeof b.content !== "string") return json(400, { error: "agent name and content are required" });
@@ -1178,11 +1351,14 @@ http
   })
   .listen(PORT, "127.0.0.1", function (this: http.Server) {
     const port = (this.address() as { port: number }).port;
+    listenPort = port;
+    if (remoteEnabled) void tunnel.start(port);
     if (APP) console.log(`@@READY@@ ${JSON.stringify({ port, token: TOKEN })}`);
     console.log(`YAAIORCH ui  ${sessions.size} repo(s), ${maxParallel} at a time\n             http://localhost:${port}`);
   });
 
 process.on("exit", () => {
+  tunnel.stop();
   for (const s of sessions.values()) if (s.child?.pid) killTree(s.child.pid);
 });
 process.on("SIGINT", () => process.exit(0));

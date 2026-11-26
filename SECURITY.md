@@ -16,6 +16,9 @@ first answer within a week. Please give a reasonable time to fix it before discl
 - The browser-mode server (`orch-ui/server.ts`) being driven by a web page or another user
   (it listens on `127.0.0.1` only, refuses requests whose `Host` or `Origin` is not local, and requires a
   per-process session token on every `/api` call; see `refuse()` in `server.ts`).
+- Remote access (`orch-ui/remote.ts`, the tunnel branch of the request handler in `server.ts`): a device getting in
+  without pairing (a one-time code from the PC, then the PC's Allow), a view-only device changing anything, any device
+  reaching a PC-only route (`PC_ONLY`, `/api/remote/*`), or the local session token leaking through the tunnel.
 - Git handling that loses user work (rollback, park, prune) or commits files it should not.
 - Command injection through goals, file names, config or agent output.
 

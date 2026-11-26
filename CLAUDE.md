@@ -11,9 +11,11 @@ are discovered too and override built-ins of the same name. `orch-ui/` is a Reac
 browser (via `server.ts`) or as a Tauri v2 desktop app (`src-tauri`, which runs the same `server.ts`).
 
 ## Layout
+
 - `orch.ts`: orchestrator CLI. Must sit next to `orch-ui/` (the UI looks for `../orch.ts`).
 - `orch-browser.ts`: browser checks (find Chrome/Edge/Chromium/Brave, the dev server, CDP capture over Node's WebSocket, `orch browser login|install`), bundled into `orch.mjs`.
 - `orch-awake.ts`: keeps the computer from sleeping while a long command runs (`--keep-awake`, config `keepAwake`): a per-OS helper (`awakeCommand`) tied to orch's PID, bundled into `orch.mjs`.
+- `orch-ui/remote.ts`, `orch-ui/tunnel.ts`: remote access. `Remote` (pairing codes, requests the PC allows, device keys hashed in `devices.json` next to the settings, roles `view`/`control`, `remoteRefusal` + `PC_ONLY`); `Tunnel` runs a Cloudflare quick tunnel (`cloudflared` downloaded to `~/.yaaiorch/bin`, pinned `CLOUDFLARED_VERSION` + SHA-256; `CLOUDFLARED_BIN` overrides, a `.mjs` runs with node: `test/fake-cloudflared/`).
 - `claude-bin.ts`: finds the `claude` executable once (Windows: an .exe directly, an npm .cmd shim unwrapped to node + its script), shared by `orch.ts` and `evals/run.ts`.
 - `orch-group.ts`, `orch-group-run.ts`: repo groups (config, coordinator prompts and parsing; the `orch group run` process), bundled into `orch.mjs`.
 - `orch-agents.ts`: built-in agent prompts, bundled into `orch.mjs`. Written to `.orchestrator/builtin-agents.json` at run time and passed to `claude --agents`. Reply formats are appended to prompts by `orch.ts`, not stored here.
@@ -25,6 +27,7 @@ browser (via `server.ts`) or as a Tauri v2 desktop app (`src-tauri`, which runs 
 - `orch-ui/scripts/fetch-node.mjs`: downloads and SHA-256-checks the official Node.js for the build target into `src-tauri/binaries/node-<triple>` (Tauri `externalBin`; `universal-apple-darwin` via lipo). Run by `beforeDevCommand` / `beforeBuildCommand`; `VERSION` pins it.
 
 ## Event protocol
+
 With `ORCH_EVENTS=1`, orch.ts prints one `@@ORCH@@ {json}` line per event: goal_start, queue_item, round_start,
 architect_start, checkpoint, plan, checks_start, checks, visual_start, visual, task_start, task_activity, task_end, round_diff, round_end, stuck, critic, review, split_proposal, coverage, retry, blocked, queue_changed, question_wait, question_answered, command_wait, command_decided, resumed, intake, protected, secrets, ci, approval_wait, approval, goal_branch, pr, learn_start, learn_end, notes_tidy, share_start, share_end, loop_stop, unowned, usage_limit, goal_end, waiting, usage, history_error, group_start, group_plan, group_approval_wait, group_approval, group_step, group_child, group_fault, group_rollback, group_branch, group_end. Each event's payload is typed in `orch-events.ts` (`OrchEventData`, one
 discriminated union `OrchEvent`): `emit` in `orch.ts` / `orch-group-run.ts` and the UI's `reduce.ts` use it, so a
@@ -33,6 +36,7 @@ and the ARCHITECTURE.md table name every type; `server.ts` imports `COST_EVENTS`
 `stopped` event (from `useOrch.ts`) when the process exits without `goal_end`.
 
 ## Commands (run in `orch-ui`)
+
 - `npm install`
 - `npm run tauri dev`: desktop app (builds `src-tauri/resources/orch.mjs` and `server.mjs` first)
 - `npm run build && npm start`: browser mode at http://localhost:4317; `ORCH_REPO=<repo>` or `ORCH_REPOS` opens repos (more via the UI, remembered in `~/.yaaiorch/ui.json`)
@@ -44,8 +48,9 @@ and the ARCHITECTURE.md table name every type; `server.ts` imports `COST_EVENTS`
 - Rust spawn test (`#[ignore]`d; the app's server runs a goal): `npm run build:orch && npm run build:server`, then `TEST_REPO=<empty dir> SERVER_PATH=<abs path to server.mjs> ORCH_PATH=<abs path to orch.mjs> CLAUDE_BIN=<repo>/test/fake-claude/claude[.cmd] cargo test -- --ignored`
 
 ## Notes
+
 - Windows is the primary target. `claude` is spawned without a shell (`spawnClaude` / `claudeSync` in orch.ts, `resolveClaude` in `claude-bin.ts`); cmd.exe only as a fallback for a .cmd shim it cannot read. PATH is searched, never the current directory. Children use `windowsHide`.
-- Server guard: `refuse()` in `server.ts` checks a local `Host` and `Origin` and a per-process token (`x-orch-token`, or `?token=` for SSE) on every `/api` call; the browser UI gets it from `/api/token` (`transport.ts`). In app mode the token goes only to the app (the ready line on stdout), `/api/token` is closed, and only `YAAIORCH_APP_ORIGINS` get CORS headers (preflight before the token check). Any new route is covered automatically; never add an `/api` route before the guard.
+- Server guard: `refuse()` in `server.ts` checks a local `Host` and `Origin` and a per-process token (`x-orch-token`, or `?token=` for SSE) on every `/api` call; the browser UI gets it from `/api/token` (`transport.ts`). In app mode the token goes only to the app (the ready line on stdout), `/api/token` is closed, and only `YAAIORCH_APP_ORIGINS` get CORS headers (preflight before the token check). Any new route is covered automatically; never add an `/api` route before the guard. Through the tunnel (`viaTunnel`: Cloudflare's `cf-*` headers or the tunnel's host) the local guard never applies: only `/api/pair`, `/api/pair/status` and static files without a device cookie, writes only from the tunnel's own origin, `remoteRefusal` for the device's role. A new route that writes to the PC (paths, files, scripts, limits) goes into `PC_ONLY`. Devices get events by long polling (`/api/poll`, the `send` ring), never `sendLocal` ones; request bodies are capped at 2 MB.
 - Multi-repo UI: the server keeps one session per repo (process, log, events), tags every message with its `repo`, and runs at most `maxParallel` repos at once (start queue). One run per repo. Stop kills that repo's process tree (taskkill on Windows). Backend features go into `server.ts` only; `main.rs` stays a shell.
 - Plugins: headless agents load the user's Claude Code plugins and hooks. `--plugins off` / `--disable-plugins` / `--no-hooks` (config `plugins`) write `enabledPlugins: {id: false}` and `disableAllHooks` into the agents' `--settings` files (not `--bare`, which drops the OAuth login). `orch plugins --json --details` lists them via `claude plugin list --json` and `claude plugin details`.
 - Usage caps: agents run with `stream-json`; orch reads the CLI's `rate_limit_event` (5-hour and weekly `utilization`, undocumented) into `usage` events and, with `--usage-cap 5h=N,week=M` (config `usageCap`), pauses before an agent call (or stops, with `--on-limit stop`) while a reading is over a cap. The server passes its global caps to every run and holds new starts too.
@@ -86,6 +91,7 @@ and the ARCHITECTURE.md table name every type; `server.ts` imports `COST_EVENTS`
 - Testing without spending tokens: `CLAUDE_BIN=test/fake-claude/claude` (`claude.cmd` on Windows); switches are documented at the top of `fake-claude.mjs`. Spawn `claude` only through `spawnClaude` / `claudeSync` (or `resolveClaude`), never with `shell: true`.
 
 ## Evals (`evals/`, see its README)
+
 - `node evals/run.ts --reference`: checks every case's hidden tests fail on the fixture and pass with the reference. Run after editing a case.
 - `node evals/run.ts --cases <ids> --power economy,heavy`: real runs (costs money), graded by hidden tests the agents never see. Results in `evals/results/` (git-ignored).
 - Use it to judge prompt, agent or tier changes: compare hidden pass rate, false passes and cost before and after, with `--repeat 3` or more.
@@ -93,10 +99,12 @@ and the ARCHITECTURE.md table name every type; `server.ts` imports `COST_EVENTS`
 - Config suffixes: `economy+fast`, `+nomem` (no brief or notes), `+critic`, `+noresume`, `+diffcritic`, `+review`, combinable. Series cases (`goals: [...]` in `cases.json`) run each goal in turn on one repo and grade at the end; they measure the brief and notes (`--power economy,economy+nomem`).
 
 ## Docs
+
 - `README.md` (users), `CONTRIBUTING.md` (setup, checks, conventions), `docs/ARCHITECTURE.md` (design, event table, data on disk).
 - `ROADMAP.md` (milestones), `TODO.md` (open tasks by milestone), `CHANGELOG.md` (what shipped; add to `[Unreleased]` in the same change).
 - `docs/review-2026-11.md` is the original code review, kept for history.
 - GPL-3.0-only (up to 0.2.0: MIT). Open source: never commit personal data, local paths, secrets or eval results.
 
 ## Backlog
+
 0.5.0 shipped backlog to merged PR (intake from issues or BACKLOG.md, priorities, issue comments, PR CI watched and fixed), safety (protected paths, secret scan), the redesigned UI and a bundled Node.js. Still open in `TODO.md`: measuring everything since 0.3 on the evals (series, greenfield, multi-round cases), a real run of the GitHub flows, worktrees and sandboxing. 0.6.0 shipped repo groups (with a UI and live integration checks) and per-repo skill and agent switches; open group items are in `TODO.md`, then 0.7 (packaging, one backend, other runtimes).

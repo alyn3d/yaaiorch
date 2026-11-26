@@ -79,6 +79,16 @@ export type Global = {
   /** Long runs keep the computer from sleeping (--keep-awake). */
   keepAwake: boolean;
 };
+/** Who this window is: the PC itself, or a paired device through the tunnel (view or control). */
+export type ClientInfo = { remote: false } | { remote: true; role: "view" | "control"; name: string };
+export type RemoteDevice = { id: string; name: string; role: "view" | "control"; agent: string; createdAt: number; lastSeen: number };
+/** Remote access as the PC sees it (`/api/remote`, event `remote`). */
+export type RemoteStatus = {
+  enabled: boolean;
+  tunnel: { status: "off" | "downloading" | "starting" | "on" | "error"; url?: string; error?: string };
+  requests: { id: string; name: string; agent: string; createdAt: number }[];
+  devices: RemoteDevice[];
+};
 export type Power = "max" | "heavy" | "balanced" | "economy";
 /** One of the user's Claude Code plugins (`orch plugins --json --details`). `enabled`: on in Claude Code itself. */
 export type Plugin = { id: string; name: string; scope: string; enabled: boolean; tokens?: number };

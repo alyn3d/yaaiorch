@@ -5,24 +5,33 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Added
+
+- Remote access from a phone (**Remote** in the sidebar, off by default): a Cloudflare quick tunnel (no account; `cloudflared` is downloaded on first use from a pinned release and checked against its SHA-256) and pairing by QR code. The code works once for 5 minutes, the PC allows or denies each device, and a device gets its own key in an HttpOnly, Secure, SameSite=Strict cookie (only a hash is stored). New devices only view; Control is a switch per device; folders, limits, always-allow rules and remote access stay on the PC; Remove cuts a device off at once. Phones get updates by long polling, since quick tunnels hold back event streams. A phone layout, and the pairing page.
+
 ### Changed
+
 - One backend: the desktop app now runs the same server as browser mode (`server.ts`, bundled as `server.mjs`) with its bundled Node.js, instead of a second backend written in Rust that had to be kept in sync by hand. The window shows a splash screen until the server is up. Open repos, limits and today's spend carry over (same settings file). The server only answers the app's own window, gets its session token over a private pipe (never in the environment that orch and the agents inherit), stops its runs when the app is gone, and is restarted if it crashes. Every feature now exists once, and the desktop app runs the code the test suite covers.
 
 ### Added
+
 - Keep the computer awake while agents work, so a run waiting out a usage limit is still going when the limit resets: `--keep-awake` on `orch run`, `loop`, `new --start` and `group run` (config `keepAwake`, `--no-keep-awake` to turn it off), and a **Keep computer awake while running** switch in the app's sidebar, on by default, that adds it to every such run. Only idle sleep is blocked: the screen may still turn off, and closing a laptop's lid still sleeps it. A small helper holds the request (Windows: `SetThreadExecutionState` from a hidden PowerShell; macOS: `caffeinate`; Linux: `systemd-inhibit`) and ends with orch, so a crashed run never keeps the machine awake.
 
 ## [0.6.4] - 2026-11-26
 
 ### Added
+
 - Repo groups wait out a Claude usage limit instead of giving up: `orch group run` takes `--on-limit wait|stop` (**On limit** on the group page), and `wait` is the default, as for `orch run`. A member run that hits the limit sets its work aside, waits for the reset and carries on from it, while the other repo keeps building; a coordinator call that hits it waits and asks again. The group page says who is waiting and until when, and a member repo waiting inside a group shows that wait instead of just "in group". Stopping the group during such a wait parks the work that run had set aside on the group's `orchestrator/interrupted-group-*` branch, like any other stopped group. `--on-limit stop` keeps the old behaviour: both repos are parked as interrupted and the run exits with code 3.
 - Eval cases for repo groups: `group-reviews`, `group-price-bugs` and `group-orders` run `orch group run` on a backend and a frontend repo and grade both with hidden tests. The frontend's hidden tests drive the web client against the backend the same run built, so a contract the two sides read differently fails even when each repo's own tests pass. The goals leave the API's pagination and error shape to be found in the backend. `node evals/run.ts --cases group-reviews,group-price-bugs,group-orders` runs them; `--reference` checks each repo's hidden tests on their own. First run at `economy`: 5 of 6 passed at $1.62 per group goal; the one false pass came from a member run's QA, not the contract ([results](docs/evals/2026-11-25.md)).
 
 - Repo groups can land on branches and pull requests: `orch group run --branch` puts the work on `orch/group-<name>-<goal>` in each repo, and the branches the run started on never move; `--pr` also pushes both and opens a pull request per repo, each naming the other's, with that repo's goal, the group goal and the contract. **Lands as** on the group page (commits, branches, pull requests). `--pr` checks for an `origin` in both repos before anything is built; on other hosts than GitHub, or without `gh`, the run pushes and prints the page to open each pull request. A failed run parks the work as before and leaves no group branch behind; `orch group rollback` refuses a passed branch run, which changed no base branch.
 
 ### Changed
+
 - QA checks every name the goal fixes (exported functions, their parameters and return shape, routes, fields, error codes) in the code itself, and the architect lists them in the verify task.
 
 ### Fixed
+
 - Repo groups: the integration check no longer undoes the frontend's goal. It only knew the contract, which covers the HTTP side, so in the group evals it twice rewrote a correctly built web client to match the API's shapes (`listOrders()` turned into a one-page fetcher returning `{items, nextCursor}`, `placeOrder` renamed) and passed. It now gets the frontend's goal and keeps every name, parameter and return value that goal states.
 - Repo groups: a group goal that passed after a failed integration round no longer leaves that round's `orchestrator/checkpoint-*` branch in the frontend repo. The group now removes the checkpoints its own member runs left behind when it passes, as it already did when it parks a repo, and only those: an older checkpoint on the same commit stays.
 - Repo groups: the cost of a member run that was retried (after a usage limit) now counts every attempt toward the group's `--max-cost`, not only the last.
@@ -31,13 +40,16 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [0.6.3] - 2026-11-25
 
 ### Added
+
 - Gate checks: `"gateChecks"` in `.orchestrator/config.json` names slow suites (end-to-end, performance) that YAAIORCH runs after the ordinary checks pass but the agents get no permission to run, like tests that only run in CI. A failure fails the round and its output goes to the fix round; agents are told the names, not the commands, and the commands are denied in their settings. Keep an in-repo gate suite under `"protect"`. The run view marks them (**gate**) and shows when they were skipped because an earlier check failed; `orch doctor` warns when an ordinary check's permission would let agents run one anyway.
 - Three eval cases that need a fix round (`lib-intervals-perf`, `lib-recurrence-fuzz`, `tickets-export-e2e`): each has a gate suite outside the repo that checks behaviour against an oracle and house rules the goal does not state. All 40 runs on 21 November passed, and all 31 with the house rules needed a fix round. Session resume made no measurable difference on them ([results](docs/evals/2026-11-21.md)).
 
 ### Changed
+
 - The structured events have one set of types, `orch-events.ts`, shared by orch, the browser server and the UI: a field renamed or dropped on one side now fails the typecheck instead of showing up as a blank in the run view. A unit test checks that the docs list every event and that the desktop app counts the same events toward the daily budget as the browser server.
 
 ### Fixed
+
 - On Linux and macOS a missing `gh` (or `claude`) is now reported as not found. Before, `orch doctor` showed a missing GitHub CLI as installed but logged out, and `--pr` on GitHub failed with an error instead of linking to the page that opens the pull request. This also made the scenario tests fail in CI, where the runners have their own `gh`.
 - CI uses the Node 24 versions of the GitHub Actions (`checkout`, `setup-node`, `setup-python`, `setup-go` v7), which ends the Node 20 deprecation warning.
 - A fix round now sees every failing test of a failed check, not only the last: the output it gets drops stack traces and, for node --test, gives each failing test an equal share of 1,500 characters (instead of the last 800 characters of the output). Before, a check that failed two tests cost an extra round, one per test.
@@ -47,11 +59,13 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [0.6.2] - 2026-11-21
 
 ### Added
+
 - Automatic updates for the desktop app: **About YAAIORCH** checks GitHub Releases for a newer version, downloads and installs a signed update with progress, and restarts the app. Checking works any time; installing waits until no repo or group is running. Updates are signed with minisign (Ed25519): the public key is embedded in the app, the private key is a GitHub Secret, and every download is verified before it is installed. Release notes are shown as plain Markdown, never as HTML. The release workflow (`release.yml`) builds Windows x64 (NSIS and MSI), macOS (universal) and Linux x64 (AppImage), writes the update manifest (`latest.json`) through `tauri-action`, and attaches everything plus the CLI bundle and checksums to a draft release you review and publish. Installers are still not code-signed. Updates start from this version: earlier versions need one manual install. See [docs/UPDATER.md](docs/UPDATER.md) for setup and signing key generation.
 
 ## [0.6.1] - 2026-11-20
 
 ### Added
+
 - Pull requests on any git host: `--pr` pushes with git to whatever `origin` is. On GitHub, `gh` opens the pull request as before; on GitLab, Bitbucket, Codeberg (Gitea, Forgejo) and other hosts, or on GitHub without `gh`, the run shows a link that opens it in one click (the one the host prints on push, else one built for the host). CI watching and issue comments stay GitHub-only.
 - New projects can start with a remote: **Remote** in **+ New project**, or `orch new --remote URL` (any host, or a local path). It becomes `origin` and gets the first commit, so pull requests have a base there.
 - **Always allow npm install …** on Agent M's card: allow every command that starts with the same two words (`Bash(npm install:*)` in config `allow`, `orch decide ID prefix`), after a confirmation that says what it allows. Offered only for a single plain command; never for a shell, an interpreter, `rm`, `curl`, `git` and the like, or `npm exec` / `dlx`; a chained command (`npm install x && …`) still asks.
@@ -60,24 +74,28 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - `orch doctor` reports the GitHub CLI (`gh`). With `--pr` (the UI passes its **Open pull request** switch) or `pr` in the config it checks what pull requests need: a warning without an `origin`, and for a GitHub origin when `gh` is missing or logged out; another host needs no `gh`. GitHub issue intake warns the same way. README's requirements and the release notes now name `gh`: optional, GitHub only, logged in on its own (a git login is not enough).
 
 ### Changed
+
 - Agent text is easier to read: plans, plan approvals, group goals, the API contract, task reports, failures and agent questions render their Markdown (code, bold, lists, links), and a long single paragraph is shown one sentence per line (`structureText`, split only at a real sentence end, never inside code, quotes or brackets). What agents are asked to write is unchanged.
 - The desktop app bundles Node.js 24.22.3 (LTS, the version CI tests with) instead of 22.14.0, which was missing several security releases.
 - CI also runs the tests on Node 22, the oldest supported version.
 - The landing page mentions pushes to any git host, the file size limit, the always-allowed list, and the GitHub CLI as optional. The Agent M screenshot shows the new button, and the repo group screenshot was retaken at the same zoom as the others (it was captured at a smaller scale) and shows the new plan formatting.
 
 ### Fixed
+
 - The unit and group tests failed on Node 22: they imported tsx's CommonJS entry. They now load its ESM entry (`test/tsx.mjs`).
 - The Agents page no longer asks the server for a repo's agents before a repo is selected (an `unknown repo` error in the server log).
 
 ## [0.6.0] - 2026-11-20
 
 ### Added
+
 - Repo groups: one goal across a backend and a frontend repo (`orch group add|run|stop|rollback`, and a group page in the app: **+ New group**, run, approve the plan, stop, roll back; member repos show their part and refuse their own runs meanwhile). A coordinator writes the API contract and a goal per repo, both repos build in parallel against it, then the frontend is checked against the running backend (live calls to every case it relies on, and a browser check when the frontend has a `serve`); a failure goes back to the side at fault. On failure both repos are reset and their work parked; `orch group rollback` undoes a passed goal in both.
 - Repo groups: the integration check's agents call the running backend through a probe tool (`orch run --probe URL`, an MCP server limited to that backend), and a contract case that was not checked live fails the check. Before, agents had no way to reach the backend (no shell), and integration could pass on code reading alone.
 - Skills and custom agents can be turned off per repo (switches on the **Agents** page, `orch agents --disable-skill` / `--disable-agent`): a skill turned off is hidden from every agent and never offered to the architect, an agent turned off never gets a task.
 - Events `group_approval_wait` and `group_approval` for a group plan waiting with `--approve-plan`; `orch group list --json` names each group's run `dir`.
 
 ### Changed
+
 - `orch group add` over an existing group keeps its `contract` and `integrationRounds`.
 - A user agent named `coordinator` is now treated as the repo-group coordinator and left out of plans.
 - The landing page has a fourth screenshot (a repo group waiting for plan approval, on two demo repos) and a repo groups feature card, and lists macOS with the desktop app.
@@ -85,29 +103,35 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - Added source and release license notices and guidance to distinguish unofficial forks from YAAIORCH.
 
 ### Fixed
+
 - Landing page: the screenshot slider keeps one frame ratio and a two-line caption slot, so the tabs no longer move between slides. The three screenshots were retaken at the same size and zoom.
 
 ## [0.5.6] - 2026-11-18
 
 ### Added
+
 - Agent swaps: use a differently named user or project agent in any built-in role with config `"swap"`, `orch agents --swap be=backend-builder`, or **Use instead** on the **Agents** page. Plans, permissions and model roles stay unchanged; `--unswap` restores the built-in.
 
 ### Fixed
+
 - The Tauri dev app now prefers its freshly rebuilt `orch.mjs`, so newly added CLI options such as agent `--swap` are available without a stale packaged-resource copy taking precedence.
 
 ## [0.5.5] - 2026-11-18
 
 ### Added
+
 - **Agent M: shell commands you approve** (`--commands`, config `"commands": "ask"`, **Commands via Agent M** in run settings): implementers may run shell commands (install a dependency, a generator, a migration), each one only after you allow it. The new **Agent M** page in the sidebar (with a count of waiting commands; cards in the run view too) lists them across all repos with the agent, its reason and the exact command: **Allow**, **Always allow** (adds the exact command to config `allow`) or **Deny**. Always allow is refused for a command with `*`, parentheses or a secret, since the rule would act as a wildcard or store the secret. Unanswered commands are denied after `--command-timeout` minutes (default 10); waiting does not count against `--agent-timeout`; a command whose agent crashed is reported as cancelled. Read-only roles never ask. Built on Claude Code's `--permission-prompt-tool` with a small MCP server (`orch permit`); `orch decide ID allow|deny|always` answers from a terminal. New events `command_wait` and `command_decided`. Commands run on your machine without a sandbox: read each one.
 - **Ask Agent M**: a chat on the same page for questions about your setup and open repos ("Which MCP servers are connected?", "Why did the last run fail?"). Haiku answers from a status of the machine (`orch doctor`, plugins, `claude mcp list`) and of each repo (queue, last run, recent failures, brief), may read the repos' files but never changes them or runs commands, and formats its answers (lists, code, links). Opening the page gathers the machine status in the background, so a first answer takes seconds; follow-ups continue the same session; the cost counts toward the daily budget. `orch chat` (JSON on stdin, `--warm`) backs it.
 - **Published eval results** ([November 2026](docs/evals/2026-11-18.md)): 55 runs on 10 cases, every one passed the hidden tests, no false passes.
 
 ### Changed
+
 - **The fast path is the default**: round 1 is one agent doing the whole goal, judged by the checks, and the full loop runs only if that fails. In the evals it passed all 18 runs (as did the full loop, with no false passes either way) at about half the cost and time. `--no-fast` or config `"fast": false` turns it off; `--approve-plan`, `--critic` and `--dry-run` keep the full loop unless `--fast` is given too. The UI's **Fast path** box is now ticked by default (repos with saved settings keep theirs).
 - Run history keeps the newest 200 attempts per repo (`ORCH_HISTORY_KEEP` changes it), and listing reads only the start and end of a large run file, so the History tab stays fast as runs pile up.
 - Eval runner: plugins and hooks off by default (`--user-plugins`), `--usage-cap` to leave part of the subscription window free, a plain tier now means the full loop (`--no-fast`), and a relative `--claude-bin` works.
 
 ### Fixed
+
 - Desktop app on macOS and Linux: find `claude`, `gh`, `git` and `node` when started from Finder, the Dock or a launcher ("claude --version failed"), by taking PATH from the login shell plus the usual install dirs (`~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, …).
 - A render error in one page no longer blanks the whole app: the page shows the error with **Try again** and **Reload**, and the sidebar stays usable.
 - The desktop app no longer freezes while adding or retrying a goal, and the browser server no longer pauses live updates while it lists or saves agents.
@@ -117,6 +141,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [0.5.4] - 2026-11-16
 
 ### Added
+
 - Opt-in worktrees for parallel build tasks. Every task starts from the same round snapshot; diffs apply back after completion, and a conflicting worktree is preserved with its recovery path reported.
 - A cross-repo Overview work board for active tasks, human input, verification/PR review, and completed queue goals.
 - A landing-page screenshot slider, including a simulated three-project work board.
@@ -124,6 +149,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [0.5.3] - 2026-11-16
 
 ### Added
+
 - An About dialog with project credits, version and license.
 - Automatic browser-check setup for common web apps: review the detected script, discover the local server URL, and log in from run settings.
 - Opt-in agent decision cards with suggested or free-text answers, independent parallel questions and read-only history.
@@ -132,6 +158,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 - **Run again** from history to start a new attempt with the repo's current settings.
 
 ### Changed
+
 - Built-in agents request task acceptance criteria, focused tests and clearer verification and blocker reports.
 - Updated the project site and screenshot to show run history and task timelines.
 - Updated the project site to highlight automatic browser-check setup and optional agent questions.
@@ -139,17 +166,20 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 ## [0.5.2] - 2026-11-14
 
 ### Added
+
 - **Run visualization**: per-round phase timelines, a focused failure summary and bounded live task activity categories.
 - **Parallel task timeline**: see task durations and overlap in live and recorded rounds.
 - **Run history**: record each goal attempt's events locally and replay past runs in the desktop app or browser UI, including interrupted attempts.
 - Power, rounds, per-goal and queue budgets are remembered separately for each repo in the desktop app and browser UI.
 
 ### Changed
+
 - Updated the project site and screenshot to highlight browser checks, task reports, round diffs, token counts and the agent roster.
 
 ## [0.5.1] - 2026-11-14
 
 ### Added
+
 - **Task reports and round diffs**: expand agent reports on task cards and inspect each round's Git changes, including in the last-run summary.
   Reports and diffs are bounded, recognized secrets are redacted, and sensitive or unisolatable diffs are hidden.
 - **Token counts alongside cost** in active runs and persisted run summaries, including input and output totals;
@@ -175,6 +205,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
   the editor you used last.
 
 ### Fixed
+
 - **The macOS universal build** of the desktop app: `fetch-node.mjs` now keeps the x64 and arm64 Node.js binaries
   next to the fused universal one, since Tauri's per-architecture builds look for them. 0.5.0 shipped without a
   macOS app because of this.
@@ -187,6 +218,7 @@ comment on their issue, open a pull request and see its CI through, fixing it wh
 Node.js. Tested with the fake claude and a fake gh; the issue and CI flows have not run against real GitHub yet.
 
 ### Changed
+
 - **The desktop app brings its own Node.js**: the installers include the official Node.js 22 build for their
   platform (checked against its SHA-256 at build time), so Node.js no longer has to be installed or on PATH.
   `YAAIORCH_NODE` points the app at another one. The CLI bundle still needs Node.js 20+.
@@ -197,6 +229,7 @@ Node.js. Tested with the fake claude and a fake gh; the issue and CI flows have 
   project, and empty states that say what to do next.
 
 ### Added
+
 - **orch sees its pull requests through CI**: with `--pr`, orch waits for the pull request's checks; when one
   fails, it runs a fix goal on the PR branch with the failing job's log (up to `--ci-fixes N`, default 2; it may
   not touch the workflows), pushes and waits again. The run panel and the issue comment show the CI result.
@@ -221,6 +254,7 @@ Node.js. Tested with the fake claude and a fake gh; the issue and CI flows have 
 - Unit tests for the UI's run view (`reduce.ts`) and the desktop app's project-name check.
 
 ### Fixed
+
 - The pull request link in the run panel did nothing in the desktop app; it now opens the system browser.
 - The UI's daily budget capped each goal of a queue, so the goal it ran out in failed (and blocked the goals that
   need it). A queue now gets what is left of the day as its overall budget: that goal stays pending and the
@@ -235,6 +269,7 @@ memory), a plan approval gate, notifications, and `claude` started without a she
 end with the fake claude and in a real smoke run; the new features are not measured by the evals yet.
 
 ### Added
+
 - **Budget and progress for a whole queue**: **Budget $** in the queue section (and **Total $** for a new project)
   caps all the goals a loop runs together (`--max-cost-total`). The latest brief's progress shows above the
   queue (a bar, goals done, failed and blocked, what it cost, a rough time left) and as "7/23" in the overview,
@@ -287,6 +322,7 @@ end with the fake claude and in a real smoke run; the new features are not measu
   `--no-resume` or `"resume": false` turns it off; eval config suffix `+noresume`. Not measured yet.
 
 ### Changed
+
 - Checks are read again every round (after the build), so checks from a package.json the agents just wrote run
   in the same round.
 - Development: ESLint, Prettier, rustfmt and clippy run in CI (`npm run lint`, `npm run format:check`);
@@ -298,6 +334,7 @@ end with the fake claude and in a real smoke run; the new features are not measu
   A shim orch cannot read still goes through cmd.exe, and `orch doctor` says so.
 
 ### Fixed
+
 - A goal cut short by the usage limit started over after the reset, redoing (and paying for) the work it had
   already committed. The next attempt now brings that work back from where it was parked and tells the
   architect, which plans only what remains. New `resumed` event.
@@ -316,6 +353,7 @@ plans get an optional critic, fix rounds build on the previous round, and runnin
 server). Relicensed under GPL-3.0-only.
 
 ### Added
+
 - **Retry of transient errors**: an agent call that fails with an API overload, a 5xx or 429 API error or a
   dropped connection is retried once after 15 s. The usage limit, the budget and timeouts are never retried.
 - **Files outside the plan**: files changed outside every task's file list are reported to QA (and shown in
@@ -352,9 +390,11 @@ server). Relicensed under GPL-3.0-only.
 These are not measured by the evals yet (the current cases pass in round 1).
 
 ### Changed
+
 - **License: GPL-3.0-only** (was MIT). Versions up to and including 0.2.0 remain available under MIT.
 
 ### Fixed
+
 - Two orch processes could run in the same repo (for example a CLI `loop` next to the UI) and overwrite
   each other's work. A run lock (`.orchestrator/run.lock`) now allows one at a time; a lock left by a
   crashed or killed process is taken over automatically.
@@ -367,6 +407,7 @@ These are not measured by the evals yet (the current cases pass in round 1).
   the task and file named.
 
 ### Security
+
 - The browser-mode server could be driven by any web page you visited (it accepted every request on
   `localhost:4317`), for example to start runs on your Claude account. It now refuses requests whose
   `Host` or `Origin` is not local (this also stops DNS rebinding) and requires a per-process session
@@ -378,6 +419,7 @@ Several repos at once, shared limits across them, control over cost (daily budge
 for agents) and safer git and budget handling.
 
 ### Added
+
 - Model selection per role (architect, implementers, heavy tasks, QA, fast-path agent) and per agent:
   `--model architect=opus,impl=haiku,be=<model id>`, `"models"` in `.orchestrator/config.json`, and a
   **Models** section in the UI. Aliases step up with the tier when a round gets stuck; full IDs stay.
@@ -407,12 +449,14 @@ for agents) and safer git and budget handling.
   `--disable-plugins ID,ID`, `--no-hooks`, config `plugins`. Claude Code itself is unchanged.
 
 ### Changed
+
 - Agents run with `--output-format stream-json --verbose` (to read the usage windows); the final result
   is parsed as before.
 - `orch run` waits for the usage-limit reset by default instead of exiting with code 3; use
   `--on-limit stop` for the old behaviour (the eval runner does).
 
 ### Fixed
+
 - Round commits failed when the target repo's `.gitignore` lists `.orchestrator/`: the work stayed
   staged, the goal still passed, and the next run refused the dirty tree.
 - A passed goal no longer deletes its checkpoint when the final commit fails (for example a rejecting
@@ -430,6 +474,7 @@ for agents) and safer git and budget handling.
 First public release.
 
 ### Orchestrator (`orch.ts`)
+
 - Loop: architect plan → foundation tasks in order → build tasks in parallel → the repo's checks →
   QA verdicts, repeated with the failures until QA passes or max rounds is reached.
 - Commands: `run`, `add`, `loop`, `status`, `agents`, `doctor`, `rollback`, `prune`.
@@ -452,17 +497,20 @@ First public release.
 - Structured `@@ORCH@@` event stream for UIs, including costs per task, round and goal.
 
 ### UI (`orch-ui/`)
+
 - React UI with live task cards, check badges, costs, power tier per round and stuck notes.
 - Browser mode (`server.ts`, HTTP + SSE) and a Tauri v2 desktop app with a repo picker.
 - Doctor banner, rollback offer with confirmation, budget field, Stop with stopped-run detection.
 
 ### Evals (`evals/`)
+
 - 10 cases over three dependency-free fixtures (Node library, Node API, Python package), graded by
   hidden tests the agents never see, each with a reference solution.
 - Runner with per-tier and per-case tables, false-pass count, `--reference` self-check,
   `--resume` and `--wait-on-limit`.
 
 ### Testing
+
 - Fake `claude` (`test/fake-claude/`) and 19 end-to-end scenario tests (`npm test` in `orch-ui`),
   run in CI on Linux and Windows, plus the desktop backend's spawn test against the fake.
 - Eval suite grown to 21 cases on five fixtures (Node library, Node API, Node shop, layered Node
@@ -470,14 +518,17 @@ First public release.
 - Single-agent control group in the eval runner (`--single <models>`), and `+fast` tier labels.
 
 ### Experimental
+
 - `--fast`: round 1 is one generalist `dev` agent judged by the repo's checks; the full loop runs
   only if that fails. Not yet measured with real models.
 
 ### Fixed
+
 - Windows: a `CLAUDE_BIN` path containing spaces (for example under `C:\Program Files`) broke every
   agent call and `orch doctor`, because cmd.exe received it unquoted.
 
 ### Known limitations
+
 - Installers are not code-signed: Windows SmartScreen and macOS Gatekeeper will warn.
 - The desktop app needs Node.js 20+ on PATH and Claude Code installed and logged in.
 - On the eval cases so far, a single `claude -p` call matches the loop's pass rate at similar or lower

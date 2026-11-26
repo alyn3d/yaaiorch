@@ -4,7 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import type { AgentRoster, Finding, Global, HistoryEntry, HistoryRecording, OrchEvent, Plugin, State } from "./types";
+import type { AgentRoster, ClientInfo, Finding, Global, HistoryEntry, HistoryRecording, OrchEvent, Plugin, RemoteStatus, State } from "./types";
 
 /** One repo's state, log and structured events since its last goal_start. */
 /** Agent M's answer: the text, the session to continue, and what it cost. */
@@ -27,6 +27,10 @@ export type Handlers = {
   onGlobal(g: Global): void;
   /** `error`: why the server cannot be reached (it is still being retried). */
   onConnection(ok: boolean, error?: string): void;
+  /** Who this window is (the PC, or a paired device and its role). */
+  onClient(c: ClientInfo): void;
+  /** Remote access status; sent to the PC's windows only. */
+  onRemote(r: RemoteStatus): void;
 };
 export interface Transport {
   /** Desktop: a native folder picker. Browser: the user types a path. */
@@ -76,6 +80,11 @@ export interface Transport {
   agentMAsk(question: string, session?: string): Promise<AgentMReply>;
   /** Agent M: gather the machine status in the background so the first question is quick (fire and forget). */
   agentMWarm(): Promise<void>;
+  /** Remote access (PC only): turn the tunnel on or off, make a pairing link, answer a request, change or remove a device. */
+  remoteEnable(on: boolean): Promise<RemoteStatus>;
+  remotePairLink(): Promise<{ url: string; expiresIn: number }>;
+  remoteDecide(id: string, allow: boolean): Promise<void>;
+  remoteDevice(id: string, change: { role: "view" | "control" } | { revoke: true }): Promise<void>;
   /** Create a repo group, or save over one of that name (`orch group add`). */
   saveGroup(g: GroupForm): Promise<void>;
   /** Delete a repo group's config (refused while it runs); its repos are not touched. */
@@ -98,14 +107,19 @@ export type GroupForm = {
 // Desktop: the app starts the same server (bundled as server.mjs) on a free port and hands its address and token to
 // the webview (`server_info`). Every /api call carries the token (see refuse() in server.ts). A restarted server has a
 // new token (and in the app a new port), so a 403 or a dropped connection asks again and retries once.
+// A paired phone (the page came through the tunnel) has no token: its device cookie goes with every request.
 type Endpoint = { url: string; token: string };
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+export const isRemotePage = !isTauri && typeof location !== "undefined" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+export const NOT_PAIRED = "This device is not paired with YAAIORCH, or it was removed. Pair it again from the PC.";
 const findEndpoint = (): Promise<Endpoint> =>
   isTauri
     ? invoke<Endpoint>("server_info").catch((e) => Promise.reject(new Error(String(e))))
-    : fetch("/api/token", { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`could not get the session token (${r.status})`))))
-        .then((d: { token: string }) => ({ url: "", token: d.token }));
+    : isRemotePage
+      ? fetch("/api/state", { cache: "no-store" }).then((r) => (r.status === 401 ? Promise.reject(new Error(NOT_PAIRED)) : { url: "", token: "" }))
+      : fetch("/api/token", { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`could not get the session token (${r.status})`))))
+          .then((d: { token: string }) => ({ url: "", token: d.token }));
 let endpointP: Promise<Endpoint> | null = null;
 function endpoint(): Promise<Endpoint> {
   endpointP ??= findEndpoint().catch((e) => {
@@ -118,13 +132,13 @@ async function api(path: string, init: RequestInit = {}, retry = true): Promise<
   const { url, token } = await endpoint();
   let r: Response;
   try {
-    r = await fetch(`${url}${path}`, { ...init, headers: { ...(init.headers as Record<string, string>), "x-orch-token": token } });
+    r = await fetch(`${url}${path}`, { ...init, headers: { ...(init.headers as Record<string, string>), ...(token ? { "x-orch-token": token } : {}) } });
   } catch (e) {
     if (!retry) throw e;
     endpointP = null; // the app's server restarted on another port
     return api(path, init, false);
   }
-  if (r.status === 403 && retry) {
+  if (r.status === 403 && retry && !isRemotePage) {
     endpointP = null;
     return api(path, init, false);
   }
@@ -151,9 +165,53 @@ export type NewProject = {
   plugins?: unknown;
 };
 
+/**
+ * A paired phone: long polling instead of the event stream, which Cloudflare's quick tunnels hold back. Each answer is
+ * every event after `since` (a fresh init when too far behind), dispatched to the same handlers as the stream's.
+ */
+function pollSubscribe(h: Handlers): () => void {
+  let stopped = false;
+  let since = 0;
+  const ctl = new AbortController();
+  const dispatch = (event: string, data: any) => {
+    if (event === "init") h.onInit(data);
+    else if (event === "session") h.onSession(data);
+    else if (event === "log") h.onLog(data.repo, data.line);
+    else if (event === "ev") h.onEvent(data.repo, data.ev);
+    else if (event === "global") h.onGlobal(data);
+    else if (event === "client") h.onClient(data);
+  };
+  void (async () => {
+    while (!stopped) {
+      try {
+        const r = await fetch(`/api/poll?since=${since}`, { cache: "no-store", signal: ctl.signal });
+        if (r.status === 401) {
+          h.onConnection(false, NOT_PAIRED);
+          await new Promise((ok) => setTimeout(ok, 10_000));
+          continue;
+        }
+        if (!r.ok) throw new Error(r.statusText);
+        const d: { seq: number; events: { event: string; data: unknown }[] } = await r.json();
+        for (const e of d.events) dispatch(e.event, e.data);
+        since = d.seq;
+        h.onConnection(true);
+      } catch {
+        if (stopped) return;
+        h.onConnection(false);
+        await new Promise((ok) => setTimeout(ok, 3000));
+      }
+    }
+  })();
+  return () => {
+    stopped = true;
+    ctl.abort();
+  };
+}
+
 const web: Transport = {
   canPickRepo: false,
   subscribe(h) {
+    if (isRemotePage) return pollSubscribe(h);
     // EventSource cannot send headers, so the token goes in the URL. A refused or dropped stream closes;
     // reconnect with a fresh token (the server may have restarted with a new one).
     let es: EventSource | null = null;
@@ -190,6 +248,8 @@ const web: Transport = {
         h.onEvent(d.repo, d.ev);
       });
       es.addEventListener("global", (e) => h.onGlobal(data(e)));
+      es.addEventListener("client", (e) => h.onClient(data(e)));
+      es.addEventListener("remote", (e) => h.onRemote(data(e)));
     };
     connect();
     return () => {
@@ -214,6 +274,10 @@ const web: Transport = {
   setUsageCap: (cap) => post("settings", { usageCap: cap }),
   setKeepAwake: (on) => post("settings", { keepAwake: on }),
   clearLimit: () => post("clear-limit", {}),
+  remoteEnable: (on) => post("remote/enable", { on }),
+  remotePairLink: () => post("remote/pair-code", {}),
+  remoteDecide: (id, allow) => post("remote/decide", { id, allow }),
+  remoteDevice: (id, change) => post("remote/device", { id, ...change }),
   async doctor(repo, pr) {
     const r = await api(`/api/doctor?repo=${encodeURIComponent(repo)}${pr ? "&pr=1" : ""}`);
     return r.ok ? r.json() : [{ name: "server", level: "fail", detail: r.statusText }];

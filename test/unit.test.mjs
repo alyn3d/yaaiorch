@@ -340,6 +340,107 @@ describe("Agent M answers: Markdown subset (orch-ui/src/markdown.ts)", () => {
   });
 });
 
+describe("remote access: pairing and roles (orch-ui/remote.ts, tunnel.ts)", () => {
+  let r, t, dir;
+  before(async () => {
+    const { tsImport } = await tsxApi(root);
+    r = await tsImport(pathToFileURL(join(root, "orch-ui", "remote.ts")).href, import.meta.url);
+    t = await tsImport(pathToFileURL(join(root, "orch-ui", "tunnel.ts")).href, import.meta.url);
+    dir = mkdtempSync(join(tmpdir(), "yaaiorch-remote-"));
+  });
+
+  const pair = (remote, name = "Pixel") => {
+    const code = remote.newCode();
+    const req = remote.request(code, name, "Mozilla/5.0 (Android)", "1.1.1.1");
+    assert.ok(req.id && req.poll, JSON.stringify(req));
+    return req;
+  };
+
+  test("a code works once; the PC allows; the phone's poll gets a view-only device once", () => {
+    const file = join(dir, "a.json");
+    const remote = new r.Remote(file);
+    const code = remote.newCode();
+    const req = remote.request(code, "Pixel\u0007 phone", "UA", "1.1.1.1");
+    assert.ok("id" in req);
+    assert.ok("error" in remote.request(code, "again", "UA", "1.1.1.1"), "single use");
+    assert.deepEqual(remote.status(req.id, req.poll), { status: "waiting" });
+    assert.deepEqual(remote.status(req.id, "wrong poll"), { status: "unknown" }, "the poll secret is needed");
+    assert.equal(remote.requests()[0].name, "Pixel  phone", "control characters are dropped");
+    assert.ok(remote.decide(req.id, true));
+    const ok = remote.status(req.id, req.poll);
+    assert.equal(ok.status, "allowed");
+    assert.equal(ok.device.role, "view", "new devices only view");
+    assert.equal(ok.device.keyHash, undefined, "the key hash never leaves the server");
+    assert.deepEqual(remote.status(req.id, req.poll), { status: "unknown" }, "the key is handed out once");
+    const saved = readFileSync(file, "utf8");
+    assert.ok(!saved.includes(ok.cookie.split(".")[1]), "only a hash of the key is stored");
+    assert.equal(new r.Remote(file).authenticate(`${r.COOKIE}=${ok.cookie}`)?.id, ok.device.id, "devices survive a restart");
+    assert.equal(remote.authenticate(`${r.COOKIE}=${ok.device.id}.wrongkey`), null);
+    assert.equal(remote.authenticate(undefined), null);
+  });
+
+  test("a denied request gets no device; a revoked device is refused; roles change", () => {
+    const remote = new r.Remote(join(dir, "b.json"));
+    const no = pair(remote);
+    remote.decide(no.id, false);
+    assert.deepEqual(remote.status(no.id, no.poll), { status: "denied" });
+    const yes = pair(remote, "Tablet");
+    remote.decide(yes.id, true);
+    const { cookie, device } = remote.status(yes.id, yes.poll);
+    assert.ok(remote.setRole(device.id, "control"));
+    assert.equal(remote.authenticate(`a=b; ${r.COOKIE}=${cookie}`).role, "control");
+    assert.ok(!remote.setRole(device.id, "admin"), "only view or control");
+    assert.ok(remote.revoke(device.id));
+    assert.equal(remote.authenticate(`${r.COOKIE}=${cookie}`), null);
+  });
+
+  test("codes and requests expire; wrong codes are rate-limited per address and overall", () => {
+    let now = 1_000_000;
+    const remote = new r.Remote(join(dir, "c.json"), () => now);
+    const code = remote.newCode();
+    now += r.CODE_TTL + 1;
+    assert.ok("error" in remote.request(code, "x", "", "2.2.2.2"), "an old code fails");
+    for (let i = 0; i < 4; i++) remote.request("guess", "x", "", "3.3.3.3");
+    const fresh = remote.newCode();
+    assert.match(remote.request("guess", "x", "", "3.3.3.3").error, /not valid/);
+    assert.match(remote.request(fresh, "x", "", "3.3.3.3").error, /too many/, "five misses lock that address out, even with the right code");
+    assert.ok("id" in remote.request(fresh, "x", "", "4.4.4.4"), "another address still pairs");
+    now += 11 * 60_000;
+    assert.equal(remote.requests().length, 0, "an unanswered request expires");
+  });
+
+  test("view devices only read; control devices act; some routes stay on the PC", () => {
+    const no = (role, method, path, decision) => r.remoteRefusal(role, method, path, decision);
+    assert.equal(no("view", "GET", "/api/state"), null);
+    assert.equal(no("view", "GET", "/api/events"), null);
+    assert.match(no("view", "POST", "/api/run"), /only view/);
+    assert.equal(no("control", "POST", "/api/run"), null);
+    assert.equal(no("control", "POST", "/api/decide-command", "allow"), null);
+    assert.match(no("control", "POST", "/api/decide-command", "always"), /PC/);
+    assert.match(no("control", "POST", "/api/decide-command", "prefix"), /PC/);
+    for (const p of ["/api/add-repo", "/api/new-project", "/api/reveal", "/api/settings", "/api/agents", "/api/browser", "/api/group-save"])
+      assert.match(no("control", "POST", p), /PC/, p);
+    assert.match(no("control", "GET", "/api/token"), /PC/);
+    assert.match(no("control", "GET", "/api/remote"), /PC/);
+    assert.match(no("control", "POST", "/api/remote/enable"), /PC/);
+    assert.equal(no("view", "GET", "/api/agents"), null, "reading the roster is fine");
+  });
+
+  test("the device cookie is HttpOnly, Secure and SameSite=Strict", () => {
+    const c = r.deviceCookie("id.key");
+    for (const part of ["HttpOnly", "Secure", "SameSite=Strict", "Path=/"]) assert.ok(c.includes(part), part);
+    assert.equal(r.cookieValue(`x=1; ${r.COOKIE}=id.key; y=2`), "id.key");
+  });
+
+  test("cloudflared: the quick tunnel's address in its output; a pinned build per platform", () => {
+    assert.equal(t.tunnelUrl("INF |  https://calm-river-12.trycloudflare.com   |"), "https://calm-river-12.trycloudflare.com");
+    assert.equal(t.tunnelUrl("INF Requesting new quick Tunnel on trycloudflare.com..."), null);
+    assert.equal(t.tunnelUrl("https://evil.example/https://x.trycloudflare.com.evil"), "https://x.trycloudflare.com");
+    for (const k of ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]) assert.match(t.assetFor(...k.split("-")).sha256, /^[0-9a-f]{64}$/);
+    assert.equal(t.assetFor("freebsd", "x64"), null);
+  });
+});
+
 describe("keep awake (orch-awake.ts)", () => {
   let a;
   before(async () => {

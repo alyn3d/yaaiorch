@@ -2,7 +2,7 @@
 // Starts the server on a free port with a scratch home folder; no repo, no agents, no tokens.
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -38,7 +38,7 @@ const request = (path, { method = "GET", headers = {}, body, stream = false } = 
       res
         .setEncoding("utf8")
         .on("data", (d) => (text += d))
-        .on("end", () => ok({ status: res.statusCode, text, json: () => JSON.parse(text) }));
+        .on("end", () => ok({ status: res.statusCode, headers: res.headers, text, json: () => JSON.parse(text) }));
     });
     req.on("error", fail);
     if (body !== undefined) req.write(typeof body === "string" ? body : JSON.stringify(body));
@@ -566,5 +566,136 @@ describe("desktop app mode (the app starts this server as its backend)", { timeo
     const exited = new Promise((ok) => app.once("exit", ok));
     parent.kill();
     await Promise.race([exited, new Promise((_, fail) => setTimeout(() => fail(new Error("still running")), 15_000))]);
+  });
+});
+
+describe("remote access through the tunnel (fake cloudflared)", { timeout: 60_000 }, () => {
+  let srv, dir, token;
+  const HOST = "test-tunnel.trycloudflare.com";
+  const ORIGIN = `https://${HOST}`;
+  /** A request as cloudflared forwards it: the tunnel's host and Cloudflare's headers. */
+  const remoteReq = (path, { method = "GET", cookie, body, origin = ORIGIN, ip = "203.0.113.7" } = {}) =>
+    request(path, {
+      method,
+      body,
+      headers: {
+        host: HOST,
+        "cf-connecting-ip": ip,
+        "cf-ray": "abc",
+        ...(method === "GET" ? {} : { origin, "content-type": "application/json" }),
+        ...(cookie ? { cookie } : {}),
+      },
+    });
+  const pc = (path, b) =>
+    request(
+      path,
+      b === undefined
+        ? { headers: { "x-orch-token": token } }
+        : { method: "POST", headers: { "x-orch-token": token, "content-type": "application/json" }, body: b },
+    );
+
+  before(async () => {
+    port = await freePort();
+    dir = mkdtempSync(join(tmpdir(), "yaaiorch-remote-srv-"));
+    srv = spawn(process.execPath, [TSX, "server.ts"], {
+      cwd: ui,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        HOME: dir,
+        USERPROFILE: dir,
+        ORCH_REPO: "",
+        ORCH_REPOS: "",
+        YAAIORCH_UI_SETTINGS: join(dir, "ui.json"),
+        CLOUDFLARED_BIN: join(root, "test", "fake-cloudflared", "cloudflared.mjs"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await new Promise((ok, fail) => {
+      const t = setTimeout(() => fail(new Error("server did not start")), 30_000);
+      srv.stdout.on("data", (d) => String(d).includes(`localhost:${port}`) && (clearTimeout(t), ok()));
+      srv.on("exit", (c) => fail(new Error(`server exited ${c}`)));
+    });
+    token = (await request("/api/token")).json().token;
+  });
+  after(() => {
+    // The whole tree (tsx, the server, a fake cloudflared): on Windows kill() would leave them holding the folder.
+    if (srv?.pid && process.platform === "win32") spawnSync("taskkill", ["/PID", String(srv.pid), "/T", "/F"], { stdio: "ignore" });
+    else srv?.kill();
+    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  });
+
+  test("off by default: tunnel requests are refused", async () => {
+    assert.equal((await remoteReq("/api/state")).status, 403);
+    assert.equal((await remoteReq("/")).status, 403);
+  });
+
+  test("the PC turns it on, pairs a phone that starts view-only, gives it control, then revokes it", async () => {
+    const on = await pc("/api/remote/enable", { on: true });
+    assert.equal(on.status, 200, on.text);
+    let status;
+    for (let i = 0; i < 100 && status?.tunnel.status !== "on"; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      status = (await pc("/api/remote")).json();
+    }
+    assert.equal(status.tunnel.url, ORIGIN);
+
+    assert.equal((await remoteReq("/api/state")).status, 401, "not paired");
+    assert.equal((await remoteReq("/api/token")).status, 401, "the local token is never reachable");
+    assert.equal((await remoteReq("/api/remote")).status, 401);
+
+    const link = (await pc("/api/remote/pair-code", {})).json().url;
+    assert.ok(link.startsWith(`${ORIGIN}/pair#`), link);
+    const code = link.split("#")[1];
+    assert.equal(
+      (await remoteReq("/api/pair", { method: "POST", body: { code, name: "Pixel" }, origin: "https://evil.example" })).status,
+      403,
+      "only from the tunnel's own page",
+    );
+    const req = (await remoteReq("/api/pair", { method: "POST", body: { code, name: "Pixel" } })).json();
+    assert.ok(req.id && req.poll);
+    assert.equal((await remoteReq("/api/pair", { method: "POST", body: { code, name: "Again" } })).status, 403, "a code works once");
+
+    const poll = () => remoteReq("/api/pair/status", { method: "POST", body: { id: req.id, poll: req.poll } });
+    assert.equal((await poll()).json().status, "waiting");
+    const pending = (await pc("/api/remote")).json().requests;
+    assert.equal(pending[0].name, "Pixel");
+    assert.equal((await pc("/api/remote/decide", { id: req.id, allow: true })).status, 200);
+    const allowed = await poll();
+    assert.equal(allowed.json().status, "allowed");
+    const setCookie = allowed.headers["set-cookie"]?.[0] ?? "";
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Strict/);
+    const cookie = setCookie.split(";")[0];
+
+    const state = await remoteReq("/api/state", { cookie });
+    assert.equal(state.status, 200, state.text);
+    assert.ok(Array.isArray(state.json().sessions));
+    assert.equal((await remoteReq("/api/stop", { method: "POST", cookie, body: { repo: "x" } })).status, 403, "view-only");
+
+    const id = (await pc("/api/remote")).json().devices[0].id;
+    assert.equal((await pc("/api/remote/device", { id, role: "control" })).status, 200);
+    assert.notEqual((await remoteReq("/api/stop", { method: "POST", cookie, body: { repo: "x" } })).status, 403, "control may act");
+    assert.equal((await remoteReq("/api/settings", { method: "POST", cookie, body: { dailyBudget: 1000 } })).status, 403, "limits stay on the PC");
+    assert.equal((await remoteReq("/api/decide-command", { method: "POST", cookie, body: { repo: "x", id: "1", decision: "always" } })).status, 403);
+    assert.equal((await remoteReq("/api/remote/enable", { method: "POST", cookie, body: { on: false } })).status, 403);
+    assert.equal(
+      (await remoteReq("/api/stop", { method: "POST", cookie, body: { repo: "x" }, origin: "https://evil.example" })).status,
+      403,
+      "cross-site writes fail",
+    );
+
+    assert.equal((await pc("/api/remote/device", { id, revoke: true })).status, 200);
+    assert.equal((await remoteReq("/api/state", { cookie })).status, 401, "revoked");
+  });
+
+  test("a local process cannot pass as the PC by adding Cloudflare's headers", async () => {
+    const r = await request("/api/state", { headers: { "x-orch-token": token, "cf-ray": "x" } });
+    assert.equal(r.status, 403);
+  });
+
+  test("turning it off stops the tunnel and refuses tunnel requests again", async () => {
+    assert.equal((await pc("/api/remote/enable", { on: false })).json().tunnel.status, "off");
+    assert.equal((await remoteReq("/api/state")).status, 403);
   });
 });

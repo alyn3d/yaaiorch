@@ -90,20 +90,21 @@ export function Overview({
                     <td className="goal" title={goal}>
                       {goal || <span className="muted">—</span>}
                     </td>
-                    <td>
+                    <td data-label="Round">
                       {round ? `${round.round}/${run!.maxRounds}` : "—"}
                       {round?.mode === "direct" ? " fast" : ""}
                     </td>
-                    <td>
+                    <td data-label="Tasks">
                       {tasks.length ? `${done}/${tasks.length}` : "—"}
                       {active.length > 0 && <span className="muted"> ({active.join(", ")})</span>}
                     </td>
-                    <td className="num cost">
+                    <td className="num cost" data-label="Cost">
                       {cost !== undefined ? usd(cost) : "—"}
                       {run?.maxCost ? <span className="muted"> / {usd(run.maxCost)}</span> : null}
                     </td>
                     <td
                       className="num"
+                      data-label="Queue"
                       title={brief ? `${brief.done} of ${brief.total} goals of the brief done${brief.blocked ? `, ${brief.blocked} blocked` : ""}` : ""}
                     >
                       {brief ? `${brief.done}/${brief.total}` : pending || "—"}

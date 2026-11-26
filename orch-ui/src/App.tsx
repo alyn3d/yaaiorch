@@ -17,14 +17,18 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { GroupDialog, GroupView } from "./GroupView";
 import type { GroupConfig } from "./types";
 import { Splash } from "./Splash";
+import { PairRequests, RemoteAccess } from "./RemoteAccess";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
 const OVERVIEW = "*overview";
 const AGENTS = "*agents";
 const AGENT_M = "*agent-m";
+const REMOTE = "*remote";
 export function App() {
-  const { sessions, order, groups, maxParallel, setMaxParallel, global, connected, ready, startError, canPickRepo } = useOrch();
+  const { sessions, order, groups, maxParallel, setMaxParallel, global, connected, ready, startError, client, remote, canPickRepo } = useOrch();
+  /** A paired phone: it never manages this PC (paths, limits, remote access); a view-only one changes nothing. */
+  const viewOnly = client.remote && client.role === "view";
   /** The group form: a new group (no `initial`) or an edit. */
   const [groupDialog, setGroupDialog] = useState<{ initial?: GroupConfig } | null>(null);
   /** A group just saved: shown once its session arrives. */
@@ -48,6 +52,8 @@ export function App() {
     }
   });
   const [adding, setAdding] = useState(false);
+  /** Narrow screens (phones): the sidebar is a drawer behind the top bar's menu button. */
+  const [navOpen, setNavOpen] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [error, setError] = useState("");
 
@@ -61,9 +67,11 @@ export function App() {
       ? AGENTS
       : active === AGENT_M
         ? AGENT_M
-        : order.includes(active) || groups.includes(active) || (active === OVERVIEW && showOverview)
-          ? active
-          : (order[0] ?? "");
+        : active === REMOTE && !client.remote
+          ? REMOTE
+          : order.includes(active) || groups.includes(active) || (active === OVERVIEW && showOverview)
+            ? active
+            : (order[0] ?? "");
   useEffect(() => {
     if (!savedGroup) return;
     const dir = groups.find((g) => sessions[g]?.state.group?.name === savedGroup);
@@ -83,11 +91,32 @@ export function App() {
     }
   }, [current]);
 
+  // The drawer closes once a page is picked, and on Escape.
+  useEffect(() => setNavOpen(false), [current]);
+  useEffect(() => {
+    if (!navOpen) return;
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setNavOpen(false);
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [navOpen]);
+  const pageTitle =
+    current === OVERVIEW
+      ? "Overview"
+      : current === AGENTS
+        ? "Agents"
+        : current === AGENT_M
+          ? "Agent M"
+          : current === REMOTE
+            ? "Remote access"
+            : (sessions[current]?.state.group?.name ?? (current ? baseName(current) : "YAAIORCH"));
+  /** Something waits for the human (a command, a pairing request): the menu button shows it while the drawer is shut. */
+  const attention = waitingCommands + (client.remote ? 0 : (remote?.requests.length ?? 0));
+
   // A group run takes a parallel slot like a repo's run.
   const running = [...order, ...groups].filter((r) => sessions[r]?.state.running).length;
   const waiting = [...order, ...groups].filter((r) => sessions[r]?.state.queued).length;
 
-  const guard = async (fn: () => Promise<void>) => {
+  const guard = async (fn: () => Promise<unknown>) => {
     setError("");
     try {
       await fn();
@@ -107,7 +136,25 @@ export function App() {
 
   if (!ready) return <Splash error={startError} />;
   return (
-    <div className="shell">
+    <div className={`shell${client.remote ? " remote-client" : ""}${navOpen ? " nav-open" : ""}`}>
+      {/* Narrow screens only (CSS): the page's name and what runs, with the sidebar behind the menu button. */}
+      <header className="appbar">
+        <button className="ghost appbar-menu" aria-label="Menu" aria-expanded={navOpen} onClick={() => setNavOpen(!navOpen)}>
+          ☰
+          {attention > 0 && (
+            <span className="nav-alert" aria-label={`${attention} waiting for you`}>
+              {attention}
+            </span>
+          )}
+        </button>
+        <img src="/logo-64.png" alt="" width={22} height={22} />
+        <span className="appbar-title">{pageTitle}</span>
+        <span className="appbar-status muted">
+          <span className={`dot ${connected ? "on" : ""}`} aria-hidden />
+          {connected ? (running ? `${running} running` : "idle") : "offline"}
+        </span>
+      </header>
+      {navOpen && <div className="drawer-backdrop" onClick={() => setNavOpen(false)} aria-hidden />}
       <aside className="sidebar">
         <div className="brand">
           <img className="logo" src="/logo-64.png" alt="" width={26} height={26} />
@@ -163,6 +210,25 @@ export function App() {
               </span>
             )}
           </button>
+          {!client.remote && (
+            <button
+              className={`nav-item ${current === REMOTE ? "active" : ""}`}
+              aria-current={current === REMOTE ? "page" : undefined}
+              onClick={() => setActive(REMOTE)}
+              title="Watch and steer YAAIORCH from your phone"
+            >
+              <span className="nav-icon" aria-hidden>
+                ⇄
+              </span>
+              <span className="nav-label">Remote</span>
+              {remote?.enabled && <span className={`status ${remote.tunnel.status === "on" ? "done" : "warn"}`} aria-label="remote access is on" />}
+              {!!remote?.requests.length && (
+                <span className="nav-alert" aria-label={`${remote.requests.length} pairing request`}>
+                  {remote.requests.length}
+                </span>
+              )}
+            </button>
+          )}
           <p className="nav-section">Repos</p>
           {order.map((repo) => {
             const s = sessions[repo];
@@ -213,7 +279,7 @@ export function App() {
               </div>
             );
           })}
-          {canPickRepo || !adding ? (
+          {client.remote ? null : canPickRepo || !adding ? (
             <div className="nav-actions">
               <button className="ghost" onClick={() => (canPickRepo ? addRepo() : setAdding(true))} title="Open another repo">
                 + Open repo
@@ -259,44 +325,46 @@ export function App() {
               {connected ? `${running}/${maxParallel} running${waiting ? ` · ${waiting} waiting` : ""}` : "disconnected"}
             </span>
           </div>
-          <Limits
-            g={global}
-            now={now}
-            onBudget={(v) => guard(() => transport.setDailyBudget(v))}
-            onCap={(w, v) => guard(() => transport.setUsageCap({ ...global.usageCap, [w]: v }))}
-          />
-          <div className="foot-row">
-            <label title="How many repos may run at the same time; further starts wait for a free slot. All repos share one Claude usage limit.">
-              Parallel
-              <input
-                type="number"
-                min={1}
-                max={16}
-                value={maxParallel}
-                onChange={(e) => {
-                  const n = Math.round(Number(e.target.value));
-                  if (n >= 1 && n <= 16) guard(() => setMaxParallel(n));
-                }}
-              />
-            </label>
-            <span className="spacer" />
-            <label
-              className="check switch"
-              title="A desktop notification when a goal passes or fails, an agent or plan needs your input, or a run waits for the usage limit (only while this window is not in front)"
-            >
-              <input type="checkbox" role="switch" checked={notifyOn} onChange={(e) => void setNotifyOn(e.target.checked).then(setNotifyOnState)} /> Notify
-            </label>
-          </div>
-          <div className="foot-row">
-            <label
-              className="check switch"
-              title="While a goal, queue, new project or group goal runs, this computer does not go to sleep on its own, so a run waiting out the usage limit carries on after the reset. The screen may still turn off; closing a laptop's lid or choosing Sleep still sleeps it. Applies to runs started from now on."
-            >
-              <input type="checkbox" role="switch" checked={global.keepAwake} onChange={(e) => guard(() => transport.setKeepAwake(e.target.checked))} /> Keep
-              computer awake
-            </label>
-            {global.keepAwake && running > 0 && <span className="muted">· awake</span>}
-          </div>
+          <fieldset className="contents" disabled={client.remote}>
+            <Limits
+              g={global}
+              now={now}
+              onBudget={(v) => guard(() => transport.setDailyBudget(v))}
+              onCap={(w, v) => guard(() => transport.setUsageCap({ ...global.usageCap, [w]: v }))}
+            />
+            <div className="foot-row">
+              <label title="How many repos may run at the same time; further starts wait for a free slot. All repos share one Claude usage limit.">
+                Parallel
+                <input
+                  type="number"
+                  min={1}
+                  max={16}
+                  value={maxParallel}
+                  onChange={(e) => {
+                    const n = Math.round(Number(e.target.value));
+                    if (n >= 1 && n <= 16) guard(() => setMaxParallel(n));
+                  }}
+                />
+              </label>
+              <span className="spacer" />
+              <label
+                className="check switch"
+                title="A desktop notification when a goal passes or fails, an agent or plan needs your input, or a run waits for the usage limit (only while this window is not in front)"
+              >
+                <input type="checkbox" role="switch" checked={notifyOn} onChange={(e) => void setNotifyOn(e.target.checked).then(setNotifyOnState)} /> Notify
+              </label>
+            </div>
+            <div className="foot-row">
+              <label
+                className="check switch"
+                title="While a goal, queue, new project or group goal runs, this computer does not go to sleep on its own, so a run waiting out the usage limit carries on after the reset. The screen may still turn off; closing a laptop's lid or choosing Sleep still sleeps it. Applies to runs started from now on."
+              >
+                <input type="checkbox" role="switch" checked={global.keepAwake} onChange={(e) => guard(() => transport.setKeepAwake(e.target.checked))} /> Keep
+                computer awake
+              </label>
+              {global.keepAwake && running > 0 && <span className="muted">· awake</span>}
+            </div>
+          </fieldset>
           <button ref={aboutButton} className="ghost" onClick={() => setAbout(true)}>
             About YAAIORCH
           </button>
@@ -340,6 +408,21 @@ export function App() {
             />
           )}
 
+          {!client.remote && <PairRequests remote={remote} guard={guard} />}
+          {client.remote && (
+            <section className="callout banner" role="status">
+              <div className="callout-text">
+                <strong>
+                  Remote: {client.name} · {client.role === "control" ? "control" : "view only"}
+                </strong>
+                <span>
+                  {client.role === "control"
+                    ? "You can start, stop, approve and answer. Opening repos, limits and paired devices stay on the PC."
+                    : "You can watch everything here. To act from this device, switch on Control for it on the PC."}
+                </span>
+              </div>
+            </section>
+          )}
           {global.usageLimit && global.usageLimit.until > now && (
             <section className="callout warn banner" role="status">
               <div className="callout-text">
@@ -387,51 +470,54 @@ export function App() {
             </section>
           )}
 
-          {order.length === 0 && !newProject && current !== AGENT_M && !groups.includes(current) && (
-            <section className="empty-state">
-              <img src="/logo-64.png" alt="" width={48} height={48} />
-              <h2>No repo open</h2>
-              <p className="muted">
-                Open a git repo, or start a new project from a spec. Each repo gets its own queue and log; up to {maxParallel} run at the same time.
-              </p>
-              <div className="row">
-                <button className="primary" onClick={() => (canPickRepo ? addRepo() : setAdding(true))}>
-                  Open repo
-                </button>
-                <button onClick={() => setNewProject(true)}>New project</button>
-              </div>
-            </section>
-          )}
+          <fieldset className="contents" disabled={viewOnly}>
+            {current === REMOTE && <RemoteAccess remote={remote} guard={guard} />}
+            {order.length === 0 && !newProject && current !== AGENT_M && current !== REMOTE && !groups.includes(current) && (
+              <section className="empty-state">
+                <img src="/logo-64.png" alt="" width={48} height={48} />
+                <h2>No repo open</h2>
+                <p className="muted">
+                  Open a git repo, or start a new project from a spec. Each repo gets its own queue and log; up to {maxParallel} run at the same time.
+                </p>
+                <div className="row">
+                  <button className="primary" onClick={() => (canPickRepo ? addRepo() : setAdding(true))}>
+                    Open repo
+                  </button>
+                  <button onClick={() => setNewProject(true)}>New project</button>
+                </div>
+              </section>
+            )}
 
-          {showOverview && current === OVERVIEW && (
-            <Overview sessions={sessions} order={order} now={now} onOpen={setActive} onStop={(repo) => guard(() => transport.call("stop", { repo }))} />
-          )}
+            {showOverview && current === OVERVIEW && (
+              <Overview sessions={sessions} order={order} now={now} onOpen={setActive} onStop={(repo) => guard(() => transport.call("stop", { repo }))} />
+            )}
 
-          {current === AGENTS && <AgentsPage repos={order} repo={agentRepo} onRepoChange={setAgentRepo} />}
+            {current === AGENTS && <AgentsPage repos={order} repo={agentRepo} onRepoChange={setAgentRepo} />}
 
-          {current === AGENT_M && (
-            <AgentMPanel
-              sessions={sessions}
-              order={order}
-              decide={(repo, id, decision) => transport.call("decide-command", { repo, id, decision })}
-              chat={agentMChat}
-            />
-          )}
+            {current === AGENT_M && (
+              <AgentMPanel
+                sessions={sessions}
+                order={order}
+                decide={(repo, id, decision) => transport.call("decide-command", { repo, id, decision })}
+                chat={agentMChat}
+              />
+            )}
 
-          {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
-          {groups.map(
-            (dir) =>
-              sessions[dir]?.state.group && (
-                <GroupView
-                  key={dir}
-                  session={sessions[dir]}
-                  sessions={sessions}
-                  hidden={dir !== current}
-                  onOpenRepo={setActive}
-                  onEdit={(initial) => setGroupDialog({ initial })}
-                />
-              ),
-          )}
+            {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
+            {groups.map(
+              (dir) =>
+                sessions[dir]?.state.group && (
+                  <GroupView
+                    key={dir}
+                    session={sessions[dir]}
+                    sessions={sessions}
+                    hidden={dir !== current}
+                    onOpenRepo={setActive}
+                    onEdit={(initial) => setGroupDialog({ initial })}
+                  />
+                ),
+            )}
+          </fieldset>
         </ErrorBoundary>
       </main>
     </div>

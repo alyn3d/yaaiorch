@@ -2027,60 +2027,107 @@ input.limit {
 }
 
 // ---------- small screens: the sidebar becomes a top bar ----------
+// The top bar and the drawer exist only on narrow screens (below).
+.appbar,
+.drawer-backdrop {
+  display: none;
+}
+
+// Narrow screens (phones, small tablets): the content gets the whole screen. A slim top bar names the page and shows
+// what runs; the sidebar, unchanged, slides in as a drawer from its menu button.
 @media (max-width: 820px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }
-  .sidebar {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-  .brand {
-    padding: 12px 16px 6px;
-  }
-  .nav {
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding: 4px 12px 8px;
-    gap: 4px;
-    > .nav-item + .nav-item {
-      margin-top: 0;
-    }
-    .nav-section,
-    .nav-empty {
-      display: none;
-    }
-    .nav-item {
-      flex: none;
-      max-width: 220px;
-    }
-    .nav-actions {
-      flex-direction: row;
-      margin: 0;
-    }
-    .nav-add-form {
-      flex: none;
-      width: 280px;
-      margin: 0;
-    }
-  }
-  .sidebar-foot {
-    flex-direction: row;
-    flex-wrap: wrap;
+  .appbar {
+    display: flex;
     align-items: center;
-    padding: 8px 16px;
-    .limits-panel {
-      bottom: auto;
-      top: calc(100% + 6px);
+    gap: 10px;
+    height: 48px;
+    padding: 0 8px 0 4px;
+    background: var(--sidebar);
+    border-bottom: 1px solid var(--border);
+    min-width: 0;
+    .appbar-menu {
+      position: relative;
+      width: 44px;
+      height: 44px;
+      min-height: 44px;
+      padding: 0;
+      font-size: 20px;
+      line-height: 1;
+      .nav-alert {
+        position: absolute;
+        top: 4px;
+        right: 2px;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 4px;
+        border-radius: 8px;
+        background: var(--warn);
+        color: #000;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 16px;
+      }
     }
+    .appbar-title {
+      flex: 1;
+      min-width: 0;
+      font-weight: 600;
+      font-size: 16px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .appbar-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+  }
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    width: min(320px, 86vw);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform 0.2s ease,
+      visibility 0.2s;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+    overflow-y: auto;
+  }
+  .nav-open .sidebar {
+    transform: none;
+    visibility: visible;
+  }
+  .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: var(--overlay);
+  }
+  .sidebar-foot .limits-panel {
+    left: 0;
+    right: auto;
+    max-width: calc(min(320px, 86vw) - 24px);
   }
   .main {
-    padding: 20px 16px 40px;
+    padding: 16px 16px 40px;
   }
   .composer .composer-bar {
     padding-left: 14px;
+  }
+}
+@media (max-width: 820px) and (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
   }
 }
 .ui-error {
@@ -2418,3 +2465,181 @@ input.limit {
 }
 
 // The splash (src/Splash.tsx) is styled in index.html, so it shows before this stylesheet loads.
+
+// A fieldset that only disables what it wraps (a view-only phone; the PC-only controls), with no box of its own.
+fieldset.contents {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+// Remote access (RemoteAccess.tsx) and the phone's pairing page (Pair.tsx).
+.remote-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  .page-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .card > .row {
+    flex-wrap: wrap;
+  }
+  .remote-url {
+    overflow-wrap: anywhere;
+    user-select: all;
+  }
+  .pair-qr {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+    .qr {
+      border-radius: var(--radius);
+      flex: none;
+    }
+    > div {
+      flex: 1 1 240px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: flex-start;
+    }
+  }
+  .device-list {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+    li {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+    }
+  }
+}
+.splash.pair form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(320px, 100%);
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    text-align: left;
+  }
+}
+
+// Phones: tighter margins and padding (a card inside a card loses less width), one column, controls big enough to tap.
+@media (max-width: 600px) {
+  .main {
+    padding: 12px 10px 32px;
+    gap: 12px;
+  }
+  .card {
+    padding: 14px 12px;
+    border-radius: var(--radius);
+  }
+  .card .card,
+  .card details > .card {
+    padding: 12px 10px;
+  }
+  // Run again as a compact icon next to its entry (its text stays its accessible name).
+  .run-history .history-entry > button.small {
+    width: 44px;
+    padding: 0;
+    font-size: 0;
+    &::before {
+      content: "↻";
+      font-size: 20px;
+    }
+  }
+  // The live log: a screenful at most, and small enough to read a line whole.
+  .log {
+    height: auto;
+    min-height: 120px;
+    max-height: 55vh;
+    font-size: 11px;
+  }
+  // The repo's name is in the top bar already.
+  .page-head .page-title h2 {
+    display: none;
+  }
+  // The overview table becomes one card per repo: name and actions, then status, goal and the figures, labelled.
+  .overview .table-wrap {
+    overflow: visible;
+    table,
+    tbody,
+    tr,
+    td {
+      display: block;
+    }
+    thead {
+      display: none;
+    }
+    tr {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 0;
+      border: 0;
+      text-align: left;
+    }
+    td:first-child {
+      flex: 1 1 auto;
+      font-weight: 600;
+    }
+    td.actions {
+      order: -1;
+      margin-left: auto;
+    }
+    td:first-child {
+      order: -2;
+    }
+    td.goal {
+      flex: 1 1 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    td.muted {
+      flex: 1 1 100%;
+    }
+    td[data-label]::before {
+      content: attr(data-label) " ";
+      color: var(--muted);
+    }
+  }
+  .callout.banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  button,
+  input:not([type="checkbox"]):not([type="radio"]),
+  select {
+    min-height: 40px;
+  }
+}
+// A paired phone: nothing that acts on the PC's own desktop (opening the repo in an editor there).
+.remote-client .open-in {
+  display: none;
+}

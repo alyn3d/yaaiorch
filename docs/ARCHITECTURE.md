@@ -185,7 +185,7 @@ With `ORCH_EVENTS` set, `orch.ts` also prints one `@@ORCH@@ {json}` line per eve
 | `secrets`                  | round, found[] ({file, what}): the commit was skipped                                                                                                                                               |
 | `intake`                   | source (`github:LABEL` or `backlog:FILE`), ids: goals queued from a backlog                                                                                                                         |
 | `resumed`                  | branch, commits[]: an interrupted attempt's work was brought back for the next attempt                                                                                                              |
-| `queue_changed`            | id: the loop updated queue.json (status, cost, seconds); the server sends the queue again                                                                                                              |
+| `queue_changed`            | id: the loop updated queue.json (status, cost, seconds); the server sends the queue again                                                                                                           |
 | `blocked`                  | id, goal, note: a goal that needs a failed one is skipped                                                                                                                                           |
 | `coverage`                 | pass, missing[], cost: the brief checked against the code                                                                                                                                           |
 | `approval_wait`            | round, summary, tasks[], error?: `--approve-plan` waits for an answer                                                                                                                               |
@@ -259,23 +259,23 @@ A start that waits is `queued` with a `waitReason`: the usage limit, the budget,
 
 ### Frontend (`src/`)
 
-| File               | Role                                                                                                                                                                                                                                                                                          |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `transport.ts`     | The only place that knows how to reach the server: `fetch` + `EventSource` in both modes. Browser: same origin, token from `/api/token`. Desktop (`__TAURI_INTERNALS__`): address and token from the app's `server_info`, asked again after a 403 or a lost connection; native folder picker and reveal. Every message carries its `repo`.                                                                                      |
-| `useOrch.ts`       | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`, `global` (usage-limit hold, daily budget). `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends.                                                                                 |
-| `Plugins.tsx`      | The **Plugins** section of a repo's run settings: the repo's Claude Code plugins (`orch plugins --json --details`, loaded when opened) with a switch each, one for all and one for hooks; remembered per repo with the other settings.                                                        |
-| `Limits.tsx`       | Header meters (5-hour and weekly usage, today's spend) and the Limits panel: Daily $, pause at 5h % and week %.                                                                                                                                                                               |
-| `App.tsx`          | Header (running count, Parallel limit, Limits), usage-limit, usage-cap and budget banners, tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating. |
-| `Overview.tsx`     | The **Overview** tab (shown from two repos on): one row per repo with its phase (planning, building, verifying, checks, waiting), goal, round, tasks done and running agents, cost against its cap, pending queue, and Open / Stop; also hosts the cross-repo work board.                     |
-| `overviewBoard.ts` | Derives board cards from run and queue state: active tasks, user questions/plan approvals, verification/PR review, and completed queue goals.                                                                                                                                                 |
-| `repoStatus.ts`    | `repoStatus()`: a repo's status dot and label, shared by the tabs and the overview.                                                                                                                                                                                                           |
-| `RepoView.tsx`     | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log.                                                                                                                                                                                                     |
-| `RunHistory.tsx`   | Lists repo-local goal attempts and replays a selected event stream through `reduce.ts`, without live approval controls.                                                                                                                                                                       |
-| `Settings.tsx`     | Power, rounds, per-goal and queue budgets, usage-limit choice, fast path, task worktrees, models per role and agent; remembered per repo in local storage.                                                                                                                                    |
-| `runProgress.ts`   | Derives phase states, task timeline positions and the current or previous round's failure summary; maps safe task-activity categories to labels.                                                                                                                                              |
-| `reduce.ts`        | Pure fold of `OrchEvent`s into a `RunView` (rounds -> tasks). A reload replays the stored events through it.                                                                                                                                                                                  |
-| `RunView.tsx`      | Task cards grouped Foundation / Build / Verify, with status, elapsed time, owned and changed files, failures.                                                                                                                                                                                 |
-| `types.ts`         | Shared types.                                                                                                                                                                                                                                                                                 |
+| File               | Role                                                                                                                                                                                                                                                                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `transport.ts`     | The only place that knows how to reach the server: `fetch` + `EventSource` in both modes. Browser: same origin, token from `/api/token`. Desktop (`__TAURI_INTERNALS__`): address and token from the app's `server_info`, asked again after a 403 or a lost connection; native folder picker and reveal. Every message carries its `repo`. |
+| `useOrch.ts`       | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`, `global` (usage-limit hold, daily budget). `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends.                                                                                                                              |
+| `Plugins.tsx`      | The **Plugins** section of a repo's run settings: the repo's Claude Code plugins (`orch plugins --json --details`, loaded when opened) with a switch each, one for all and one for hooks; remembered per repo with the other settings.                                                                                                     |
+| `Limits.tsx`       | Header meters (5-hour and weekly usage, today's spend) and the Limits panel: Daily $, pause at 5h % and week %.                                                                                                                                                                                                                            |
+| `App.tsx`          | Header (running count, Parallel limit, Limits), usage-limit, usage-cap and budget banners, tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating.                                              |
+| `Overview.tsx`     | The **Overview** tab (shown from two repos on): one row per repo with its phase (planning, building, verifying, checks, waiting), goal, round, tasks done and running agents, cost against its cap, pending queue, and Open / Stop; also hosts the cross-repo work board.                                                                  |
+| `overviewBoard.ts` | Derives board cards from run and queue state: active tasks, user questions/plan approvals, verification/PR review, and completed queue goals.                                                                                                                                                                                              |
+| `repoStatus.ts`    | `repoStatus()`: a repo's status dot and label, shared by the tabs and the overview.                                                                                                                                                                                                                                                        |
+| `RepoView.tsx`     | One repo: goal form, settings, doctor banner, rollback offer, queue, run panel, live log.                                                                                                                                                                                                                                                  |
+| `RunHistory.tsx`   | Lists repo-local goal attempts and replays a selected event stream through `reduce.ts`, without live approval controls.                                                                                                                                                                                                                    |
+| `Settings.tsx`     | Power, rounds, per-goal and queue budgets, usage-limit choice, fast path, task worktrees, models per role and agent; remembered per repo in local storage.                                                                                                                                                                                 |
+| `runProgress.ts`   | Derives phase states, task timeline positions and the current or previous round's failure summary; maps safe task-activity categories to labels.                                                                                                                                                                                           |
+| `reduce.ts`        | Pure fold of `OrchEvent`s into a `RunView` (rounds -> tasks). A reload replays the stored events through it.                                                                                                                                                                                                                               |
+| `RunView.tsx`      | Task cards grouped Foundation / Build / Verify, with status, elapsed time, owned and changed files, failures.                                                                                                                                                                                                                              |
+| `types.ts`         | Shared types.                                                                                                                                                                                                                                                                                                                              |
 
 State flow: the backend pushes `init` (`{ sessions: [{ state, log, events }], maxParallel, global }`, also
 after a repo is added or removed or the limit changes), then per-repo deltas: `session` (one repo's state),
@@ -334,6 +334,41 @@ output. A supervisor thread drains the server's output, restarts it when it dies
 `server_info` again after a lost connection, since port and token change) and, on exit, kills its tree
 (`taskkill /T /F`, or the process group). Native features stay in the webview through Tauri plugins: the folder
 picker (dialog), reveal and editor links (opener), notifications and the updater.
+
+### Remote access (`remote.ts`, `tunnel.ts`)
+
+Off by default; **Remote** in the sidebar (`RemoteAccess.tsx`), persisted as `remoteEnabled` in the settings file.
+
+- **Tunnel.** `Tunnel` runs `cloudflared tunnel --no-autoupdate --url http://127.0.0.1:<port>` (a quick tunnel, no
+  account) and reads the `https://<name>.trycloudflare.com` address from its output. `cloudflared` is downloaded on
+  first use from the pinned GitHub release (`CLOUDFLARED_VERSION`, one asset per platform) into `~/.yaaiorch/bin` and
+  must match the pinned SHA-256 (GitHub's digest of that file); macOS archives are unpacked with `tar`. It is
+  restarted with backoff if it exits (a new address each time; up to 5 times in a row). `CLOUDFLARED_BIN` overrides
+  the executable (a `.mjs` runs with node; `test/fake-cloudflared/cloudflared.mjs`).
+- **Which requests are remote.** `viaTunnel`: Cloudflare's `cf-connecting-ip` / `cf-ray` headers (a client cannot
+  strip them) or the tunnel's host name. Such a request never meets the local guard (`refuse()`), so neither a
+  forged `Host` nor the local token helps: it is refused unless remote access is on and its `Host` is the tunnel's.
+  Writes must carry `Origin: https://<tunnel host>`. Responses get `X-Frame-Options: DENY`, `Referrer-Policy:
+no-referrer` and `nosniff`.
+- **Pairing.** The PC asks for a code (`POST /api/remote/pair-code`; 16 random bytes, single use, 5 minutes; a new one
+  replaces the old) and shows `https://<tunnel>/pair#<code>` as a QR code (`Qr.tsx`). The fragment is never sent by
+  the browser, and `Pair.tsx` removes it from the address bar. `POST /api/pair {code, name}` (rate-limited: 5 misses per
+  address and 20 overall per 10 minutes) creates a request and returns `{id, poll}`; the PC sees it on every page
+  (`PairRequests`) with the device's name and browser and answers `POST /api/remote/decide`. The phone polls
+  `POST /api/pair/status {id, poll}`; once allowed, that answer (only to the holder of `poll`, only once) sets the
+  device cookie `yaai_device=<id>.<key>` (32 random bytes; `HttpOnly; Secure; SameSite=Strict; Max-Age` 90 days,
+  renewed on use). `devices.json` (next to the settings, mode 600) keeps only SHA-256 of each key.
+- **Roles** (`remoteRefusal`). `view` (every new device): GETs only. `control`: also POSTs, except `PC_ONLY` (token,
+  opening and closing repos, new projects, reveal, writing agent files, groups, browser-script approval, settings and
+  limits, clear-limit), `/api/remote/*`, and `decide-command` with `always` or `prefix`. **Remove** deletes the device
+  and ends its open polls. The UI learns its role from the `client` event: a view-only device gets the main area in a
+  disabled `fieldset`; a remote one never shows the PC-only controls.
+- **Events for devices.** Quick tunnels pass a streamed response's headers but hold back its body, so devices use long
+  polling: every `send` event also goes into a ring (3000, numbered), and `GET /api/poll?since=N` answers with the
+  events after N at once, or waits up to 25 s for the next. A first poll, or one too far behind, gets `client` and a
+  fresh `init`. `sendLocal` events (pairing requests, devices) never enter the ring.
+- **Desktop.** The app passes the built UI (`resources/dist`, a Tauri resource) as `YAAIORCH_DIST`, so the phone gets
+  the same UI the window shows. Request bodies are capped at 2 MB for everyone.
 
 ## Concurrency and state files
 

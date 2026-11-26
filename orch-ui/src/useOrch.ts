@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Finding, Global, OrchEvent, RunView, State } from "./types";
+import type { ClientInfo, Finding, Global, OrchEvent, RemoteStatus, RunView, State } from "./types";
 import { reduce } from "./reduce";
 import { transport, type SessionInit } from "./transport";
 import { notify } from "./notify";
@@ -43,6 +43,9 @@ export function useOrch() {
   /** The first state has arrived (until then the window shows the splash), and why the server cannot be reached. */
   const [ready, setReady] = useState(false);
   const [startError, setStartError] = useState("");
+  /** Who this window is (a paired phone may only view), and remote access as the PC sees it. */
+  const [client, setClient] = useState<ClientInfo>({ remote: false });
+  const [remote, setRemote] = useState<RemoteStatus | null>(null);
   const [global, setGlobal] = useState<Global>({
     usageLimit: null,
     budget: { limit: null, spent: 0, day: "" },
@@ -86,6 +89,8 @@ export function useOrch() {
           setConnected(ok);
           setStartError(ok ? "" : (error ?? ""));
         },
+        onClient: setClient,
+        onRemote: setRemote,
       }),
     [],
   );
@@ -94,7 +99,7 @@ export function useOrch() {
     await transport.setMaxParallel(n);
   }, []);
 
-  return { sessions, order, groups, maxParallel, setMaxParallel, global, connected, ready, startError, canPickRepo: transport.canPickRepo };
+  return { sessions, order, groups, maxParallel, setMaxParallel, global, connected, ready, startError, client, remote, canPickRepo: transport.canPickRepo };
 }
 
 /** Doctor findings for one repo: on open, whenever its process ends, and when its pull request switch changes. */

@@ -4,7 +4,7 @@
   "version": "0.6.4",
   "identifier": "dev.alinion.yaaiorch",
   "build": {
-    "beforeDevCommand": "node scripts/fetch-node.mjs && npm run build:orch && npm run build:server && vite",
+    "beforeDevCommand": "node scripts/fetch-node.mjs && npm run build:orch && npm run build:server && vite build && vite",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "node scripts/fetch-node.mjs && npm run build:app",
     "frontendDist": "../dist"
@@ -28,12 +28,14 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Alin Ion (alyn3d)",
     "copyright": "Copyright (C) 2026 alyn3d and contributors",
     "licenseFile": "../../LICENSE",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "resources": {
       "resources/orch.mjs": "resources/orch.mjs",
       "resources/server.mjs": "resources/server.mjs",
+      "../dist/": "resources/dist/",
       "../../LICENSE": "licenses/YAAIORCH-LICENSE.txt"
     },
     "externalBin": ["binaries/node"]

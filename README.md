@@ -17,7 +17,7 @@ Windows/macOS/Linux desktop app (Tauri).
 
 > **Built for developers.** YAAIORCH speeds up work you could do and review yourself; it is not a
 > way to build software without knowing how. You decide what the checks test, read the diffs it
-> commits, and own what ships. Passing checks only means the code passed *your* checks: if you
+> commits, and own what ships. Passing checks only means the code passed _your_ checks: if you
 > can't judge the code, it can't either.
 
 > **Status: early (0.6).** It works end to end and is measured by an eval suite, but expect rough
@@ -65,8 +65,8 @@ Installers for Windows (`.exe` setup or `.msi`), macOS and Linux, and a standalo
 
 - The apps are **not code-signed**, on purpose: signing costs money every year and this is a free project. Updates
   are still verified against the project's own updater key. Windows SmartScreen shows "Windows protected your PC"
-  (choose *More info* → *Run anyway*). macOS blocks the first launch: open **System Settings → Privacy & Security**
-  and choose *Open Anyway* (before macOS 15, right-click → *Open* also works), or run
+  (choose _More info_ → _Run anyway_). macOS blocks the first launch: open **System Settings → Privacy & Security**
+  and choose _Open Anyway_ (before macOS 15, right-click → _Open_ also works), or run
   `xattr -dr com.apple.quarantine /Applications/YAAIORCH.app`.
 - The desktop app **brings its own Node.js** to run the orchestrator, so you only need your logged-in **Claude
   Code** and git. (It uses `node` on PATH only when built without it; `YAAIORCH_NODE` points it at another one.)
@@ -101,20 +101,20 @@ orch run "Add a /health endpoint that returns {ok: true}, with a test" --power e
 
 Other commands:
 
-| command | what it does |
-|---|---|
-| `orch run "<goal>"` | one goal, loops until QA passes or max rounds |
-| `orch add "<goal>"` / `orch loop` | queue goals and process them (`--until-empty` to stop when drained) |
-| `orch move ID up\|down` | reorder a pending goal among goals with the same priority |
-| `orch stop-after` | a running `loop` stops before its next goal (the current one finishes) |
-| `orch status` | show the queue |
-| `orch history --json` / `orch history ID --json` | list recorded goal attempts / read one attempt's events |
-| `orch doctor` | check node, claude login, git, a clean tree, leftover checkpoints |
-| `orch rollback` | undo the last unfinished goal (work kept on `orchestrator/discarded-*`) |
-| `orch prune` | delete old `orchestrator/*` branches |
-| `orch agents` | list the agents and skills the architect can use |
-| `orch learn` | study the repo once (read-only) and write the project brief that later goals reuse |
-| `orch plugins [--details]` | list your Claude Code plugins (with `--details`: context tokens each adds per call) |
+| command                                          | what it does                                                                        |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `orch run "<goal>"`                              | one goal, loops until QA passes or max rounds                                       |
+| `orch add "<goal>"` / `orch loop`                | queue goals and process them (`--until-empty` to stop when drained)                 |
+| `orch move ID up\|down`                          | reorder a pending goal among goals with the same priority                           |
+| `orch stop-after`                                | a running `loop` stops before its next goal (the current one finishes)              |
+| `orch status`                                    | show the queue                                                                      |
+| `orch history --json` / `orch history ID --json` | list recorded goal attempts / read one attempt's events                             |
+| `orch doctor`                                    | check node, claude login, git, a clean tree, leftover checkpoints                   |
+| `orch rollback`                                  | undo the last unfinished goal (work kept on `orchestrator/discarded-*`)             |
+| `orch prune`                                     | delete old `orchestrator/*` branches                                                |
+| `orch agents`                                    | list the agents and skills the architect can use                                    |
+| `orch learn`                                     | study the repo once (read-only) and write the project brief that later goals reuse  |
+| `orch plugins [--details]`                       | list your Claude Code plugins (with `--details`: context tokens each adds per call) |
 
 Options: `--power economy|balanced|heavy|max` (heavy), `--model architect=opus,impl=haiku,be=sonnet` (override models per role or per agent), `--on-limit wait|stop` (what to do at the Claude usage limit; default wait for the reset and continue), `--keep-awake` (keep the computer from sleeping while it works), `--usage-cap 5h=80,week=90` (pause before reaching the limit: at that percentage of the 5-hour or weekly window), `--plugins off` / `--disable-plugins ID,ID` / `--no-hooks` (run agents without your Claude Code plugins or hooks), `--no-brief` (do not keep a project brief), `--no-resume` (fix rounds start every implementer cold), `--approve-plan` (wait for you to build, edit or send back each plan), `--intake github:LABEL,backlog:FILE` (a loop pulls goals from GitHub issues or a backlog file), `--branch` (each goal on its own `orch/<id>-<slug>` branch; yours never changes), `--worktrees` (isolate parallel build tasks in Git worktrees), `--pr` (push a passed goal's branch and open a pull request with `gh`), `--strict-files` (a file changed outside the plan fails the round), `--max-cost-total USD` (budget for a whole `loop` run), `--no-notes` (do not keep lessons between goals), `--critic` (review each plan before building), `--diff-critic` (also review each round's change against the goal), `--review` / `--reviewers A,B` (review each change for bugs and security, optionally with your own agents), `--no-fast` (start with the full loop; by default one agent tries the goal first and the full loop runs only if that fails, see the [evals](docs/evals/2026-11-18.md)), `--max-rounds N` (5), `--max-cost USD`,
 `--agent-timeout MIN` (30), `--dry-run` (plan only). Run `orch` without arguments for the full usage.
@@ -312,7 +312,7 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
 - **Goals from your backlog** (`orch intake --github LABEL`, `--backlog BACKLOG.md`; **Issues label** and
   **Import issues** in the queue section): open GitHub issues with a label (read with `gh`) and the unchecked
   `- [ ]` items of a backlog file become goals, each once; your files are not changed. `orch loop --intake
-  github:LABEL` (and **Loop (watch)** with a label) keeps pulling new issues in, and with `--pr` each pull request
+github:LABEL` (and **Loop (watch)** with a label) keeps pulling new issues in, and with `--pr` each pull request
   says `Closes #N`. orch comments on the issue when its goal starts, is done (with the pull request), fails (with
   what was still wrong) or is blocked (`--no-issue-comments` to stay quiet), and labels `p1`-`p9` or
   `priority: high|low` decide which runnable goal goes first. **Anyone who can set that label can direct the agents**: on GitHub that takes triage access,
@@ -421,6 +421,15 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   and closing a laptop's lid or choosing Sleep still sleeps it. CLI: `--keep-awake` on `run`, `loop`,
   `new --start` and `group run`, or `"keepAwake": true` in config (`--no-keep-awake` turns it off). Windows,
   macOS (`caffeinate`) and Linux with systemd (`systemd-inhibit`); no admin rights needed.
+- **Remote access from your phone** (**Remote** in the sidebar, off by default). Turning it on starts a
+  Cloudflare quick tunnel (no account; the app downloads Cloudflare's `cloudflared` the first time, about 50 MB,
+  and checks its checksum) and shows its `https://….trycloudflare.com` address. **Show pairing QR code**, scan it
+  with the phone, name the device and tap Pair, then **Allow** it on the PC. A new device can only watch (runs,
+  logs, queue, history, costs); switch on **Control** for it to start and stop runs, approve plans, answer agents
+  and allow commands. Opening folders, limits, always-allow rules and remote access itself stay on the PC.
+  **Remove** cuts a device off at once. Good to know: traffic passes through Cloudflare, the address changes when
+  the app restarts (pair the phone again then), and while it is on anyone with the address reaches the pairing
+  page, which needs a fresh one-time code from your PC.
 - **Checks** come from `.orchestrator/config.json` in your repo, or from the `typecheck`, `lint`,
   `test` and `build` scripts in `package.json`:
 
@@ -463,6 +472,7 @@ app bundles (`npm run fetch:node`: the official build for your platform, checked
   reuse that session (a browser profile of its own per repo, under `~/.yaaiorch/browser-profiles/`). No browser
   installed? `orch browser install` downloads Chrome for Testing into `~/.yaaiorch/browser/`. `--no-visual` or
   `"visual": false` turns the checks off.
+
 - **Git.** A run refuses a dirty tree, creates `orchestrator/checkpoint-<ts>`, and commits each round
   on your current branch. The checkpoint is deleted when the goal passes and all its work is committed; if a commit fails (a
   rejecting hook, say), the checkpoint is kept and the run tells you. `orch rollback` resets to
