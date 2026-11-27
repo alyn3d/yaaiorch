@@ -5,6 +5,11 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+### Changed
+
+- The landing page has more motion, at an unhurried pace. The header comes in line by line, with the screenshot last, and screenshots rotate every 5.5 seconds instead of 4. Sections fade up as you scroll to them. The workflow strip lights each step in turn, with a bar that fills as it goes. The eval count climbs to its value. The hero screenshot tilts toward the pointer, and feature cards get a spotlight that follows it. Screenshots slide up gently when they change, the phone floats, a soft aurora drifts behind the page, and the top bar gets a shadow once you scroll. All of it is off without JavaScript or with reduced motion.
+- On wide screens with a mouse, the landing page has a scroll ruler on the right: ticks that move with the page and swell under the position marker, a mark where each section begins, and the section names in the margin (passed ones at the top, the current one larger, upcoming ones at the bottom), each a link. Click the ruler to jump to that point.
+
 ## [0.6.6] - 2026-11-26
 
 ### Fixed
