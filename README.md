@@ -500,7 +500,7 @@ node evals/run.ts --cases node-chunk-bug --power economy   # real run, costs mon
 28 cases over small fixture repos (Node, Python, Go, static web; features, bugfixes, refactors, long and multi-goal
 tasks), graded by hidden tests the agents never see. See [evals/README.md](evals/README.md).
 
-Latest results ([27 November 2026](docs/evals/2026-11-27.md)): 46 runs on browser checks, the review options, greenfield
+Latest results ([27 November 2026](docs/evals/2026-11-27.md)): 51 runs on browser checks, the review options, greenfield
 and repo groups, every one passed the hidden tests and none was a false pass; 164 single-repo runs in November, all
 passed ([all results](docs/evals/)). One direct attempt did as well as the full loop at about half the cost and time
 ([18 November](docs/evals/2026-11-18.md)), so it is the default.
