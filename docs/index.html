@@ -1617,6 +1617,9 @@
         .motion .shot-stage.is-enhanced .shot-slide, .motion .hero-product:hover, .feature:hover .feature-mark { transform: none !important; }
       }
     </style>
+    <!-- GoatCounter (goatcounter.com): open-source analytics with no cookies, no personal data and no consent
+         banner needed. Counts page views, plus download and outbound clicks (see the script at the end). -->
+    <script data-goatcounter="https://yaaiorch.goatcounter.com/count" async src="https://gc.zgo.at/count.js"></script>
   </head>
   <body>
     <header class="wrap topbar">
@@ -2421,6 +2424,30 @@
             /* keep the releases page link */
           });
       })();
+
+      // Click events for GoatCounter: what was downloaded (the file name carries the OS, the kind and the version),
+      // or where the visitor went instead. Named at click time, since the download links are filled in from the
+      // GitHub API after the page loads. Nothing is counted when GoatCounter is blocked or has not loaded.
+      document.addEventListener("click", (e) => {
+        const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+        if (!a || !window.goatcounter || typeof window.goatcounter.count !== "function") return;
+        const href = a.href;
+        const event = /\/releases\/download\//.test(href)
+          ? `download/${decodeURIComponent(href.split("/").pop())}`
+          : /\/releases(\/latest)?\/?$/.test(href)
+            ? "releases-page"
+            : /\/README\.md$/.test(href)
+              ? "guide"
+              : /^https:\/\/github\.com\/alyn3d\/yaaiorch\/?$/.test(href)
+                ? "github"
+                : null;
+        if (!event) return;
+        try {
+          window.goatcounter.count({ path: event, title: a.textContent.trim().slice(0, 80), event: true });
+        } catch {
+          /* analytics must never break a download */
+        }
+      });
     </script>
   </body>
 </html>
