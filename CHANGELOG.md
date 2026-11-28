@@ -7,7 +7,7 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ### Added
 
-- The landing page counts visits with GoatCounter (open source, no cookies, no personal data, so no consent banner), plus clicks on downloads (named by the file, so by OS, kind and version), the releases page, the guide and the GitHub repo. Visitors who block it are simply not counted.
+- The landing page counts visits with GoatCounter (open source, no cookies, no personal data, so no consent banner), plus clicks on downloads (named by the file, so by OS, kind and version), the releases page, the guide and the GitHub repo. The script is a self-hosted copy of GoatCounter's (`docs/assets/goatcounter-count.js`), so DNS and ad blockers that list its host do not stop the count; visitors who block it anyway are simply not counted.
 
 ## [0.6.7] - 2026-11-28
 

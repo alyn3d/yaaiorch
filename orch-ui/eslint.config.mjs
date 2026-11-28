@@ -17,6 +17,8 @@ export default defineConfig(
       "evals/hidden/",
       "evals/reference/",
       "evals/results/",
+      // GoatCounter's own script, self-hosted unchanged for the landing page.
+      "docs/assets/goatcounter-count.js",
     ],
   },
   js.configs.recommended,
