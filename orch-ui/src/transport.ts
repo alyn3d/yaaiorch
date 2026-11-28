@@ -4,14 +4,27 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import type { AgentRoster, ClientInfo, Finding, Global, HistoryEntry, HistoryRecording, OrchEvent, Plugin, RemoteStatus, State } from "./types";
+import type {
+  AccountStatus,
+  AgentRoster,
+  ClientInfo,
+  Finding,
+  Global,
+  HistoryEntry,
+  HistoryRecording,
+  OrchEvent,
+  Plugin,
+  Profile,
+  RemoteStatus,
+  State,
+} from "./types";
 
 /** One repo's state, log and structured events since its last goal_start. */
 /** Agent M's answer: the text, the session to continue, and what it cost. */
 export type AgentMReply = { answer: string; session?: string; cost: number };
 
 export type SessionInit = { state: State; log: string[]; events: OrchEvent[] };
-export type Init = { sessions: SessionInit[]; maxParallel: number; global: Global };
+export type Init = { sessions: SessionInit[]; maxParallel: number; global: Global; profiles?: Profile[] };
 export type BrowserCandidate = { id: string; directory: string; script: string; scriptCommand: string; command: string; lifecycle: string[] };
 export type BrowserSetup = {
   candidates: BrowserCandidate[];
@@ -31,6 +44,8 @@ export type Handlers = {
   onClient(c: ClientInfo): void;
   /** Remote access status; sent to the PC's windows only. */
   onRemote(r: RemoteStatus): void;
+  /** A Claude account's login changed (a login window opened, or the login landed); the PC's windows only. */
+  onAccount(a: AccountStatus): void;
 };
 export interface Transport {
   /** Desktop: a native folder picker. Browser: the user types a path. */
@@ -54,8 +69,15 @@ export interface Transport {
   setUsageCap(cap: Global["usageCap"]): Promise<void>;
   /** Long runs keep the computer awake (applies to runs started from now on). */
   setKeepAwake(on: boolean): Promise<void>;
-  /** Lift the usage-limit hold now ("Try now"). */
-  clearLimit(): Promise<void>;
+  /** Lift the usage-limit hold now ("Try now"): every account, or one (profile id, "" the default). */
+  clearLimit(profile?: string): Promise<void>;
+  /** Claude profiles (PC only): save the whole list; which profile a repo uses (null: the default account). */
+  saveProfiles(list: Pick<Profile, "id" | "name" | "configDir" | "dailyBudget">[]): Promise<void>;
+  setRepoProfile(repo: string, profile: string | null): Promise<void>;
+  /** Who the default folder and each profile are logged in as. */
+  profileStatus(): Promise<AccountStatus[]>;
+  /** Open a terminal window on the PC running `claude auth login` for a profile (null: the default folder). */
+  profileLogin(profile: string | null): Promise<void>;
   /** First-run checks (`orch doctor`) for one repo; `pr`: the repo opens pull requests (`--pr`). */
   doctor(repo: string, pr?: boolean): Promise<Finding[]>;
   browserSetup(repo: string): Promise<BrowserSetup>;
@@ -76,10 +98,10 @@ export interface Transport {
   allowed(repo: string, remove?: string): Promise<{ allow: string[] }>;
   /** Turn a skill or a custom agent on or off in this repo (config skills.disable / agents.disable). */
   toggleRoster(repo: string, kind: "skill" | "agent", name: string, enabled: boolean): Promise<void>;
-  /** Agent M: ask about the setup and the open repos (Haiku, read-only); `session` continues a conversation. */
-  agentMAsk(question: string, session?: string): Promise<AgentMReply>;
+  /** Agent M: ask about the setup and the open repos (Haiku, read-only); `session` continues a conversation; `profile`: the account it runs on (null: default). */
+  agentMAsk(question: string, session?: string, profile?: string | null): Promise<AgentMReply>;
   /** Agent M: gather the machine status in the background so the first question is quick (fire and forget). */
-  agentMWarm(): Promise<void>;
+  agentMWarm(profile?: string | null): Promise<void>;
   /** Remote access (PC only): turn the tunnel on or off, make a pairing link, answer a request, change or remove a device. */
   remoteEnable(on: boolean): Promise<RemoteStatus>;
   remotePairLink(): Promise<{ url: string; expiresIn: number }>;
@@ -255,6 +277,7 @@ const web: Transport = {
       es.addEventListener("global", (e) => h.onGlobal(data(e)));
       es.addEventListener("client", (e) => h.onClient(data(e)));
       es.addEventListener("remote", (e) => h.onRemote(data(e)));
+      es.addEventListener("account", (e) => h.onAccount(data(e)));
     };
     connect();
     return () => {
@@ -278,7 +301,11 @@ const web: Transport = {
   setDailyBudget: (usd) => post("settings", { dailyBudget: usd }),
   setUsageCap: (cap) => post("settings", { usageCap: cap }),
   setKeepAwake: (on) => post("settings", { keepAwake: on }),
-  clearLimit: () => post("clear-limit", {}),
+  clearLimit: (profile) => post("clear-limit", profile === undefined ? {} : { profile }),
+  saveProfiles: (list) => post("profiles", { profiles: list }),
+  setRepoProfile: (repo, profile) => post("repo-profile", { repo, profile }),
+  profileStatus: () => post("profile-status", {}),
+  profileLogin: (profile) => post("profile-login", { profile }),
   remoteEnable: (on) => post("remote/enable", { on }),
   remotePairLink: () => post("remote/pair-code", {}),
   remoteDecide: (id, allow, role) => post("remote/decide", { id, allow, role }),
@@ -324,8 +351,8 @@ const web: Transport = {
   swapAgent: (repo, role, target) => post("agents/swap", { repo, role, target }),
   toggleRoster: (repo, kind, name, enabled) => post("agents/toggle", { repo, kind, name, enabled }),
   allowed: (repo, remove) => post("allow", { repo, ...(remove ? { remove } : {}) }),
-  agentMAsk: (question, session) => post("agent-m/ask", { question, session }),
-  agentMWarm: () => post("agent-m/warm", {}),
+  agentMAsk: (question, session, profile) => post("agent-m/ask", { question, session, profile: profile ?? null }),
+  agentMWarm: (profile) => post("agent-m/warm", { profile: profile ?? null }),
   saveGroup: (g) => post("group-save", g),
   removeGroup: (name) => post("group-remove", { name }),
 };

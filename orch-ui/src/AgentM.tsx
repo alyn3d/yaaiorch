@@ -3,10 +3,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "./useOrch";
-import type { AgentCommand } from "./types";
+import type { AgentCommand, Profile } from "./types";
 import { baseName } from "./repoStatus";
 import { transport } from "./transport";
 import { Markdown } from "./AgentText";
+import { AccountMenu } from "./AccountMenu";
 import "./AgentM.scss";
 
 export type CommandDecision = "allow" | "always" | "prefix" | "deny";
@@ -116,13 +117,16 @@ export function useAgentMChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const session = useRef<string | undefined>(undefined);
+  /** The Claude account Agent M runs on (profile id, null: the default). Its sessions live in that account's folder. */
+  const [profile, setProfileState] = useState<string | null>(null);
+  const profileRef = useRef<string | null>(null);
   const ask = useCallback(async (question: string) => {
     const q = question.trim();
     if (!q) return;
     setMessages((m) => [...m, { role: "you", text: q }]);
     setBusy(true);
     try {
-      const r = await transport.agentMAsk(q, session.current);
+      const r = await transport.agentMAsk(q, session.current, profileRef.current);
       session.current = r.session ?? session.current;
       setMessages((m) => [...m, { role: "agent", text: r.answer, cost: r.cost }]);
     } catch (e) {
@@ -135,13 +139,23 @@ export function useAgentMChat() {
     session.current = undefined;
     setMessages([]);
   }, []);
-  return { messages, busy, ask, reset };
+  /** Another account: a new conversation (the old one's session belongs to the other account's folder). */
+  const setProfile = useCallback(
+    (p: string | null) => {
+      if (p === profileRef.current) return;
+      profileRef.current = p;
+      setProfileState(p);
+      reset();
+    },
+    [reset],
+  );
+  return { messages, busy, ask, reset, profile, setProfile };
 }
 export type AgentMChat = ReturnType<typeof useAgentMChat>;
 
 const SUGGESTIONS = ["Which MCP servers are connected?", "Why did the last run fail?", "What is left in my queues?", "Is my setup ready to run agents?"];
 
-function Chat({ chat }: { chat: AgentMChat }) {
+function Chat({ chat, profiles, onAccounts }: { chat: AgentMChat; profiles: Profile[]; onAccounts?: () => void }) {
   const [text, setText] = useState("");
   const end = useRef<HTMLDivElement>(null);
   // A block body: scrollIntoView returns a Promise in newer browsers, and React would call a returned value as the cleanup.
@@ -157,6 +171,16 @@ function Chat({ chat }: { chat: AgentMChat }) {
     <section className="card agent-m-chat" aria-label="Ask Agent M">
       <div className="card-head">
         <h3>Ask Agent M</h3>
+        {onAccounts && (
+          <AccountMenu
+            value={chat.profile}
+            profiles={profiles}
+            disabled={chat.busy}
+            title="The Claude account Agent M uses: its login, plugins and MCP servers, and its cost. Switching starts a new conversation."
+            onPick={chat.setProfile}
+            onManage={onAccounts}
+          />
+        )}
         {chat.messages.length > 0 && (
           <button className="ghost" disabled={chat.busy} onClick={chat.reset}>
             New conversation
@@ -216,7 +240,7 @@ function Chat({ chat }: { chat: AgentMChat }) {
           {chat.busy ? "Thinking…" : "Ask"}
         </button>
       </form>
-      <p className="muted small">Haiku reads your repos to answer and never changes them. Its cost counts toward the daily budget.</p>
+      <p className="muted small">Haiku reads your repos to answer and never changes them. Its cost counts toward the daily budget of the account it runs on.</p>
     </section>
   );
 }
@@ -227,21 +251,27 @@ export function AgentMPanel({
   order,
   decide,
   chat,
+  profiles = [],
+  onAccounts,
 }: {
   sessions: Record<string, Session>;
   order: string[];
   /** Sends the answer; throws when orch refuses it (already answered, run gone). */
   decide: (repo: string, id: string, decision: CommandDecision) => Promise<void>;
   chat: AgentMChat;
+  /** Claude profiles Agent M may run on, besides the default account. */
+  profiles?: Profile[];
+  /** Opens the Accounts page (the PC only; without it, no picker). */
+  onAccounts?: () => void;
 }) {
   const { waiting, answered } = commandsOf(sessions, order);
   const [error, setError] = useState("");
   // Gather the machine status now, while the user reads or types, so the first answer does not wait for it.
   useEffect(() => {
-    transport.agentMWarm().catch(() => {
+    transport.agentMWarm(chat.profile).catch(() => {
       /* only a head start: asking still works without it */
     });
-  }, []);
+  }, [chat.profile]);
   const onDecide: Decide = async (repo, id, decision) => {
     setError("");
     try {
@@ -275,7 +305,7 @@ export function AgentMPanel({
         </section>
       )}
 
-      <Chat chat={chat} />
+      <Chat chat={chat} profiles={profiles} onAccounts={onAccounts} />
 
       <section className="agent-m-list" aria-label="Commands">
         {waiting.length === 0 && (

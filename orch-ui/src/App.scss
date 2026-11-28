@@ -839,7 +839,9 @@ button {
 }
 
 // "Open in VS Code" split button and its menu, in the repo page head.
-.open-in {
+// OpenIn's menu, also the Claude account menu (AccountMenu.tsx).
+.open-in,
+.account-menu {
   position: relative;
   .split-button {
     display: inline-flex;
@@ -2647,4 +2649,71 @@ fieldset.contents {
 // A paired phone: nothing that acts on the PC's own desktop (opening the repo in an editor there).
 .remote-client .open-in {
   display: none;
+}
+
+// A wrapper that only groups what it holds (per-account banners), with no box of its own.
+div.contents {
+  display: contents;
+}
+
+// ---------- Claude accounts (Accounts.tsx) and the account pickers ----------
+.accounts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  .page-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .account .card-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .account p {
+    margin: 6px 0 0;
+    overflow-wrap: anywhere;
+  }
+  .account-edit,
+  .account-add {
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px;
+    margin-top: 10px;
+    label {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+    }
+  }
+}
+.badge.account-tag {
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  vertical-align: middle;
+}
+.account-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.account-menu {
+  > button {
+    gap: 6px;
+  }
+  .menu {
+    min-width: 180px;
+  }
+  .check {
+    display: inline-block;
+    width: 1.1em;
+    color: var(--link);
+  }
 }

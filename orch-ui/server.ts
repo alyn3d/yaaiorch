@@ -112,16 +112,28 @@ let maxParallel = Math.max(1, Number(process.env.MAX_PARALLEL) || 2);
 /** Open event streams; a remote one carries its device, so revoking the device can close it. */
 const clients = new Map<http.ServerResponse, { device?: string }>();
 
-// ---------- global state shared by all repos: the Claude usage limit and a daily budget ----------
-/** Set when any repo hits the usage limit; new starts in every repo wait until `until`. */
-let usageLimit: { repo: string; until: number } | null = null;
-/** Daily budget in USD across all repos (null: none), and what agent calls cost today. */
-let dailyBudget: number | null = null;
-let spent = { day: today(), usd: 0 };
-/** The subscription's usage windows: latest reading from any repo's agent calls, and the caps (percent, null: none). */
+// ---------- limits per Claude account: the usage limit, the usage windows and a daily budget ----------
+// Each Claude account (a profile's id, "" for the default folder) has its own subscription windows and limit, so a hold
+// on one never stops repos on another. The caps (a percentage) apply to each account's own readings.
 type Window = "fiveHour" | "week";
 type Reading = { pct: number; resetsAt: number };
-let usage: Partial<Record<Window, Reading>> = {};
+type AccountState = {
+  /** Set when a repo on this account hits the usage limit; new starts on the account wait until `until`. */
+  usageLimit: { repo: string; until: number } | null;
+  /** Latest reading of the subscription's usage windows from this account's agent calls. */
+  usage: Partial<Record<Window, Reading>>;
+  /** What this account's agent calls cost today (spentDay). */
+  spent: number;
+};
+const accounts = new Map<string, AccountState>();
+const account = (key: string) => {
+  let a = accounts.get(key);
+  if (!a) accounts.set(key, (a = { usageLimit: null, usage: {}, spent: 0 }));
+  return a;
+};
+let spentDay = today();
+/** The default account's daily budget in USD (null: none); a profile carries its own (`Profile.dailyBudget`). */
+let dailyBudget: number | null = null;
 let usageCap: Record<Window, number | null> = { fiveHour: null, week: null };
 /** Keep the computer from sleeping while a run, loop, new project or group goal works (--keep-awake). On by default. */
 let keepAwake = true;
@@ -132,32 +144,49 @@ function today() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-const globalState = () => ({
-  usageLimit,
-  budget: { limit: dailyBudget, spent: Math.round(spent.usd * 10_000) / 10_000, day: spent.day },
-  usage,
-  usageCap,
-  keepAwake,
-});
-/** The first window whose latest reading is at or over its cap and has not reset yet. */
-function overCap(): (Reading & { window: Window }) | null {
+/** A new day: every account's spending starts again. True when it did. */
+function newDay() {
+  if (spentDay === today()) return false;
+  spentDay = today();
+  for (const a of accounts.values()) a.spent = 0;
+  return true;
+}
+const budgetOf = (key: string): number | null => (key === "" ? dailyBudget : (profiles.find((p) => p.id === key)?.dailyBudget ?? null));
+const cents = (usd: number) => Math.round(usd * 10_000) / 10_000;
+/** The default account at the top level (what the UI has always shown), and every account under `accounts`. */
+const globalState = () => {
+  const each = Object.fromEntries(
+    ["", ...profiles.map((p) => p.id)].map((k) => {
+      const a = account(k);
+      return [k, { usageLimit: a.usageLimit, budget: { limit: budgetOf(k), spent: cents(a.spent), day: spentDay }, usage: a.usage }];
+    }),
+  );
+  return { ...each[""], usageCap, keepAwake, accounts: each };
+};
+/** The first window whose latest reading on this account is at or over its cap and has not reset yet. */
+function overCap(key: string): (Reading & { window: Window }) | null {
   for (const window of ["fiveHour", "week"] as Window[]) {
-    const u = usage[window],
+    const u = account(key).usage[window],
       c = usageCap[window];
     if (u && c !== null && u.pct >= c && u.resetsAt > Date.now()) return { window, ...u };
   }
   return null;
 }
-/** Why new runs may not start right now, or null. */
-function gate(): string | null {
-  if (usageLimit && usageLimit.until > Date.now()) return `usage limit (resets ${new Date(usageLimit.until).toLocaleTimeString()})`;
-  if (dailyBudget !== null && spent.usd >= dailyBudget) return `daily budget of $${dailyBudget} used up`;
-  const o = overCap();
+/** Why new runs on this account may not start right now, or null. */
+function gate(key: string): string | null {
+  const a = account(key);
+  const budget = budgetOf(key);
+  if (a.usageLimit && a.usageLimit.until > Date.now()) return `usage limit (resets ${new Date(a.usageLimit.until).toLocaleTimeString()})`;
+  if (budget !== null && a.spent >= budget) return `daily budget of $${budget} used up`;
+  const o = overCap(key);
   if (o) return `${WINDOW_LABEL[o.window]} usage at ${o.pct}% (cap ${usageCap[o.window]}%, resets ${new Date(o.resetsAt).toLocaleString()})`;
   return null;
 }
-/** Remaining budget to pass on as --max-cost, or undefined when there is no budget. */
-const budgetLeft = () => (dailyBudget === null ? undefined : Math.max(0.01, dailyBudget - spent.usd));
+/** This account's remaining budget to pass on as --max-cost, or undefined when it has none. */
+const budgetLeft = (key: string) => {
+  const budget = budgetOf(key);
+  return budget === null ? undefined : Math.max(0.01, budget - account(key).spent);
+};
 
 const readJson = <T>(p: string, fallback: T): T => {
   try {
@@ -169,13 +198,85 @@ const readJson = <T>(p: string, fallback: T): T => {
 /** Windows paths are case-insensitive: one session per folder. */
 const keyOf = (repo: string) => (process.platform === "win32" ? resolve(repo).toLowerCase() : resolve(repo));
 
+// ---------- Claude profiles: which Claude Code account (config folder) a repo's agents use ----------
+/**
+ * A Claude Code account kept in its own folder: orch and every `claude` it starts get CLAUDE_CONFIG_DIR, so the login,
+ * settings, plugins and user agents come from there. A repo without a profile uses the default (~/.claude, or whatever
+ * CLAUDE_CONFIG_DIR the server itself was started with).
+ */
+/** `dailyBudget`: this account's own daily budget in USD (absent: none). */
+type Profile = { id: string; name: string; configDir: string; dailyBudget?: number };
+let profiles: Profile[] = [];
+/** Repo key (keyOf) → profile id. Kept for closed repos too, so a repo opened again keeps its account. */
+const repoProfiles = new Map<string, string>();
+const PROFILE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const profilesHome = () => join(process.env.YAAIORCH_HOME || join(homedir(), ".yaaiorch"), "profiles");
+/** The profile ids of a session's repos: its own, or a group's members'. */
+const profileIds = (s: Session) => (s.group ? s.group.repos.map((r) => repoProfiles.get(keyOf(r.path))) : [repoProfiles.get(keyOf(s.repo))]);
+/** The profile a session runs under, or undefined for the default. A group's repos must share one. */
+function profileOf(s: Session): Profile | undefined {
+  const ids = new Set(profileIds(s));
+  if (ids.size > 1)
+    throw new Error(`this group's repos use different Claude profiles (${[...ids].map((i) => i ?? "default").join(", ")}); give them the same one`);
+  const [id] = ids;
+  return id ? profiles.find((p) => p.id === id) : undefined;
+}
+/** The account a session's limits count against: its profile's id, "" for the default (also for a mixed group, which never starts). */
+function accountKey(s: Session): string {
+  try {
+    return profileOf(s)?.id ?? "";
+  } catch {
+    return "";
+  }
+}
+/** The environment for orch in `dir`: its profile's CLAUDE_CONFIG_DIR when it has one. */
+function envAt(dir: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const s = sessions.get(keyOf(dir));
+  const id = s ? undefined : repoProfiles.get(keyOf(dir));
+  const p = s ? profileOf(s) : id ? profiles.find((x) => x.id === id) : undefined;
+  return { ...process.env, ...extra, ...(p ? { CLAUDE_CONFIG_DIR: p.configDir } : {}) };
+}
+/** A profile list from the UI or the settings file, checked; a profile without a folder gets one under ~/.yaaiorch/profiles. */
+function checkProfiles(raw: unknown): Profile[] {
+  if (!Array.isArray(raw) || raw.length > 20) throw new Error("profiles must be a list of at most 20");
+  const seen = new Set<string>();
+  return raw.map((p) => {
+    const id = typeof p?.id === "string" ? p.id.trim() : "";
+    if (!PROFILE_ID.test(id)) throw new Error(`profile id "${id}": lowercase letters, digits and dashes, at most 32`);
+    if (seen.has(id)) throw new Error(`profile id "${id}" is used twice`);
+    seen.add(id);
+    const name = typeof p.name === "string" && p.name.trim() ? p.name.trim().slice(0, 60) : id;
+    const dir = typeof p.configDir === "string" ? p.configDir.trim() : "";
+    if (dir && !isAbsolute(dir)) throw new Error(`profile "${id}": the Claude folder must be an absolute path`);
+    const raw = p.dailyBudget === undefined || p.dailyBudget === null || p.dailyBudget === "" ? null : Number(p.dailyBudget);
+    if (raw !== null && !(raw > 0)) throw new Error(`profile "${id}": dailyBudget must be a positive amount, or empty for none`);
+    return { id, name, configDir: dir ? resolve(dir) : join(profilesHome(), id, "claude"), ...(raw !== null ? { dailyBudget: raw } : {}) };
+  });
+}
+/** A repo whose account may not change now: it runs, waits to start, or is busy in a group. */
+const profileLocked = (s: Session) => !!(s.child || s.pending || busyGroupOf(s.repo));
+
 function saveSettings() {
   try {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
     writeFileSync(
       SETTINGS_FILE,
       JSON.stringify(
-        { repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo), maxParallel, dailyBudget, spent, usageCap, keepAwake },
+        {
+          repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo),
+          maxParallel,
+          dailyBudget,
+          // `usd`: the default account's (the file's old shape); `profiles`: each profile's, the same day.
+          spent: {
+            day: spentDay,
+            usd: account("").spent,
+            profiles: Object.fromEntries([...accounts].filter(([k, a]) => k && a.spent > 0).map(([k, a]) => [k, a.spent])),
+          },
+          usageCap,
+          keepAwake,
+          profiles,
+          repoProfiles: Object.fromEntries(repoProfiles),
+        },
         null,
         2,
       ),
@@ -246,11 +347,15 @@ function snapshot(s: Session) {
   const dir = join(s.repo, ".orchestrator");
   return {
     repo: s.repo,
-    ...(s.group ? { group: s.group } : { inGroup: busyGroupOf(s.repo)?.group?.name }),
+    // A group: its members' profiles in its repos' order (null: the default), so the UI can warn before a start that
+    // would be refused.
+    ...(s.group
+      ? { group: s.group, memberProfiles: profileIds(s).map((id) => id ?? null) }
+      : { inGroup: busyGroupOf(s.repo)?.group?.name, profile: repoProfiles.get(keyOf(s.repo)) }),
     running: s.running,
     queued: !!s.pending,
     /** Why a queued start waits: a free slot, the usage limit or the budget. */
-    waitReason: s.pending ? (gate() ?? "free slot") : undefined,
+    waitReason: s.pending ? (gate(accountKey(s)) ?? "free slot") : undefined,
     queue: readJson<Item[]>(join(dir, "queue.json"), []),
     lastRun: readJson<unknown>(join(dir, "last-run.json"), null),
   };
@@ -259,6 +364,7 @@ const initPayload = () => ({
   sessions: [...sessions.values()].map((s) => ({ state: snapshot(s), log: s.log, events: s.events })),
   maxParallel,
   global: globalState(),
+  profiles,
 });
 /** A group's members show "in group" while it runs or waits: their state changes with the group's. */
 const sendSession = (s: Session) => {
@@ -287,28 +393,33 @@ function onEvent(s: Session, wrapped: OrchEvent) {
   const ev = unwrapGroupEvent(wrapped).ev as { type: string; cost?: number; resetAt?: number; until?: number; reason?: string } & Partial<
     Record<Window, Reading>
   >;
+  // Everything below counts against the Claude account this session runs under (a group's members share one).
+  const key = accountKey(s);
+  const a = account(key);
   if (ev.type === "usage") {
-    // The windows are per account, so the latest reading from any repo holds for all of them.
+    // The windows belong to the account, so the latest reading from any of its repos holds for all of them.
     const next: Partial<Record<Window, Reading>> = {};
     for (const w of ["fiveHour", "week"] as Window[]) if (ev[w] && typeof ev[w]!.pct === "number") next[w] = ev[w];
-    usage = { ...usage, ...next };
+    a.usage = { ...a.usage, ...next };
     sendGlobal();
   }
-  if (COST_EVENTS.has(ev.type) && typeof ev.cost === "number") addSpent(ev.cost);
+  if (COST_EVENTS.has(ev.type) && typeof ev.cost === "number") addSpent(ev.cost, key);
   // The loop changed queue.json: send the queue again, so statuses and the brief's progress stay current.
   if (["queue_item", "queue_changed", "blocked", "coverage"].includes(ev.type)) sendSession(s);
-  if (ev.type === "queue_item" && dailyBudget !== null && spent.usd >= dailyBudget && s.child?.pid) {
-    // A queue loop is about to start its next goal with the day's budget used up: stop it now,
+  const budget = budgetOf(key);
+  if (ev.type === "queue_item" && budget !== null && a.spent >= budget && s.child?.pid) {
+    // A queue loop is about to start its next goal with the account's budget for the day used up: stop it now,
     // before the goal's first agent call. The goal stays pending for later.
-    pushLine(s, `-- daily budget of $${dailyBudget} used up: stopping the queue before its next goal --`);
+    pushLine(s, `-- daily budget of $${budget} used up: stopping the queue before its next goal --`);
     killTree(s.child.pid);
   }
   // A run pausing at its own usage cap needs no extra hold: the reading over the cap already holds new starts.
   if (ev.type === "usage_limit" || (ev.type === "waiting" && ev.until && ev.reason !== "usage_cap")) {
-    // The limit is per account: hold new starts in every repo until it resets.
+    // The limit is per account: hold new starts in every repo on this account until it resets.
     const until = (ev.type === "waiting" ? ev.until : ev.resetAt) ?? Date.now() + 30 * 60_000;
-    if (!usageLimit || until > usageLimit.until) usageLimit = { repo: s.repo, until };
-    pushLine(s, `-- usage limit: new runs in all repos wait until ${new Date(usageLimit.until).toLocaleString()} --`);
+    if (!a.usageLimit || until > a.usageLimit.until) a.usageLimit = { repo: s.repo, until };
+    const on = key ? `on the "${profiles.find((p) => p.id === key)?.name ?? key}" Claude profile` : "on the default Claude account";
+    pushLine(s, `-- usage limit: new runs ${on} wait until ${new Date(a.usageLimit.until).toLocaleString()} --`);
     sendGlobal();
   }
 }
@@ -369,7 +480,8 @@ function requestStart(s: Session, args: string[], label: string) {
   if (inGroup) throw new Error(`this repo is busy in group "${inGroup.group!.name}"; stop the group first`);
   const busy = s.group ? membersOf(s).find((m) => m.child || m.pending) : undefined;
   if (busy) throw new Error(`${busy.repo} has a run of its own (or one waiting to start); stop it first`);
-  const held = gate();
+  profileOf(s); // a group whose repos use different accounts is refused here, not when its turn comes
+  const held = gate(accountKey(s));
   if (!held && runningCount() < maxParallel) return startNow(s, args, label);
   s.pending = { args, label };
   startQueue.push(keyOf(s.repo));
@@ -377,10 +489,19 @@ function requestStart(s: Session, args: string[], label: string) {
   sendSession(s);
 }
 
+/** Start waiting runs, oldest first, while slots are free. A start whose account is held stays queued; others pass it. */
 function startNext() {
-  while (startQueue.length && runningCount() < maxParallel && !gate()) {
-    const s = sessions.get(startQueue.shift()!);
-    if (!s?.pending) continue;
+  for (let i = 0; i < startQueue.length && runningCount() < maxParallel;) {
+    const s = sessions.get(startQueue[i]);
+    if (!s?.pending) {
+      startQueue.splice(i, 1);
+      continue;
+    }
+    if (gate(accountKey(s))) {
+      i++;
+      continue;
+    }
+    startQueue.splice(i, 1);
     const { args, label } = s.pending;
     s.pending = null;
     startNow(s, args, label);
@@ -388,14 +509,14 @@ function startNext() {
 }
 
 /**
- * Run and loop get the global limits: --usage-cap from the caps, and with a daily budget a --max-cost of
- * at most what is left today (their own --max-cost, if lower).
+ * Run and loop get their account's limits: --usage-cap from the caps, and with a daily budget a --max-cost of
+ * at most what is left of it today (their own --max-cost, if lower).
  */
-function withBudget(args: string[]): string[] {
+function withBudget(args: string[], acct: string): string[] {
   if (args[0] === "group" && args[1] === "run") {
     // `orch group run` takes no usage caps (the holds still stop new starts); it gets the day's budget left as --max-cost,
     // before its goal, which comes last.
-    const left = budgetLeft();
+    const left = budgetLeft(acct);
     if (left === undefined) return args;
     const i = args.indexOf("--max-cost");
     const own = i >= 0 ? Number(args[i + 1]) : Infinity;
@@ -405,7 +526,7 @@ function withBudget(args: string[]): string[] {
   if (!["run", "loop", "learn", "share", "split", "new"].includes(args[0])) return args;
   const caps = (["fiveHour", "week"] as Window[]).filter((w) => usageCap[w] !== null).map((w) => `${WINDOW_CLI[w]}=${usageCap[w]}`);
   if (caps.length && !args.includes("--usage-cap")) args = [...args, "--usage-cap", caps.join(",")];
-  const left = budgetLeft();
+  const left = budgetLeft(acct);
   if (left === undefined) return args;
   // A loop (or a new project that starts building) gets what is left today as its budget for all goals together,
   // so the goal it runs out in stays pending instead of failing; a single call or goal gets it as its own cap.
@@ -428,12 +549,19 @@ export function withAwake(args: string[], on: boolean): string[] {
 }
 
 function startNow(s: Session, rawArgs: string[], label: string) {
-  const args = withAwake(withBudget(rawArgs), keepAwake);
+  const args = withAwake(withBudget(rawArgs, accountKey(s)), keepAwake);
+  let env: NodeJS.ProcessEnv;
+  try {
+    env = envAt(s.repo, { FORCE_COLOR: "0", ORCH_EVENTS: "1" });
+  } catch (e) {
+    pushLine(s, `-- not started: ${(e as Error).message} --`);
+    return sendSession(s);
+  }
   const p = spawn(process.execPath, [...ORCH_CMD, ...args], {
     cwd: s.repo,
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
-    env: { ...process.env, FORCE_COLOR: "0", ORCH_EVENTS: "1" },
+    env,
   });
   s.child = p;
   s.running = { pid: p.pid!, label, startedAt: Date.now() };
@@ -480,9 +608,14 @@ function stop(s: Session) {
     // Only when the ask fails (it has not taken its locks yet, or orch cannot start) is the tree killed.
     const pid = s.child.pid;
     pushLine(s, "-- stopping: the group parks both repos' work --");
-    execFile(process.execPath, [...ORCH_CMD, "group", "stop", s.group.name], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err) => {
-      if (err && s.child?.pid === pid) killTree(pid);
-    });
+    execFile(
+      process.execPath,
+      [...ORCH_CMD, "group", "stop", s.group.name],
+      { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
+      (err) => {
+        if (err && s.child?.pid === pid) killTree(pid);
+      },
+    );
     return;
   }
   killTree(s.child.pid);
@@ -622,7 +755,7 @@ const plugins = (s: Session, fresh: boolean) => {
     execFile(
       process.execPath,
       [...ORCH_CMD, "plugins", "--json", "--details"],
-      { cwd: s.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 },
+      { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true, timeout: 120_000 },
       (err, stdout, stderr) => {
         const line = stdout.split(/\r?\n/).find((l) => l.startsWith("["));
         try {
@@ -644,7 +777,7 @@ const doctor = (s: Session, pr = false) =>
     execFile(
       process.execPath,
       [...ORCH_CMD, "doctor", "--json", ...(pr ? ["--pr"] : [])],
-      { cwd: s.repo, encoding: "utf8", windowsHide: true },
+      { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
       (_err, stdout) => {
         // exit 1 just means a "fail" finding; the JSON is still on stdout
         try {
@@ -659,7 +792,7 @@ const doctor = (s: Session, pr = false) =>
 /** Through `orch add`, which edits the queue under its lock, so a running loop never loses the new goal. */
 const addGoal = (s: Session, goal: string) =>
   new Promise<void>((ok, fail) =>
-    execFile(process.execPath, [...ORCH_CMD, "add", goal], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
+    execFile(process.execPath, [...ORCH_CMD, "add", goal], { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
       err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
     ),
   );
@@ -667,8 +800,11 @@ const addGoal = (s: Session, goal: string) =>
 /** `orch split --accept`: queue the (edited) goals of a split brief; brief and goals go on stdin. */
 const acceptSplit = (s: Session, b: { brief?: unknown; goals?: unknown }) =>
   new Promise<void>((ok, fail) => {
-    const child = execFile(process.execPath, [...ORCH_CMD, "split", "--accept"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
-      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    const child = execFile(
+      process.execPath,
+      [...ORCH_CMD, "split", "--accept"],
+      { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
+      (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
     );
     child.stdin?.end(JSON.stringify({ brief: b.brief, goals: b.goals }));
   });
@@ -680,16 +816,22 @@ const approvePlan = (s: Session, b: { plan?: unknown; reject?: string }) =>
       ...(typeof b.reject === "string" ? ["--reject", b.reject.slice(0, 4000)] : b.plan ? ["--plan-stdin"] : []),
       ...(s.group ? ["--group", s.group.name] : []),
     ];
-    const child = execFile(process.execPath, [...ORCH_CMD, "approve", ...args], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
-      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    const child = execFile(
+      process.execPath,
+      [...ORCH_CMD, "approve", ...args],
+      { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
+      (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
     );
     child.stdin?.end(b.plan && typeof b.reject !== "string" ? JSON.stringify(b.plan) : "");
   });
 
 const answerQuestion = (s: Session, id: string, answer: string) =>
   new Promise<void>((ok, fail) => {
-    const child = execFile(process.execPath, [...ORCH_CMD, "answer", id], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
-      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    const child = execFile(
+      process.execPath,
+      [...ORCH_CMD, "answer", id],
+      { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
+      (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
     );
     child.stdin?.end(answer);
   });
@@ -697,8 +839,11 @@ const answerQuestion = (s: Session, id: string, answer: string) =>
 /** Agent M: allow, deny or always-allow a command an agent wants to run (`orch decide`, which checks the ID). */
 const decideCommand = (s: Session, id: string, decision: string) =>
   new Promise<void>((ok, fail) =>
-    execFile(process.execPath, [...ORCH_CMD, "decide", id, decision], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
-      err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+    execFile(
+      process.execPath,
+      [...ORCH_CMD, "decide", id, decision],
+      { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
+      (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
     ),
   );
 
@@ -708,35 +853,45 @@ const orchOutput = (repo: string, args: string[], input?: string) =>
     const child = execFile(
       process.execPath,
       [...ORCH_CMD, ...args],
-      { cwd: repo, encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      { cwd: repo, env: envAt(repo), encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
       (err, out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(out)),
     );
     child.stdin?.end(input ?? "");
   });
 
-/** Count money spent today toward the daily budget. */
-function addSpent(cost: number) {
+/** Count money spent today toward an account's daily budget ("" the default one). */
+function addSpent(cost: number, key: string) {
   if (!(cost > 0)) return;
-  if (spent.day !== today()) spent = { day: today(), usd: 0 };
-  spent.usd += cost;
+  newDay();
+  account(key).spent += cost;
   saveSettings();
   sendGlobal();
 }
 
-/** Agent M chat: `orch chat` with the question and every open repo (it reads their status); its cost counts toward the daily budget. */
-const askAgentM = (question: string, session?: string) =>
+/**
+ * Agent M runs on one Claude account (profile id, null the default): that folder's login, plugins and MCP servers, and a
+ * chat folder of its own (`ORCH_CHAT_DIR`), so its cached machine status and resumable sessions never mix accounts.
+ */
+function agentMEnv(profile: string | null): NodeJS.ProcessEnv {
+  const env = profileEnv(profile);
+  if (profile === null) return env;
+  const base = process.env.ORCH_CHAT_DIR || join(homedir(), ".yaaiorch", "agent-m");
+  return { ...env, ORCH_CHAT_DIR: `${base}-${profile}` };
+}
+/** Agent M chat: `orch chat` with the question and every open repo (it reads their status); its cost counts toward its account's budget. */
+const askAgentM = (question: string, session: string | undefined, profile: string | null) =>
   new Promise<{ answer: string; session?: string; cost: number }>((ok, fail) => {
     const list = [...sessions.values()].filter((s) => !s.group);
     const input = JSON.stringify({ question, session, repos: list.map((s) => s.repo), running: list.filter((s) => s.child).map((s) => s.repo) });
     const child = execFile(
       process.execPath,
       [...ORCH_CMD, "chat"],
-      { cwd: homedir(), encoding: "utf8", windowsHide: true, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },
+      { cwd: homedir(), env: agentMEnv(profile), encoding: "utf8", windowsHide: true, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },
       (err, out, stderr) => {
         if (err) return fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message));
         try {
           const r = JSON.parse(out.trim().split(/\r?\n/).pop() ?? "");
-          addSpent(Number(r.cost));
+          addSpent(Number(r.cost), profile ?? "");
           ok(r);
         } catch {
           fail(new Error("Agent M returned no answer"));
@@ -746,16 +901,111 @@ const askAgentM = (question: string, session?: string) =>
     child.stdin?.end(input);
   });
 
-/** Agent M: gather the machine status in the background (`orch chat --warm`), one at a time, so the first question is quick. */
-let warming = false;
-const warmAgentM = () => {
-  if (warming) return;
-  warming = true;
-  const child = execFile(process.execPath, [...ORCH_CMD, "chat", "--warm"], { cwd: homedir(), encoding: "utf8", windowsHide: true, timeout: 180_000 }, () => {
-    warming = false;
-  });
+/** Agent M: gather the machine status in the background (`orch chat --warm`), one at a time per account, so the first question is quick. */
+const warming = new Set<string>();
+const warmAgentM = (profile: string | null) => {
+  const key = profile ?? "";
+  if (warming.has(key)) return;
+  warming.add(key);
+  const child = execFile(
+    process.execPath,
+    [...ORCH_CMD, "chat", "--warm"],
+    { cwd: homedir(), env: agentMEnv(profile), encoding: "utf8", windowsHide: true, timeout: 180_000 },
+    () => warming.delete(key),
+  );
   child.stdin?.end(JSON.stringify({ repos: [...sessions.values()].filter((s) => !s.group).map((s) => s.repo) }));
 };
+/** A request's `profile`: null (the default account) or a known profile's id; anything else throws. */
+const profileParam = (raw: unknown): string | null => {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw !== "string" || !profiles.some((p) => p.id === raw)) throw new Error(`unknown profile: ${String(raw)}`);
+  return raw;
+};
+
+// ---------- Claude profiles: who each one is logged in as, and logging one in ----------
+/** The environment for a profile's own orch calls; id null is the default folder. */
+function profileEnv(id: string | null): NodeJS.ProcessEnv {
+  if (id === null) return process.env;
+  const p = profiles.find((x) => x.id === id);
+  if (!p) throw new Error(`unknown profile: ${id}`);
+  return { ...process.env, CLAUDE_CONFIG_DIR: p.configDir };
+}
+type Account = { id: string | null; loggedIn: boolean | null; email?: string; org?: string; plan?: string; method?: string; configDir?: string };
+/** `orch account --json` for a profile: never cached, since a login changes it. Its email stays on the PC (sendLocal). */
+const accountOf = (id: string | null) =>
+  new Promise<Account>((ok) =>
+    execFile(
+      process.execPath,
+      [...ORCH_CMD, "account", "--json"],
+      { cwd: homedir(), env: profileEnv(id), encoding: "utf8", windowsHide: true, timeout: 30_000 },
+      (_err, out) => {
+        try {
+          ok({ ...JSON.parse(out.trim().split(/\r?\n/).pop() ?? ""), id });
+        } catch {
+          ok({ id, loggedIn: null });
+        }
+      },
+    ),
+  );
+/** Profiles with a login window open: checked every LOGIN_POLL until logged in, for at most LOGIN_WAIT. */
+const logins = new Map<string, ReturnType<typeof setInterval>>();
+const LOGIN_POLL = Number(process.env.YAAIORCH_LOGIN_POLL_MS) || 5000;
+const LOGIN_WAIT = 10 * 60_000;
+function watchLogin(id: string | null) {
+  const key = id ?? "";
+  clearInterval(logins.get(key));
+  const until = Date.now() + LOGIN_WAIT;
+  const tick = async () => {
+    if (id !== null && !profiles.some((p) => p.id === id)) return endLogin(key);
+    const a = await accountOf(id);
+    if (!logins.has(key)) return; // ended meanwhile
+    if (a.loggedIn === true || Date.now() > until) {
+      endLogin(key);
+      sendLocal("account", { ...a, pending: false });
+    }
+  };
+  logins.set(
+    key,
+    setInterval(() => void tick(), LOGIN_POLL),
+  );
+  sendLocal("account", { id, loggedIn: null, pending: true });
+}
+function endLogin(key: string) {
+  clearInterval(logins.get(key));
+  logins.delete(key);
+}
+/**
+ * `orch account --login`: a terminal window running `claude auth login` for the profile. Resolves once the window is
+ * open (or with orch's error, which names the command to run by hand); its status is then watched until logged in.
+ */
+const startLogin = (id: string | null) =>
+  new Promise<void>((ok, fail) => {
+    const env = profileEnv(id);
+    let settled = false;
+    const settle = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (err) return fail(err);
+      watchLogin(id);
+      ok();
+    };
+    // Windows' launcher waits for the window to close (up to LOGIN_WAIT); macOS and Linux return at once.
+    execFile(
+      process.execPath,
+      [...ORCH_CMD, "account", "--login", "--json"],
+      { cwd: homedir(), env, encoding: "utf8", windowsHide: true, timeout: LOGIN_WAIT },
+      (err, _out, stderr) => {
+        if (err && !settled) return settle(new Error(stderr.trim().split(/\r?\n/).pop() || err.message));
+        settle();
+        // The window closed (Windows): one last look, then stop watching.
+        if (process.platform === "win32" && logins.has(id ?? "")) {
+          endLogin(id ?? "");
+          void accountOf(id).then((a) => sendLocal("account", { ...a, pending: false }));
+        }
+      },
+    );
+    setTimeout(() => settle(), 2000).unref();
+  });
 
 /** Request bodies are small JSON (a brief at most): anything over 2 MB is refused, so nobody can fill the memory. */
 const MAX_BODY = 2 * 1024 * 1024;
@@ -792,34 +1042,48 @@ const stored = readJson<{
   repos?: string[];
   maxParallel?: number;
   dailyBudget?: number | null;
-  spent?: { day: string; usd: number };
+  spent?: { day: string; usd?: number; profiles?: Record<string, unknown> };
   usageCap?: Partial<Record<Window, number | null>>;
   keepAwake?: boolean;
+  profiles?: unknown;
+  repoProfiles?: Record<string, unknown>;
 }>(SETTINGS_FILE, {});
 if (stored.keepAwake === false) keepAwake = false;
+try {
+  profiles = checkProfiles(stored.profiles ?? []);
+} catch (e) {
+  console.error(`Claude profiles ignored: ${(e as Error).message}`);
+}
+for (const [repo, id] of Object.entries(stored.repoProfiles ?? {}))
+  if (typeof id === "string" && profiles.some((p) => p.id === id)) repoProfiles.set(keyOf(repo), id);
 if (!process.env.MAX_PARALLEL && stored.maxParallel) maxParallel = Math.max(1, stored.maxParallel);
 if (typeof stored.dailyBudget === "number" && stored.dailyBudget > 0) dailyBudget = stored.dailyBudget;
-if (stored.spent?.day === today() && typeof stored.spent.usd === "number") spent = stored.spent;
+if (stored.spent?.day === today()) {
+  if (typeof stored.spent.usd === "number" && stored.spent.usd > 0) account("").spent = stored.spent.usd;
+  for (const [id, usd] of Object.entries(stored.spent.profiles ?? {}))
+    if (typeof usd === "number" && usd > 0 && profiles.some((p) => p.id === id)) account(id).spent = usd;
+}
 for (const w of ["fiveHour", "week"] as Window[]) {
   const c = stored.usageCap?.[w];
   if (typeof c === "number" && c > 0 && c <= 100) usageCap[w] = c;
 }
 
-// Lift holds when they expire: the usage-limit reset time, and a new day for the budget.
+// Lift holds when they expire: each account's usage-limit reset time and windows, and a new day for the budgets.
 setInterval(() => {
   let changed = false;
-  if (usageLimit && usageLimit.until <= Date.now()) {
-    usageLimit = null;
-    changed = true;
-  }
-  for (const w of ["fiveHour", "week"] as Window[]) {
-    if (usage[w] && usage[w]!.resetsAt <= Date.now()) {
-      delete usage[w]; // that window has reset; the next agent call brings a fresh reading
+  for (const a of accounts.values()) {
+    if (a.usageLimit && a.usageLimit.until <= Date.now()) {
+      a.usageLimit = null;
       changed = true;
     }
+    for (const w of ["fiveHour", "week"] as Window[]) {
+      if (a.usage[w] && a.usage[w]!.resetsAt <= Date.now()) {
+        delete a.usage[w]; // that window has reset; the next agent call brings a fresh reading
+        changed = true;
+      }
+    }
   }
-  if (spent.day !== today()) {
-    spent = { day: today(), usd: 0 };
+  if (newDay()) {
     saveSettings();
     changed = true;
   }
@@ -971,8 +1235,11 @@ http
       if (url.pathname === "/api/browser" && req.method === "GET") {
         const s = mustGet(url.searchParams.get("repo"));
         const result = await new Promise<string>((ok, fail) =>
-          execFile(process.execPath, [...ORCH_CMD, "browser", "detect"], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, stdout, stderr) =>
-            err ? fail(new Error((stderr || err.message).trim())) : ok(stdout),
+          execFile(
+            process.execPath,
+            [...ORCH_CMD, "browser", "detect"],
+            { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
+            (err, stdout, stderr) => (err ? fail(new Error((stderr || err.message).trim())) : ok(stdout)),
           ),
         );
         return json(200, JSON.parse(result));
@@ -985,7 +1252,7 @@ http
           execFile(
             process.execPath,
             [...ORCH_CMD, "history", "--json", ...(id === null ? [] : [id])],
-            { cwd: s.repo, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+            { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
             (err, stdout, stderr) => (err ? fail(new Error((stderr || err.message).trim())) : ok(stdout)),
           ),
         );
@@ -1109,6 +1376,41 @@ http
           );
           return json(200, { ok: true, repo: s.repo });
         }
+        if (url.pathname === "/api/profile-status") {
+          // Who the default folder and each profile are logged in as (a POST, so it stays on the PC: it names accounts).
+          const ids = [null, ...profiles.map((p) => p.id)];
+          const list = await Promise.all(ids.map((id) => accountOf(id)));
+          return json(
+            200,
+            list.map((a) => ({ ...a, pending: logins.has(a.id ?? "") })),
+          );
+        }
+        if (url.pathname === "/api/profile-login") {
+          const id = b.profile ?? null;
+          if (id !== null && (typeof id !== "string" || !profiles.some((p) => p.id === id))) return json(400, { error: `unknown profile: ${String(id)}` });
+          if (logins.has(id ?? "")) return json(409, { error: "a login window for this profile is already open" });
+          await startLogin(id);
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/profiles") {
+          // The whole list at once. A profile in use by a run may not go away or move to another folder meanwhile.
+          const next = checkProfiles(b.profiles);
+          for (const old of profiles) {
+            const now = next.find((p) => p.id === old.id);
+            if (now?.configDir === old.configDir) continue;
+            const busy = [...sessions.values()].find((s) => (s.child || s.pending) && profileIds(s).includes(old.id));
+            if (busy) return json(409, { error: `profile "${old.id}" is in use by ${busy.repo}; stop that run first` });
+          }
+          for (const p of next) mkdirSync(p.configDir, { recursive: true });
+          profiles = next;
+          for (const [repo, id] of repoProfiles) if (!profiles.some((p) => p.id === id)) repoProfiles.delete(repo);
+          for (const k of accounts.keys()) if (k && !profiles.some((p) => p.id === k)) accounts.delete(k);
+          pluginCache.clear();
+          saveSettings();
+          sendInit();
+          startNext(); // a profile's budget may have been raised or cleared
+          return json(200, { ok: true, profiles });
+        }
         if (url.pathname === "/api/settings") {
           if ("maxParallel" in b) {
             const n = Number(b.maxParallel);
@@ -1141,14 +1443,14 @@ http
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/agent-m/warm") {
-          warmAgentM();
+          warmAgentM(profileParam(b.profile));
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/agent-m/ask") {
           if (typeof b.question !== "string" || !b.question.trim() || b.question.length > 4000)
             return json(400, { error: "question required (up to 4000 characters)" });
           if (b.session !== undefined && (typeof b.session !== "string" || !/^[\w-]{1,100}$/.test(b.session))) return json(400, { error: "invalid session" });
-          return json(200, await askAgentM(b.question, b.session));
+          return json(200, await askAgentM(b.question, b.session, profileParam(b.profile)));
         }
         if (url.pathname === "/api/group-save") {
           await orchOutput(homedir(), groupAddArgs(b));
@@ -1166,9 +1468,14 @@ http
         }
         if (url.pathname === "/api/clear-limit") {
           // "Try now": lift the usage-limit hold early, and forget readings over a cap; a run that hits
-          // the limit (or reads usage over a cap) again sets it again.
-          usageLimit = null;
-          usage = {};
+          // the limit (or reads usage over a cap) again sets it again. `profile`: only that account ("" the default);
+          // without it, every account.
+          const only = typeof b.profile === "string" ? b.profile : undefined;
+          for (const [k, a] of accounts)
+            if (only === undefined || k === only) {
+              a.usageLimit = null;
+              a.usage = {};
+            }
           sendGlobal();
           startNext();
           return json(200, { ok: true });
@@ -1189,10 +1496,24 @@ http
             execFile(
               process.execPath,
               [...ORCH_CMD, "browser", b.action, ...(b.action === "enable" ? [b.id] : [])],
-              { cwd: s.repo, encoding: "utf8", windowsHide: true },
+              { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
               (err, _stdout, stderr) => (err ? fail(new Error((stderr || err.message).trim())) : ok()),
             ),
           );
+          return json(200, { ok: true });
+        }
+        if (url.pathname === "/api/repo-profile") {
+          // Which Claude account this repo's agents use: a profile id, or null for the default.
+          const id = b.profile ?? null;
+          if (id !== null && !profiles.some((p) => p.id === id)) return json(400, { error: `unknown profile: ${String(id)}` });
+          if (profileLocked(s)) return json(409, { error: "stop this repo's run (or its group's) before changing its Claude profile" });
+          if (id === null) repoProfiles.delete(keyOf(s.repo));
+          else repoProfiles.set(keyOf(s.repo), id);
+          pluginCache.delete(keyOf(s.repo));
+          saveSettings();
+          sendSession(s);
+          // Groups with this repo show their members' profiles.
+          for (const g of sessions.values()) if (g.group?.repos.some((r) => keyOf(r.path) === keyOf(s.repo))) send("session", snapshot(g));
           return json(200, { ok: true });
         }
         if (url.pathname === "/api/remove-repo") {
@@ -1240,7 +1561,7 @@ http
             execFile(
               process.execPath,
               [...ORCH_CMD, "intake", "--github", b.github],
-              { cwd: s.repo, encoding: "utf8", windowsHide: true },
+              { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
               (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
             ),
           );
@@ -1251,8 +1572,11 @@ http
           const id = Number(b.id);
           if (!Number.isInteger(id)) return json(400, { error: "goal id required" });
           await new Promise<void>((ok, fail) =>
-            execFile(process.execPath, [...ORCH_CMD, "retry", String(id)], { cwd: s.repo, encoding: "utf8", windowsHide: true }, (err, _out, stderr) =>
-              err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok(),
+            execFile(
+              process.execPath,
+              [...ORCH_CMD, "retry", String(id)],
+              { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
+              (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
             ),
           );
           sendSession(s);
@@ -1265,7 +1589,7 @@ http
             execFile(
               process.execPath,
               [...ORCH_CMD, "move", String(id), b.direction],
-              { cwd: s.repo, encoding: "utf8", windowsHide: true },
+              { cwd: s.repo, env: envAt(s.repo), encoding: "utf8", windowsHide: true },
               (err, _out, stderr) => (err ? fail(new Error(stderr.trim().split(/\r?\n/).pop() || err.message)) : ok()),
             ),
           );

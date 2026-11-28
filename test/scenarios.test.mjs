@@ -252,6 +252,62 @@ describe("orch scenarios (fake claude)", { timeout: 720_000 }, () => {
     assert.equal(cfg.swap.qa, "spare", "other settings are kept");
   });
 
+  test("a Claude profile (CLAUDE_CONFIG_DIR) supplies the user agents and skills, and reaches every claude call", () => {
+    const dir = repo();
+    const home = mkdtempSync(join(tmpdir(), "yaaiorch-home-"));
+    const profile = mkdtempSync(join(tmpdir(), "yaaiorch-profile-"));
+    dirs.push(home, profile);
+    const agent = (root, name) => {
+      mkdirSync(join(root, "agents"), { recursive: true });
+      writeFileSync(join(root, "agents", `${name}.md`), `---\nname: ${name}\ndescription: The ${name} agent\n---\n\nHelp.\n`);
+    };
+    agent(join(home, ".claude"), "personal-helper");
+    agent(profile, "work-helper");
+    mkdirSync(join(profile, "skills", "work-skill"), { recursive: true });
+    writeFileSync(join(profile, "skills", "work-skill", "SKILL.md"), "---\nname: work-skill\ndescription: Work only\n---\n\nDo it.\n");
+    const env = { HOME: home, USERPROFILE: home };
+    const list = (extra) =>
+      JSON.parse(
+        orch(dir, ["agents", "--json"], { ...env, ...extra })
+          .out.trim()
+          .split("\n")
+          .pop(),
+      );
+
+    const plain = list({ CLAUDE_CONFIG_DIR: "" });
+    assert.equal(plain.agents.find((a) => a.name === "personal-helper")?.source, "user", "the default profile reads ~/.claude");
+    assert.ok(!plain.agents.some((a) => a.name === "work-helper"));
+
+    const work = list({ CLAUDE_CONFIG_DIR: profile });
+    assert.equal(work.agents.find((a) => a.name === "work-helper")?.source, "user");
+    assert.ok(!work.agents.some((a) => a.name === "personal-helper"), "another profile never sees ~/.claude");
+    assert.equal(work.skills.find((s) => s.name === "work-skill")?.source, "user");
+
+    const envLog = join(dir, "..", `${basename(dir)}.env.log`);
+    const r = orch(dir, ["run", "x", "--max-rounds", "1"], { ...env, CLAUDE_CONFIG_DIR: profile, FAKE_QA: "pass", FAKE_ENV_LOG: envLog });
+    assert.equal(r.code, 0, r.out);
+    const calls = readFileSync(envLog, "utf8").trim().split(/\r?\n/);
+    assert.ok(calls.length >= 3, calls.join("\n"));
+    for (const c of calls) assert.ok(c.endsWith(` configdir=${profile}`), c);
+  });
+
+  test("orch account reports a profile's login and logs it in; the token never comes back", () => {
+    const dir = repo();
+    const profile = join(mkdtempSync(join(tmpdir(), "yaaiorch-profile-")), "work", "claude");
+    dirs.push(dirname(dirname(profile)));
+    const env = { CLAUDE_CONFIG_DIR: profile, FAKE_AUTH: "profile", FAKE_LOGIN_EMAIL: "me@work.example", ORCH_LOGIN_DIRECT: "1" };
+    const account = (args = []) => {
+      const r = orch(dir, ["account", "--json", ...args], env);
+      assert.equal(r.code, 0, r.out);
+      return JSON.parse(r.out.trim().split("\n").pop());
+    };
+    assert.deepEqual(account(), { loggedIn: false, method: "none", configDir: profile });
+    const after = account(["--login"]);
+    assert.ok(existsSync(profile), "the profile's folder is created for the login");
+    assert.deepEqual(after, { loggedIn: true, email: "me@work.example", org: "Work Org", plan: "max", method: "claude.ai", configDir: profile });
+    assert.match(orch(dir, ["account"], env).out, /logged in \(me@work\.example, Work Org, max\)/);
+  });
+
   test("browser setup requires selecting the current script and preserves existing settings", () => {
     const dir = repo();
     mkdirSync(join(dir, "web"));

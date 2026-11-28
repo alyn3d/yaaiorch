@@ -58,6 +58,23 @@ export type State = {
   group?: GroupConfig;
   /** A repo whose group runs (or waits to start): the group's name. Its own starts are refused meanwhile. */
   inGroup?: string;
+  /** A repo's Claude profile id; absent: the default account. */
+  profile?: string;
+  /** A group's members' profile ids in its repos' order (null: the default); a group runs only when they agree. */
+  memberProfiles?: (string | null)[];
+};
+/** A Claude Code account in its own folder (CLAUDE_CONFIG_DIR); `dailyBudget`: its own, in USD. */
+export type Profile = { id: string; name: string; configDir: string; dailyBudget?: number };
+/** Who an account is logged in as (`orch account --json`); id null is the default folder. `pending`: a login window is open. */
+export type AccountStatus = {
+  id: string | null;
+  loggedIn: boolean | null;
+  email?: string;
+  org?: string;
+  plan?: string;
+  method?: string;
+  configDir?: string;
+  pending?: boolean;
 };
 /** One repo of a group (`orch group list --json`). `serve`: how the group starts the backend; `env`: the frontend's. */
 export type GroupRepoConfig = {
@@ -67,8 +84,17 @@ export type GroupRepoConfig = {
   env?: Record<string, string>;
 };
 export type GroupConfig = { name: string; repos: GroupRepoConfig[]; contract?: string; integrationRounds?: number; dir: string };
-/** Shared by all repos: the usage-limit hold and the daily budget. */
+/** One Claude account's limits: its usage-limit hold, daily budget and latest usage readings. */
 export type UsageWindow = "fiveHour" | "week";
+export type AccountLimits = {
+  usageLimit: { repo: string; until: number } | null;
+  budget: { limit: number | null; spent: number; day: string };
+  usage: Partial<Record<UsageWindow, { pct: number; resetsAt: number }>>;
+};
+/**
+ * Limits: the default Claude account's at the top level, every account (profile id, "" the default) under `accounts`.
+ * The caps and keep-awake are one setting for all.
+ */
 export type Global = {
   usageLimit: { repo: string; until: number } | null;
   budget: { limit: number | null; spent: number; day: string };
@@ -78,6 +104,8 @@ export type Global = {
   usageCap: Record<UsageWindow, number | null>;
   /** Long runs keep the computer from sleeping (--keep-awake). */
   keepAwake: boolean;
+  /** Each Claude account's limits (absent from an older server). */
+  accounts?: Record<string, AccountLimits>;
 };
 /** Who this window is: the PC itself, or a paired device through the tunnel (view or control). */
 export type ClientInfo = { remote: false } | { remote: true; role: "view" | "control"; name: string };

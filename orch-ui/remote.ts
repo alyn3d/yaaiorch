@@ -60,6 +60,10 @@ export const PC_ONLY = new Set([
   "/api/browser", // POST approves a script to run
   "/api/settings",
   "/api/clear-limit",
+  "/api/profiles", // which Claude account folders exist
+  "/api/repo-profile", // which Claude account a repo's agents use
+  "/api/profile-status", // names the accounts
+  "/api/profile-login", // opens a terminal on the PC
 ]);
 
 /**

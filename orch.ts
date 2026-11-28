@@ -61,7 +61,8 @@ import {
   runGroup,
   stopGroup,
 } from "./orch-group-run";
-import { resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
+import { findOnPosixPath, resolveClaude, resolveCommand, type ClaudeCmd } from "./claude-bin";
+import { loginTerminal, manualLogin, parseAuthStatus, type AccountStatus } from "./orch-login";
 import type { OrchEventData, OrchEventType } from "./orch-events";
 import { appendRunHistory, createRunHistory, listRunHistory, readRunHistory } from "./orch-history";
 import { keepAwake } from "./orch-awake";
@@ -95,6 +96,8 @@ const USAGE = `YAAIORCH (Yet Another AI Orchestrator) CLI. Run from the target r
                         list agents + skills, use a custom agent in a built-in role, or turn a skill or
                         custom agent off in this repo (config skills.disable / agents.disable)
   orch doctor [--json] [--pr]  check node, claude (installed, logged in), git and the repo (--pr: and what pull requests need)
+  orch account [--json] [--login]  who claude is logged in as (for CLAUDE_CONFIG_DIR, else ~/.claude); --login opens a
+                        terminal window running "claude auth login" for that folder
   orch stop-after        a running loop stops before its next goal (the current one finishes)
   orch learn             study the repo (read-only) and write .orchestrator/brief.md for later goals
   orch split "<brief>" [--brief-file FILE] [--start]   split a big brief into queued goals for this repo (kept in
@@ -707,7 +710,39 @@ function parseFrontmatter(text: string): Record<string, string> {
   return out;
 }
 const frontmatter = (path: string) => parseFrontmatter(readFileSync(path, "utf8"));
-const roots = () => [join(homedir(), ".claude"), join(process.cwd(), ".claude")];
+/** Claude Code's user folder: CLAUDE_CONFIG_DIR when set (a YAAIORCH profile, another account), else ~/.claude. */
+const userClaudeDir = (env: NodeJS.ProcessEnv = process.env) =>
+  env.CLAUDE_CONFIG_DIR?.trim() ? resolve(env.CLAUDE_CONFIG_DIR.trim()) : join(homedir(), ".claude");
+const roots = () => [userClaudeDir(), join(process.cwd(), ".claude")];
+
+/** `orch account`: who the Claude folder in use is logged in as. */
+function accountStatus(): AccountStatus & { configDir: string } {
+  const r = claudeSync(["auth", "status", "--json"]);
+  return { ...parseAuthStatus(r.stdout ?? ""), configDir: userClaudeDir() };
+}
+/**
+ * `orch account --login`: a terminal window running `claude auth login` for this folder (orch-login.ts). Windows waits
+ * until that window closes; elsewhere the terminal app returns at once and the caller checks the status again later.
+ * ORCH_LOGIN_DIRECT=1 (tests) runs `claude auth login` here instead, without a window.
+ */
+async function openLogin() {
+  const c = claudeBin();
+  if (c.missing) throw new Error(notFound());
+  const dir = process.env.CLAUDE_CONFIG_DIR?.trim() ? userClaudeDir() : undefined;
+  if (dir) mkdirSync(dir, { recursive: true });
+  if (process.env.ORCH_LOGIN_DIRECT === "1") {
+    const r = claudeSync(["auth", "login"]);
+    if (r.status !== 0) throw new Error(`claude auth login failed: ${(r.stderr || "").trim().split(/\r?\n/).pop()}`);
+    return;
+  }
+  const l = loginTerminal(c, dir, process.platform, (name) => findOnPosixPath(name));
+  const p = spawn(l.file, l.args, { stdio: "ignore", windowsVerbatimArguments: l.verbatim, windowsHide: true, detached: !l.wait });
+  const code = await new Promise<number | null>((ok, fail) => {
+    p.on("error", (e) => fail(new Error(`could not open a terminal (${e.message}); run this in a terminal: ${manualLogin(process.platform, dir)}`)));
+    p.on("close", ok);
+  });
+  if (code !== 0 && !l.wait) throw new Error(`could not open a terminal (exit ${code}); run this in a terminal: ${manualLogin(process.platform, dir)}`);
+}
 const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 function discoverAgents(): Entry[] {
@@ -3902,7 +3937,14 @@ function doctor(pr = false): Finding[] {
       loggedIn === true
         ? { name: "claude login", level: "ok", detail: "logged in" }
         : loggedIn === false
-          ? { name: "claude login", level: "fail", detail: 'not logged in; run "claude auth login"' }
+          ? {
+              name: "claude login",
+              level: "fail",
+              // A profile's folder (CLAUDE_CONFIG_DIR): a plain "claude auth login" would log in the default one instead.
+              detail: process.env.CLAUDE_CONFIG_DIR?.trim()
+                ? `this Claude profile is not logged in (${userClaudeDir()}); use Log in on the Accounts page, or run "orch account --login" with CLAUDE_CONFIG_DIR set to it`
+                : 'not logged in; run "claude auth login"',
+            }
           : { name: "claude login", level: "warn", detail: "could not read login status" },
     );
   }
@@ -6548,6 +6590,7 @@ async function main() {
       details: { type: "boolean", default: false },
       "older-than": { type: "string", default: "14" },
       warm: { type: "boolean", default: false },
+      login: { type: "boolean", default: false },
       repo: { type: "string", multiple: true },
       "serve-command": { type: "string" },
       "serve-url": { type: "string" },
@@ -6735,6 +6778,15 @@ async function main() {
       for (const p of list) console.log(`${p.enabled ? "on " : "off"}  ${p.id}  (${p.scope})${p.tokens !== undefined ? `  ~${p.tokens} tok/call` : ""}`);
       return;
     }
+    case "account": {
+      if (values.login) await openLogin();
+      const status = accountStatus();
+      if (values.json) return console.log(JSON.stringify(status));
+      const who = [status.email, status.org, status.plan].filter(Boolean).join(", ");
+      return console.log(
+        `${status.configDir}: ${status.loggedIn === true ? `logged in${who ? ` (${who})` : ""}` : status.loggedIn === false ? "not logged in" : "login status unknown"}`,
+      );
+    }
     case "doctor": {
       const findings = doctor(!!values.pr);
       if (values.json) console.log(JSON.stringify(findings));
@@ -6822,6 +6874,7 @@ async function main() {
 
 // Unit tests import this file for its helpers (see test/unit.test.mjs) and set ORCH_NO_MAIN.
 export {
+  userClaudeDir,
   failureDigest,
   wantsAwake,
   loadGateChecks,

@@ -3,7 +3,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -332,6 +332,253 @@ describe("browser-mode server: group events", { timeout: 60_000 }, () => {
     );
     assert.equal((await request("/api/stop", { method: "POST", headers, body: { repo: member } })).status, 200);
     await until(member, (m) => !m.state.running);
+  });
+});
+
+// Claude profiles: a repo assigned to a profile runs orch with that profile's CLAUDE_CONFIG_DIR; a group's repos must share one.
+describe("browser-mode server: Claude profiles", { timeout: 60_000 }, () => {
+  let a, b, calls, headers, gdir;
+  before(async () => {
+    port = await freePort();
+    home = mkdtempSync(join(tmpdir(), "yaaiorch-server-profiles-"));
+    a = join(home, "work-repo");
+    b = join(home, "home-repo");
+    gdir = join(home, "groups", "pair");
+    calls = join(home, "calls.txt");
+    mkdirSync(a);
+    mkdirSync(b);
+    const fakeOrch = join(home, "fake-orch.mjs");
+    const list = [
+      {
+        name: "pair",
+        dir: gdir,
+        repos: [
+          { path: a, role: "backend" },
+          { path: b, role: "frontend" },
+        ],
+      },
+    ];
+    // Logs each call with the CLAUDE_CONFIG_DIR it got and exits at once. `account --login` logs a profile folder in
+    // (a marker file), `account --json` reports it.
+    writeFileSync(
+      fakeOrch,
+      `import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const args = process.argv.slice(2);
+const dir = process.env.CLAUDE_CONFIG_DIR ?? null;
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args, cwd: process.cwd(), dir, chatDir: process.env.ORCH_CHAT_DIR ?? null }) + String.fromCharCode(10));
+if (args[0] === "group" && args[1] === "list") console.log(${JSON.stringify(JSON.stringify(list))});
+// A run whose goal is "limit" hits the usage limit (resets in an hour); "spend" costs $2.
+const ev = (e) => console.log("@@ORCH@@ " + JSON.stringify({ t: 1, ...e }));
+if (args[0] === "run" && args.includes("limit")) ev({ type: "usage_limit", resetAt: Date.now() + 3600000 });
+if (args[0] === "run" && args.includes("spend")) ev({ type: "task_end", round: 1, id: 0, status: "COMPLETE", cost: 2 });
+if (args[0] === "chat" && !args.includes("--warm")) console.log(JSON.stringify({ answer: "hi", session: "s1", cost: 0.5 }));
+if (args[0] === "account") {
+  if (args.includes("--login") && dir) writeFileSync(join(dir, "in"), "1");
+  const loggedIn = !dir || existsSync(join(dir, "in"));
+  console.log(JSON.stringify({ loggedIn, ...(loggedIn ? { email: dir ? "me@work.example" : "me@home.example" } : {}), configDir: dir ?? "default" }));
+}
+`,
+    );
+    const env = {
+      ...process.env,
+      PORT: String(port),
+      HOME: home,
+      USERPROFILE: home,
+      ORCH_REPO: "",
+      ORCH_REPOS: "",
+      ORCH_PATH: fakeOrch,
+      YAAIORCH_LOGIN_POLL_MS: "100",
+    };
+    delete env.CLAUDE_CONFIG_DIR;
+    delete env.YAAIORCH_HOME;
+    child = spawn(process.execPath, [TSX, "server.ts"], { cwd: ui, env, stdio: ["ignore", "pipe", "pipe"] });
+    await new Promise((ok, fail) => {
+      const t = setTimeout(() => fail(new Error("server did not start")), 30_000);
+      child.stdout.on("data", (d) => String(d).includes(`localhost:${port}`) && (clearTimeout(t), ok()));
+      child.on("exit", (c) => fail(new Error(`server exited ${c}`)));
+    });
+    headers = { "x-orch-token": (await request("/api/token")).json().token, "content-type": "application/json" };
+  });
+  after(() => {
+    child?.kill();
+    if (home) rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  const post = (path, body) => request(`/api/${path}`, { method: "POST", headers, body });
+  const stateOf = async () => (await request("/api/state", { headers })).json();
+  const called = () =>
+    readFileSync(calls, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+  /** The CLAUDE_CONFIG_DIR of the latest `run` call in `repo`, once it has been made. */
+  const runDir = async (repo, n) => {
+    for (let i = 0; i < 200; i++) {
+      const runs = existsSync(calls) ? called().filter((c) => c.args[0] === "run" && resolve(c.cwd) === resolve(repo)) : [];
+      if (runs.length >= n) return runs[n - 1].dir;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`no run ${n} in ${repo}`);
+  };
+  const idle = async (repo) => {
+    for (let i = 0; i < 200; i++) {
+      if (!(await stateOf()).sessions.find((s) => s.state.repo === repo)?.state.running) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  };
+
+  test("profiles are checked, get a folder of their own, and are remembered", async () => {
+    for (const bad of [[{ id: "Work" }], [{ id: "w" }, { id: "w" }], [{ id: "w", configDir: "relative/dir" }], "nope"]) {
+      const r = await post("profiles", { profiles: bad });
+      assert.equal(r.status, 500, JSON.stringify(bad));
+    }
+    const r = await post("profiles", { profiles: [{ id: "work", name: "Work" }] });
+    assert.equal(r.status, 200, r.text);
+    const dir = join(home, ".yaaiorch", "profiles", "work", "claude");
+    assert.deepEqual(r.json().profiles, [{ id: "work", name: "Work", configDir: dir }]);
+    assert.ok(existsSync(dir), "the profile's Claude folder is created");
+    assert.deepEqual((await stateOf()).profiles, r.json().profiles);
+  });
+
+  test("a repo's runs get its profile's CLAUDE_CONFIG_DIR; the default gets none", async () => {
+    for (const path of [a, b]) assert.equal((await post("add-repo", { path })).status, 200);
+    assert.equal((await post("repo-profile", { repo: a, profile: "nope" })).status, 400);
+    assert.equal((await post("repo-profile", { repo: a, profile: "work" })).status, 200);
+    const state = await stateOf();
+    assert.equal(state.sessions.find((s) => s.state.repo === a).state.profile, "work");
+    const saved = JSON.parse(readFileSync(join(home, ".yaaiorch", "ui.json"), "utf8"));
+    assert.deepEqual(Object.values(saved.repoProfiles), ["work"]);
+
+    assert.equal((await post("run", { repo: a, goal: "x" })).status, 200);
+    assert.equal(await runDir(a, 1), join(home, ".yaaiorch", "profiles", "work", "claude"));
+    assert.equal((await post("run", { repo: b, goal: "x" })).status, 200);
+    assert.equal(await runDir(b, 1), null);
+
+    await idle(a);
+    assert.equal((await post("repo-profile", { repo: a, profile: null })).status, 200);
+    assert.equal((await post("run", { repo: a, goal: "x" })).status, 200);
+    assert.equal(await runDir(a, 2), null, "back on the default account");
+    await idle(a);
+  });
+
+  test("a group whose repos use different profiles is refused", async () => {
+    assert.equal((await post("repo-profile", { repo: a, profile: "work" })).status, 200);
+    for (let i = 0; i < 100 && !(await stateOf()).sessions.some((s) => s.state.repo === gdir); i++) await new Promise((r) => setTimeout(r, 100));
+    const r = await post("run", { repo: gdir, goal: "both" });
+    assert.equal(r.status, 500);
+    assert.match(r.json().error, /different Claude profiles \(work, default\)/);
+  });
+
+  test("login status per profile; a login opens for that profile's folder and is watched until it lands", async () => {
+    const status = async () => (await post("profile-status", {})).json();
+    const work = join(home, ".yaaiorch", "profiles", "work", "claude");
+    assert.deepEqual(await status(), [
+      { id: null, loggedIn: true, email: "me@home.example", configDir: "default", pending: false },
+      { id: "work", loggedIn: false, configDir: work, pending: false },
+    ]);
+    assert.equal((await post("profile-login", { profile: "nope" })).status, 400);
+    const r = await post("profile-login", { profile: "work" });
+    assert.equal(r.status, 200, r.text);
+    const login = called().find((c) => c.args[0] === "account" && c.args.includes("--login"));
+    assert.equal(login.dir, work, "the login runs for the profile's folder");
+    let list;
+    for (let i = 0; i < 100; i++) {
+      list = await status();
+      if (list[1].loggedIn && !list[1].pending) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.deepEqual(list[1], { id: "work", loggedIn: true, email: "me@work.example", configDir: work, pending: false });
+  });
+
+  test("a usage limit or a used-up budget holds only its own account's repos", async () => {
+    // a is on "work", b on the default account (from the tests above).
+    const runs = (repo) => called().filter((c) => c.args[0] === "run" && resolve(c.cwd) === resolve(repo));
+    const sessionOf = async (repo) => (await stateOf()).sessions.find((s) => s.state.repo === repo).state;
+    const waitFor = async (cond) => {
+      for (let i = 0; i < 100 && !(await cond()); i++) await new Promise((r) => setTimeout(r, 100));
+      assert.ok(await cond());
+    };
+    const before = { a: runs(a).length, b: runs(b).length };
+
+    assert.equal((await post("run", { repo: a, goal: "limit" })).status, 200);
+    await waitFor(async () => (await stateOf()).global.accounts?.work?.usageLimit);
+    await idle(a);
+    let g = (await stateOf()).global;
+    assert.equal(g.usageLimit, null, "the default account is not held");
+    assert.equal(g.accounts[""].usageLimit, null);
+
+    assert.equal((await post("run", { repo: b, goal: "x" })).status, 200);
+    await waitFor(async () => runs(b).length === before.b + 1);
+    await idle(b);
+    assert.equal((await post("run", { repo: a, goal: "x" })).status, 200);
+    assert.match((await sessionOf(a)).waitReason, /usage limit/);
+    assert.equal(runs(a).length, before.a + 1, "the held start waits");
+
+    // "Try now" for another account leaves this one held; for this one, the start goes.
+    assert.equal((await post("clear-limit", { profile: "" })).status, 200);
+    assert.ok((await sessionOf(a)).queued);
+    assert.equal((await post("clear-limit", { profile: "work" })).status, 200);
+    await waitFor(async () => runs(a).length === before.a + 2);
+    await idle(a);
+
+    // A budget on the work profile: its spending holds it, the default account runs on.
+    assert.equal((await post("profiles", { profiles: [{ id: "work", name: "Work", dailyBudget: 1 }] })).status, 200);
+    assert.equal((await post("run", { repo: a, goal: "spend" })).status, 200);
+    await waitFor(async () => (await stateOf()).global.accounts.work.budget.spent === 2);
+    await idle(a);
+    g = (await stateOf()).global;
+    assert.deepEqual(g.accounts.work.budget, { limit: 1, spent: 2, day: g.budget.day });
+    assert.equal(g.budget.spent, 0, "the default account spent nothing");
+    assert.equal(JSON.parse(readFileSync(join(home, ".yaaiorch", "ui.json"), "utf8")).spent.profiles.work, 2);
+    assert.equal((await post("run", { repo: a, goal: "x" })).status, 200);
+    assert.match((await sessionOf(a)).waitReason, /daily budget of \$1 used up/);
+    assert.equal((await post("run", { repo: b, goal: "x" })).status, 200);
+    await waitFor(async () => runs(b).length === before.b + 2);
+    assert.ok(!runs(b).at(-1).args.includes("--max-cost"), "the default account has no budget");
+    await idle(b);
+
+    // Raised: the waiting start goes, with what is left of the work budget as its cap.
+    assert.equal((await post("profiles", { profiles: [{ id: "work", name: "Work", dailyBudget: 5 }] })).status, 200);
+    await waitFor(async () => runs(a).length === before.a + 4);
+    const args = runs(a).at(-1).args;
+    assert.equal(args[args.indexOf("--max-cost") + 1], "3.00");
+    await idle(a);
+  });
+
+  test("Agent M runs on the chosen account, in a chat folder of its own, and its cost counts there", async () => {
+    const chats = () => called().filter((c) => c.args[0] === "chat");
+    const spentOn = async (key) => (await stateOf()).global.accounts[key].budget.spent;
+    const before = { work: await spentOn("work"), def: await spentOn("") };
+    assert.equal((await post("agent-m/ask", { question: "hi", profile: "nope" })).status, 500);
+    const r = await post("agent-m/ask", { question: "hi", profile: "work" });
+    assert.equal(r.status, 200, r.text);
+    const ask = chats()
+      .filter((c) => !c.args.includes("--warm"))
+      .at(-1);
+    assert.equal(ask.dir, join(home, ".yaaiorch", "profiles", "work", "claude"));
+    assert.equal(ask.chatDir, `${join(home, ".yaaiorch", "agent-m")}-work`);
+    assert.equal(await spentOn("work"), before.work + 0.5);
+    assert.equal(await spentOn(""), before.def);
+
+    assert.equal((await post("agent-m/ask", { question: "hi" })).status, 200);
+    const plain = chats()
+      .filter((c) => !c.args.includes("--warm"))
+      .at(-1);
+    assert.equal(plain.dir, null, "the default account");
+    assert.equal(plain.chatDir, null, "the default chat folder");
+    assert.equal(await spentOn(""), before.def + 0.5);
+
+    assert.equal((await post("agent-m/warm", { profile: "work" })).status, 200);
+    for (let i = 0; i < 50 && !chats().some((c) => c.args.includes("--warm") && c.dir); i++) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(chats().some((c) => c.args.includes("--warm") && c.chatDir === `${join(home, ".yaaiorch", "agent-m")}-work`));
+  });
+
+  test("a group's session carries its members' profiles, refreshed when one changes", async () => {
+    const group = async () => (await stateOf()).sessions.find((s) => s.state.repo === gdir).state;
+    assert.deepEqual((await group()).memberProfiles, ["work", null]);
+    assert.equal((await post("repo-profile", { repo: b, profile: "work" })).status, 200);
+    assert.deepEqual((await group()).memberProfiles, ["work", "work"]);
   });
 });
 

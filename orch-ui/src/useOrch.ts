@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientInfo, Finding, Global, OrchEvent, RemoteStatus, RunView, State } from "./types";
+import type { AccountStatus, ClientInfo, Finding, Global, OrchEvent, Profile, RemoteStatus, RunView, State } from "./types";
 import { reduce } from "./reduce";
 import { transport, type SessionInit } from "./transport";
 import { notify } from "./notify";
@@ -54,6 +54,10 @@ export function useOrch() {
     keepAwake: true,
   });
 
+  /** Claude profiles (accounts in their own folders), and who each account is logged in as (key: id, "" the default). */
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [accounts, setAccounts] = useState<Record<string, AccountStatus>>({});
+
   /** The goal each repo is running, for notification texts (live events only; replays never notify). */
   const goals = useRef(new Map<string, string>());
 
@@ -66,6 +70,7 @@ export function useOrch() {
           setGroups(d.sessions.filter((s) => s.state.group).map((s) => s.state.repo));
           setMaxParallelState(d.maxParallel);
           if (d.global) setGlobal(d.global);
+          setProfiles(d.profiles ?? []);
           setReady(true);
         },
         onSession: (state) =>
@@ -91,6 +96,12 @@ export function useOrch() {
         },
         onClient: setClient,
         onRemote: setRemote,
+        // A login window just opened (pending, status not known yet) keeps what was known until the login lands.
+        onAccount: (a) =>
+          setAccounts((all) => {
+            const key = a.id ?? "";
+            return { ...all, [key]: a.pending ? { ...all[key], id: a.id, loggedIn: all[key]?.loggedIn ?? null, pending: true } : a };
+          }),
       }),
     [],
   );
@@ -98,8 +109,29 @@ export function useOrch() {
   const setMaxParallel = useCallback(async (n: number) => {
     await transport.setMaxParallel(n);
   }, []);
+  /** Ask every account's login again (the Accounts page on open, and its Check button). */
+  const refreshAccounts = useCallback(async () => {
+    const list = await transport.profileStatus();
+    setAccounts(Object.fromEntries(list.map((a) => [a.id ?? "", a])));
+  }, []);
 
-  return { sessions, order, groups, maxParallel, setMaxParallel, global, connected, ready, startError, client, remote, canPickRepo: transport.canPickRepo };
+  return {
+    sessions,
+    order,
+    groups,
+    maxParallel,
+    setMaxParallel,
+    global,
+    connected,
+    ready,
+    startError,
+    client,
+    remote,
+    canPickRepo: transport.canPickRepo,
+    profiles,
+    accounts,
+    refreshAccounts,
+  };
 }
 
 /** Doctor findings for one repo: on open, whenever its process ends, and when its pull request switch changes. */

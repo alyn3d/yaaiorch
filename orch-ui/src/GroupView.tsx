@@ -71,12 +71,15 @@ export function GroupView({
   hidden,
   onOpenRepo,
   onEdit,
+  accountName = (key) => key || "Default",
 }: {
   session: Session;
   sessions: Record<string, Session>;
   hidden: boolean;
   onOpenRepo: (repo: string) => void;
   onEdit: (g: GroupConfig) => void;
+  /** A Claude profile's display name ("" the default account). */
+  accountName?: (key: string) => string;
 }) {
   const { state, log, run } = session;
   const cfg = state.group!;
@@ -108,6 +111,10 @@ export function GroupView({
   const busy = !!state.running || !!state.queued;
   const memberOf = (path: string) => Object.values(sessions).find((s) => !s.state.group && samePath(s.state.repo, path));
   const ownRun = cfg.repos.map((r) => memberOf(r.path)).find((m) => m && (m.state.running || m.state.queued));
+  // A group runs on one Claude account: its repos must use the same profile (the server refuses the start otherwise).
+  const memberProfiles = state.memberProfiles ?? [];
+  const profileOfRole = (path: string) => memberProfiles[cfg.repos.findIndex((r) => r.path === path)] ?? null;
+  const mixedAccounts = new Set(memberProfiles.map((p) => p ?? "")).size > 1;
   const cap = Number(opts.maxCost);
   const running = run?.status === "running" && !!state.running;
   // A finished group run can be undone in both repos: a passed one, or a failed one whose park kept its checkpoint.
@@ -153,7 +160,10 @@ export function GroupView({
             <div key={role} className="group-member">
               <span className={`badge ${role === "backend" ? "be" : "fe"}`}>{role}</span>
               <div className="group-member-body">
-                <strong>{baseName(r.path)}</strong>
+                <strong>
+                  {baseName(r.path)}
+                  {(mixedAccounts || profileOfRole(r.path)) && <span className="badge account-tag">{accountName(profileOfRole(r.path) ?? "")}</span>}
+                </strong>
                 <span className="path" title={r.path}>
                   {r.path}
                 </span>
@@ -198,6 +208,17 @@ export function GroupView({
           );
         })}
       </section>
+
+      {mixedAccounts && !busy && (
+        <section className="callout warn">
+          <div className="callout-text">
+            <strong>The repos use different Claude accounts</strong>
+            <span>
+              A group goal runs on one account. Pick the same one for both repos in their tabs (the Claude menu in each repo's header), then start the group.
+            </span>
+          </div>
+        </section>
+      )}
 
       {ownRun && !busy && (
         <section className="callout warn">
@@ -283,8 +304,14 @@ export function GroupView({
           <span className="spacer" />
           <button
             className="primary"
-            disabled={busy || !!ownRun || !goal.trim()}
-            title={ownRun ? `${baseName(ownRun.state.repo)} has a run of its own` : "Plan the contract, build both repos, then check them together"}
+            disabled={busy || !!ownRun || mixedAccounts || !goal.trim()}
+            title={
+              mixedAccounts
+                ? "The two repos use different Claude accounts; give them the same one first"
+                : ownRun
+                  ? `${baseName(ownRun.state.repo)} has a run of its own`
+                  : "Plan the contract, build both repos, then check them together"
+            }
             onClick={async () => {
               const ok = await call("run", {
                 goal: goal.trim(),

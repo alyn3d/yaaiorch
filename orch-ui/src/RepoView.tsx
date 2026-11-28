@@ -3,10 +3,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pluginOpts } from "./Plugins";
-import type { Power } from "./types";
+import type { Power, Profile } from "./types";
 import { DiffViewer, RunPanel, TokenCount } from "./RunView";
 import { BriefBox } from "./Brief";
 import { OpenIn } from "./OpenIn";
+import { AccountMenu } from "./AccountMenu";
 import { briefProgress, leftText } from "./progress";
 import { usd } from "./repoStatus";
 import { SettingsPanel, modelSpec, useRepoSettings } from "./Settings";
@@ -17,7 +18,11 @@ import { useFindings, type Session } from "./useOrch";
 const POWERS: Power[] = ["max", "heavy", "balanced", "economy"];
 
 /** Everything for one repo: goal form, settings, notices, queue, run panel and log. */
-export function RepoView({ session, hidden }: { session: Session; hidden: boolean }) {
+/**
+ * `profiles`: the Claude profiles. `onAccounts` opens the Accounts page; with it (the PC) the header has the account
+ * picker, without it (a paired phone) only the account's name.
+ */
+export function RepoView({ session, hidden, profiles = [], onAccounts }: { session: Session; hidden: boolean; profiles?: Profile[]; onAccounts?: () => void }) {
   const { state, log, run } = session;
   const repo = state.repo;
   const [goal, setGoal] = useState("");
@@ -123,6 +128,25 @@ export function RepoView({ session, hidden }: { session: Session; hidden: boolea
           </p>
         </div>
         <div className="page-actions">
+          {onAccounts ? (
+            <AccountMenu
+              value={state.profile ?? null}
+              profiles={profiles}
+              disabled={busy}
+              title={
+                busy
+                  ? "Stop this repo's run (or its group's) before changing its Claude account"
+                  : "The Claude login this repo's agents use. Accounts are added and logged in on the Accounts page."
+              }
+              onPick={(profile) => void call("repo-profile", { profile })}
+              onManage={onAccounts}
+            />
+          ) : (
+            // A paired phone: which account, without the means to change it (that stays on the PC).
+            <span className="account-pick" title="The Claude login this repo's agents use; it is changed on the PC.">
+              Claude <strong>{profiles.find((p) => p.id === state.profile)?.name ?? "Default"}</strong>
+            </span>
+          )}
           <OpenIn repo={repo} />
           <button
             disabled={busy || badSettings}

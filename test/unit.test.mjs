@@ -340,6 +340,69 @@ describe("Agent M answers: Markdown subset (orch-ui/src/markdown.ts)", () => {
   });
 });
 
+describe("Claude profile login (orch-login.ts)", () => {
+  let l;
+  before(async () => {
+    const { tsImport } = await tsxApi(root);
+    l = await tsImport(pathToFileURL(join(root, "orch-login.ts")).href, import.meta.url);
+  });
+  const exe = { file: "C:\\Program Files\\Claude\\claude.exe", pre: [], shell: false, via: "" };
+  const npm = {
+    file: "C:\\nodejs\\node.exe",
+    pre: ["C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js"],
+    shell: false,
+    via: "",
+  };
+  const posix = { file: "claude", pre: [], shell: false, via: "claude" };
+
+  test("auth status: only the fields the UI shows, from pretty JSON or after a notice line; unknown otherwise", () => {
+    const pretty = JSON.stringify(
+      { loggedIn: true, email: "a@b.c", orgName: "Org", subscriptionType: "max", authMethod: "claude.ai", accessToken: "secret" },
+      null,
+      2,
+    );
+    assert.deepEqual(l.parseAuthStatus(pretty), { loggedIn: true, email: "a@b.c", org: "Org", plan: "max", method: "claude.ai" });
+    assert.deepEqual(l.parseAuthStatus(`Update available\n${JSON.stringify({ loggedIn: false })}`), { loggedIn: false });
+    assert.deepEqual(l.parseAuthStatus("not json"), { loggedIn: null });
+    assert.deepEqual(l.parseAuthStatus(JSON.stringify({ email: "a@b.c" })), { loggedIn: null }, "no loggedIn: unknown");
+  });
+
+  test("Windows: cmd start waits on the window; the folder travels in the environment, never on the command line", () => {
+    const a = l.loginTerminal(exe, "C:\\Users\\me\\.yaaiorch\\profiles\\work\\claude", "win32", () => null);
+    assert.equal(a.wait, true);
+    assert.equal(a.verbatim, true);
+    assert.deepEqual(a.args.slice(0, 3), ["/d", "/s", "/c"]);
+    assert.equal(a.args[3], `"start "Claude login" /wait "C:\\Program Files\\Claude\\claude.exe" auth login"`);
+    assert.doesNotMatch(a.args[3], /profiles/);
+    const b = l.loginTerminal(npm, undefined, "win32", () => null);
+    assert.match(b.args[3], /\/wait "C:\\nodejs\\node\.exe" "C:\\Users\\me\\.*cli\.js" auth login"$/);
+    assert.throws(() => l.loginTerminal({ ...exe, file: "C:\\100%\\claude.exe" }, undefined, "win32", () => null), /claude auth login/);
+  });
+
+  test("macOS opens Terminal with the folder quoted for the shell and for AppleScript", () => {
+    const a = l.loginTerminal(posix, `/Users/me/it's "work"`, "darwin", (n) => (n === "claude" ? "/usr/local/bin/claude" : null));
+    assert.equal(a.file, "osascript");
+    assert.equal(a.wait, false);
+    assert.equal(
+      a.args[1],
+      `tell application "Terminal" to do script "exec 'env' 'CLAUDE_CONFIG_DIR=/Users/me/it'\\\\''s \\"work\\"' '/usr/local/bin/claude' 'auth' 'login'"`,
+    );
+  });
+
+  test("Linux uses the first terminal found and passes argv, not a shell line; none found names the command", () => {
+    const found = { "/usr/bin/konsole": true, "/usr/bin/xterm": true };
+    const find = (n) => (found[`/usr/bin/${n}`] ? `/usr/bin/${n}` : null);
+    assert.deepEqual(l.loginTerminal(posix, "/home/me/w", "linux", find), {
+      file: "/usr/bin/konsole",
+      args: ["-e", "env", "CLAUDE_CONFIG_DIR=/home/me/w", "claude", "auth", "login"],
+      wait: false,
+    });
+    assert.throws(() => l.loginTerminal(posix, "/home/me/w", "linux", () => null), /CLAUDE_CONFIG_DIR='\/home\/me\/w' claude auth login/);
+    assert.equal(l.manualLogin("win32", "C:\\p"), `$env:CLAUDE_CONFIG_DIR = "C:\\p"; claude auth login`);
+    assert.equal(l.manualLogin("linux"), "claude auth login");
+  });
+});
+
 describe("remote access: pairing and roles (orch-ui/remote.ts, tunnel.ts)", () => {
   let r, t, dir;
   before(async () => {
@@ -452,7 +515,19 @@ describe("remote access: pairing and roles (orch-ui/remote.ts, tunnel.ts)", () =
     assert.equal(no("control", "POST", "/api/decide-command", "allow"), null);
     assert.match(no("control", "POST", "/api/decide-command", "always"), /PC/);
     assert.match(no("control", "POST", "/api/decide-command", "prefix"), /PC/);
-    for (const p of ["/api/add-repo", "/api/new-project", "/api/reveal", "/api/settings", "/api/agents", "/api/browser", "/api/group-save"])
+    for (const p of [
+      "/api/add-repo",
+      "/api/new-project",
+      "/api/reveal",
+      "/api/settings",
+      "/api/agents",
+      "/api/browser",
+      "/api/group-save",
+      "/api/profiles",
+      "/api/repo-profile",
+      "/api/profile-status",
+      "/api/profile-login",
+    ])
       assert.match(no("control", "POST", p), /PC/, p);
     assert.match(no("control", "GET", "/api/token"), /PC/);
     assert.match(no("control", "GET", "/api/remote"), /PC/);
@@ -602,6 +677,34 @@ describe("claude-bin: start claude without a shell on Windows", () => {
     } finally {
       process.chdir(prev);
     }
+  });
+});
+
+describe("Claude accounts page helpers (orch-ui/src/accountText.ts)", () => {
+  let a;
+  before(async () => {
+    const { tsImport } = await tsxApi(root);
+    a = await tsImport(pathToFileURL(join(root, "orch-ui", "src", "accountText.ts")).href, import.meta.url);
+  });
+
+  test("a profile id from its name: what the server accepts, never one already taken", () => {
+    assert.equal(a.profileId("Work", []), "work");
+    assert.equal(a.profileId("  ACME Corp (client) ", []), "acme-corp-client");
+    assert.equal(a.profileId("Café", []), "cafe");
+    assert.equal(a.profileId("!!!", []), "profile");
+    assert.equal(a.profileId("Work", ["work", "work-2"]), "work-3");
+    assert.match(a.profileId("x".repeat(80), []), /^[a-z0-9][a-z0-9-]{0,31}$/);
+  });
+
+  test("login text: who, or why not", () => {
+    assert.deepEqual(a.loginText({ id: "w", loggedIn: true, email: "me@w.example", org: "W", plan: "max" }), {
+      text: "logged in as me@w.example · W · max",
+      tone: "done",
+    });
+    assert.equal(a.loginText({ id: null, loggedIn: false }).tone, "failed");
+    assert.match(a.loginText({ id: "w", loggedIn: true, pending: true }).text, /login window open/);
+    assert.equal(a.loginText(undefined).text, "not checked yet");
+    assert.equal(a.loginText({ id: "w", loggedIn: null }).text, "login status unknown");
   });
 });
 

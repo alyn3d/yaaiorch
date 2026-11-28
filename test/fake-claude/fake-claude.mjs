@@ -11,6 +11,7 @@
 // Switches (environment):
 //   FAKE_LOG=<file>          append one line per call: agent, permission mode, settings file, model, budget cap,
 //                            and "adddirs=<a|b>" at the end when --add-dir was given
+//   FAKE_ENV_LOG=<file>      append "<agent> configdir=<CLAUDE_CONFIG_DIR or ->" per agent call (Claude profiles)
 //   FAKE_PROMPTS=<dir>       write each call's prompt to <dir>/<time>-<pid>-<random>-<agent>.txt
 //   FAKE_QA=pass|fail|fail-once|needs-new   needs-new passes only if the prompt mentions src/ui.ts and src/api.ts;
 //                            fail-once fails the first verdict in the repo, then passes
@@ -63,10 +64,11 @@
 //   FAKE_LIMIT_AFTER=<n>     every call after the n-th returns the usage-limit reply
 //   FAKE_USAGE=<5h>,<week>   with --output-format stream-json, print a rate_limit_event first with these
 //                            utilizations (fractions, e.g. 0.83,0.24); windows reset FAKE_USAGE_RESET_S (3600) s from now
+//   FAKE_AUTH=profile        `auth status` / `auth login` per CLAUDE_CONFIG_DIR folder (see the auth branch below)
 // Also answers `--version` and `auth status --json` for `orch doctor`, `plugin list --json` and
 // `plugin details <id>` for `orch plugins`, and honours --max-budget-usd.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync, readdirSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 
 const args = process.argv.slice(2);
@@ -75,7 +77,31 @@ if (args[0] === "--version") {
   process.exit(0);
 }
 if (args[0] === "auth") {
-  console.log(JSON.stringify({ loggedIn: true }));
+  // FAKE_AUTH=profile: a CLAUDE_CONFIG_DIR folder is logged in once `auth login` ran there (marker file .fake-login,
+  // holding FAKE_LOGIN_EMAIL); the default folder always is. Otherwise every folder is logged in.
+  const marker = process.env.FAKE_AUTH === "profile" && process.env.CLAUDE_CONFIG_DIR ? join(process.env.CLAUDE_CONFIG_DIR, ".fake-login") : null;
+  if (args[1] === "login") {
+    if (marker) writeFileSync(marker, process.env.FAKE_LOGIN_EMAIL || "work@example.com");
+    process.exit(0);
+  }
+  if (marker && !existsSync(marker)) console.log(JSON.stringify({ loggedIn: false, authMethod: "none" }));
+  else if (marker)
+    // Pretty-printed like the real CLI, with a field the UI must never get.
+    console.log(
+      JSON.stringify(
+        {
+          loggedIn: true,
+          authMethod: "claude.ai",
+          email: readFileSync(marker, "utf8"),
+          orgName: "Work Org",
+          subscriptionType: "max",
+          accessToken: "sk-never-shown",
+        },
+        null,
+        2,
+      ),
+    );
+  else console.log(JSON.stringify({ loggedIn: true }));
   process.exit(0);
 }
 // `plugin list --json` and `plugin details <id>`: two enabled plugins and a disabled one.
@@ -102,6 +128,7 @@ const env = process.env;
 const agent = opt("--agent");
 let prompt = readFileSync(0, "utf8");
 const log = (s) => env.FAKE_LOG && appendFileSync(env.FAKE_LOG, s + "\n");
+if (env.FAKE_ENV_LOG) appendFileSync(env.FAKE_ENV_LOG, `${agent ?? "-"} configdir=${env.CLAUDE_CONFIG_DIR || "-"}\n`);
 const cost = Number(env.FAKE_COST ?? 0.05);
 const cap = opt("--max-budget-usd");
 const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 2, cache_read_input_tokens: 3 };

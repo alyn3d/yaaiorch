@@ -18,6 +18,7 @@ import { GroupDialog, GroupView } from "./GroupView";
 import type { GroupConfig } from "./types";
 import { Splash } from "./Splash";
 import { PairRequests, RemoteAccess } from "./RemoteAccess";
+import { AccountsPage } from "./Accounts";
 
 const ACTIVE_KEY = "yaaiorch.activeRepo";
 /** The overview tab's key; never a repo path. */
@@ -25,8 +26,27 @@ const OVERVIEW = "*overview";
 const AGENTS = "*agents";
 const AGENT_M = "*agent-m";
 const REMOTE = "*remote";
+const ACCOUNTS = "*accounts";
 export function App() {
-  const { sessions, order, groups, maxParallel, setMaxParallel, global, connected, ready, startError, client, remote, canPickRepo } = useOrch();
+  const {
+    sessions,
+    order,
+    groups,
+    maxParallel,
+    setMaxParallel,
+    global,
+    connected,
+    ready,
+    startError,
+    client,
+    remote,
+    canPickRepo,
+    profiles,
+    accounts,
+    refreshAccounts,
+  } = useOrch();
+  /** A profile's display name; "" (the default account) is "Default". */
+  const accountName = (key: string) => (key ? (profiles.find((p) => p.id === key)?.name ?? key) : "Default");
   /** A paired phone: it never manages this PC (paths, limits, remote access); a view-only one changes nothing. */
   const viewOnly = client.remote && client.role === "view";
   /** The group form: a new group (no `initial`) or an edit. */
@@ -69,9 +89,11 @@ export function App() {
         ? AGENT_M
         : active === REMOTE && !client.remote
           ? REMOTE
-          : order.includes(active) || groups.includes(active) || (active === OVERVIEW && showOverview)
-            ? active
-            : (order[0] ?? "");
+          : active === ACCOUNTS && !client.remote
+            ? ACCOUNTS
+            : order.includes(active) || groups.includes(active) || (active === OVERVIEW && showOverview)
+              ? active
+              : (order[0] ?? "");
   useEffect(() => {
     if (!savedGroup) return;
     const dir = groups.find((g) => sessions[g]?.state.group?.name === savedGroup);
@@ -108,7 +130,9 @@ export function App() {
           ? "Agent M"
           : current === REMOTE
             ? "Remote access"
-            : (sessions[current]?.state.group?.name ?? (current ? baseName(current) : "YAAIORCH"));
+            : current === ACCOUNTS
+              ? "Claude accounts"
+              : (sessions[current]?.state.group?.name ?? (current ? baseName(current) : "YAAIORCH"));
   /** Something waits for the human (a command, a pairing request): the menu button shows it while the drawer is shut. */
   const attention = waitingCommands + (client.remote ? 0 : (remote?.requests.length ?? 0));
 
@@ -229,6 +253,20 @@ export function App() {
               )}
             </button>
           )}
+          {!client.remote && (
+            <button
+              className={`nav-item ${current === ACCOUNTS ? "active" : ""}`}
+              aria-current={current === ACCOUNTS ? "page" : undefined}
+              onClick={() => setActive(ACCOUNTS)}
+              title="Claude logins: a different account per repo"
+            >
+              <span className="nav-icon" aria-hidden>
+                ◉
+              </span>
+              <span className="nav-label">Accounts</span>
+              {profiles.length > 0 && <span className="nav-meta">{profiles.length + 1}</span>}
+            </button>
+          )}
           <p className="nav-section">Repos</p>
           {order.map((repo) => {
             const s = sessions[repo];
@@ -236,11 +274,18 @@ export function App() {
             const st = repoStatus(s, now);
             const busy = !!s.state.running || !!s.state.queued || !!s.state.inGroup;
             return (
-              <div key={repo} className={`nav-item repo-item ${repo === current ? "active" : ""}`} title={`${repo}\n${st.label}`}>
+              <div
+                key={repo}
+                className={`nav-item repo-item ${repo === current ? "active" : ""}`}
+                title={`${repo}\n${st.label}${s.state.profile ? `\nClaude account: ${accountName(s.state.profile)}` : ""}`}
+              >
                 <button className="nav-main" aria-current={repo === current ? "page" : undefined} onClick={() => setActive(repo)}>
                   <span className={`status ${st.tone}`} aria-hidden />
                   <span className="nav-text">
-                    <span className="nav-label">{baseName(repo)}</span>
+                    <span className="nav-label">
+                      {baseName(repo)}
+                      {s.state.profile && <span className="badge account-tag">{accountName(s.state.profile)}</span>}
+                    </span>
                     <span className="nav-sub">{st.label}</span>
                   </span>
                 </button>
@@ -431,56 +476,71 @@ export function App() {
               </div>
             </section>
           )}
-          {global.usageLimit && global.usageLimit.until > now && (
-            <section className="callout warn banner" role="status">
-              <div className="callout-text">
-                <strong>Claude usage limit reached</strong>
-                <span>
-                  in {baseName(global.usageLimit.repo)}. New runs in all repos wait until {clock(global.usageLimit.until)}; running ones wait on their own.
-                </span>
-              </div>
-              <button onClick={() => guard(() => transport.clearLimit())} title="Start waiting runs now; if the limit is still on, they hit it again and wait.">
-                Try now
-              </button>
-            </section>
-          )}
-          {(() => {
-            const o = overCap(global, now);
+          {Object.entries(global.accounts ?? { "": global }).map(([key, acct]) => {
+            // One set of banners per Claude account; with profiles, each names its account and clears only it.
+            const on = profiles.length ? ` on ${accountName(key)}` : "";
+            const clear = () => transport.clearLimit(profiles.length ? key : undefined);
+            const o = overCap({ ...global, usage: acct.usage }, now);
             return (
-              o && (
-                <section className="callout warn banner" role="status">
-                  <div className="callout-text">
-                    <strong>Usage cap reached</strong>
-                    <span>
-                      Claude {o.label} usage is at {o.pct}% (your cap: {o.cap}%). New runs wait and running goals pause before their next agent call until{" "}
-                      {clock(o.resetsAt)}.
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => guard(() => transport.clearLimit())}
-                    title="Forget the reading and start waiting runs now; the next agent call reads the usage again."
-                  >
-                    Try now
-                  </button>
-                </section>
-              )
-            );
-          })()}
-          {global.budget.limit !== null && global.budget.spent >= global.budget.limit && (
-            <section className="callout bad banner" role="status">
-              <div className="callout-text">
-                <strong>Daily budget used up</strong>
-                <span>
-                  {usd(global.budget.spent)} of {usd(global.budget.limit)} spent today. New runs wait until tomorrow; raise or clear <em>Daily $</em> to
-                  continue now.
-                </span>
+              <div key={`limits-${key}`} className="contents">
+                {acct.usageLimit && acct.usageLimit.until > now && (
+                  <section className="callout warn banner" role="status">
+                    <div className="callout-text">
+                      <strong>Claude usage limit reached{on}</strong>
+                      <span>
+                        in {baseName(acct.usageLimit.repo)}. New runs on {profiles.length ? "this account" : "the same Claude account"} wait until{" "}
+                        {clock(acct.usageLimit.until)}; running ones wait on their own.
+                      </span>
+                    </div>
+                    <button onClick={() => guard(clear)} title="Start waiting runs now; if the limit is still on, they hit it again and wait.">
+                      Try now
+                    </button>
+                  </section>
+                )}
+                {o && (
+                  <section className="callout warn banner" role="status">
+                    <div className="callout-text">
+                      <strong>Usage cap reached{on}</strong>
+                      <span>
+                        Claude {o.label} usage is at {o.pct}% (your cap: {o.cap}%). New runs wait and running goals pause before their next agent call until{" "}
+                        {clock(o.resetsAt)}.
+                      </span>
+                    </div>
+                    <button onClick={() => guard(clear)} title="Forget the reading and start waiting runs now; the next agent call reads the usage again.">
+                      Try now
+                    </button>
+                  </section>
+                )}
+                {acct.budget.limit !== null && acct.budget.spent >= acct.budget.limit && (
+                  <section className="callout bad banner" role="status">
+                    <div className="callout-text">
+                      <strong>Daily budget used up{on}</strong>
+                      <span>
+                        {usd(acct.budget.spent)} of {usd(acct.budget.limit)} spent today. New runs wait until tomorrow; raise or clear{" "}
+                        {key ? "its budget on the Accounts page" : <em>Daily $</em>} to continue now.
+                      </span>
+                    </div>
+                  </section>
+                )}
               </div>
-            </section>
-          )}
+            );
+          })}
 
           <fieldset className="contents" disabled={viewOnly}>
             {current === REMOTE && <RemoteAccess remote={remote} guard={guard} />}
-            {order.length === 0 && !newProject && current !== AGENT_M && current !== REMOTE && !groups.includes(current) && (
+            {current === ACCOUNTS && (
+              <AccountsPage
+                profiles={profiles}
+                accounts={accounts}
+                refresh={refreshAccounts}
+                sessions={sessions}
+                order={order}
+                global={global}
+                now={now}
+                guard={guard}
+              />
+            )}
+            {order.length === 0 && !newProject && current !== AGENT_M && current !== REMOTE && current !== ACCOUNTS && !groups.includes(current) && (
               <section className="empty-state">
                 <img src="/logo-64.png" alt="" width={48} height={48} />
                 <h2>No repo open</h2>
@@ -508,10 +568,23 @@ export function App() {
                 order={order}
                 decide={(repo, id, decision) => transport.call("decide-command", { repo, id, decision })}
                 chat={agentMChat}
+                profiles={client.remote ? [] : profiles}
+                onAccounts={client.remote ? undefined : () => setActive(ACCOUNTS)}
               />
             )}
 
-            {order.map((repo) => sessions[repo] && <RepoView key={repo} session={sessions[repo]} hidden={repo !== current} />)}
+            {order.map(
+              (repo) =>
+                sessions[repo] && (
+                  <RepoView
+                    key={repo}
+                    session={sessions[repo]}
+                    hidden={repo !== current}
+                    profiles={profiles}
+                    onAccounts={client.remote ? undefined : () => setActive(ACCOUNTS)}
+                  />
+                ),
+            )}
             {groups.map(
               (dir) =>
                 sessions[dir]?.state.group && (
@@ -522,6 +595,7 @@ export function App() {
                     hidden={dir !== current}
                     onOpenRepo={setActive}
                     onEdit={(initial) => setGroupDialog({ initial })}
+                    accountName={accountName}
                   />
                 ),
             )}

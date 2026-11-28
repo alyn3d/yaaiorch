@@ -606,6 +606,217 @@
         }
       }
 
+      /* Claude accounts: the remote section mirrored, a mock window of the account menu beside the copy. */
+      .accounts-highlight {
+        grid-template-columns: minmax(0, 470px) minmax(0, 1fr);
+        padding-top: 72px;
+      }
+
+      .accounts-copy code {
+        color: var(--text);
+        font-size: 0.92em;
+      }
+
+      .accounts-mock {
+        margin: 0;
+      }
+
+      .mock-window {
+        overflow: hidden;
+        border: 1px solid #333c52;
+        border-radius: 14px;
+        background: #0c0f17;
+        box-shadow: 0 34px 90px rgb(0 0 0 / 50%), 0 0 70px rgb(91 112 255 / 12%);
+        font-size: 13px;
+      }
+
+      .mock-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .mock-bar i {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #2b3245;
+      }
+
+      .mock-bar span {
+        margin-left: 8px;
+      }
+
+      .mock-body {
+        display: grid;
+        grid-template-columns: 138px minmax(0, 1fr);
+        min-height: 300px;
+      }
+
+      .mock-tabs {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 14px 10px;
+        border-right: 1px solid var(--border);
+        background: #090b12;
+      }
+
+      .mock-tab {
+        padding: 7px 9px;
+        border-radius: 8px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .mock-tab.is-current {
+        background: #171c2a;
+        color: var(--text);
+      }
+
+      .mock-tab em,
+      .mock-button {
+        border-radius: 999px;
+        font-style: normal;
+      }
+
+      .mock-tab em {
+        margin-left: 4px;
+        padding: 1px 6px;
+        background: #232a3c;
+        color: #b9c1d6;
+        font-size: 10px;
+      }
+
+      .mock-main {
+        position: relative;
+        padding: 16px 18px;
+      }
+
+      .mock-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .mock-head b {
+        font-size: 15px;
+      }
+
+      .mock-button {
+        padding: 5px 11px;
+        border: 1px solid #343d55;
+        border-radius: 8px;
+        background: #151a27;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .mock-button strong {
+        color: var(--text);
+      }
+
+      .mock-menu {
+        position: absolute;
+        top: 52px;
+        right: 18px;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        width: 170px;
+        padding: 4px;
+        border: 1px solid #343d55;
+        border-radius: 8px;
+        background: #161b29;
+        box-shadow: 0 14px 34px rgb(0 0 0 / 45%);
+        font-size: 12px;
+      }
+
+      .mock-menu span {
+        padding: 6px 8px;
+        border-radius: 6px;
+        color: #c4cada;
+      }
+
+      .mock-menu span.is-checked {
+        background: #222a3d;
+        color: var(--text);
+        box-shadow: inset 0 0 0 1px rgb(124 140 255 / 55%);
+      }
+
+      .mock-menu i {
+        display: inline-block;
+        width: 1.2em;
+        color: var(--blue);
+        font-style: normal;
+      }
+
+      .mock-menu hr {
+        margin: 4px 0;
+        border: 0;
+        border-top: 1px solid var(--border);
+      }
+
+      .mock-accounts {
+        display: grid;
+        gap: 8px;
+        margin-top: 128px;
+      }
+
+      .mock-account {
+        display: grid;
+        gap: 2px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #111522;
+      }
+
+      .mock-account small {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .mock-ok {
+        color: var(--green);
+        font-size: 11.5px;
+        overflow-wrap: anywhere;
+      }
+
+      .accounts-mock figcaption {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 14px;
+        text-align: center;
+      }
+
+      @media (max-width: 800px) {
+        .accounts-highlight {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        /* Copy first on narrow screens, like the remote section. */
+        .accounts-copy {
+          order: -1;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .mock-body {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .mock-tabs {
+          display: none;
+        }
+      }
+
       .trust-strip {
         border-top: 1px solid rgb(255 255 255 / 8%);
         border-bottom: 1px solid rgb(255 255 255 / 8%);
@@ -1395,7 +1606,7 @@
       .ruler-nav a.is-current { --s: 1.4; color: var(--text); }
       .ruler-nav a:hover { color: var(--text); }
       .ruler-nav a:focus-visible { border-radius: 3px; outline: 2px solid var(--blue); outline-offset: 3px; }
-      #overview, #inside, #remote, #get-started, #build { scroll-margin-top: 96px; }
+      #overview, #inside, #remote, #accounts, #get-started, #build { scroll-margin-top: 96px; }
       @media (prefers-reduced-motion: reduce) { .ruler-nav a, .ruler-hover { transition: none !important; } }
 
       @media (prefers-reduced-motion: reduce) {
@@ -1591,6 +1802,65 @@
         </figure>
       </section>
 
+      <section class="wrap remote-highlight accounts-highlight" id="accounts" aria-labelledby="accounts-title">
+        <figure class="accounts-mock" aria-label="Simulated YAAIORCH window: a repo's Claude account menu and the Accounts page">
+          <div class="mock-window">
+            <div class="mock-bar"><i></i><i></i><i></i><span>YAAIORCH / client-api</span></div>
+            <div class="mock-body">
+              <div class="mock-tabs" aria-hidden="true">
+                <span class="mock-tab is-current">client-api <em>Work</em></span>
+                <span class="mock-tab">billing-web <em>Work</em></span>
+                <span class="mock-tab">side-project</span>
+              </div>
+              <div class="mock-main">
+                <div class="mock-head">
+                  <b>client-api</b>
+                  <span class="mock-button">Claude: <strong>Work</strong> ▾</span>
+                </div>
+                <div class="mock-menu" aria-hidden="true">
+                  <span><i></i>Default</span>
+                  <span class="is-checked"><i>✓</i>Work</span>
+                  <hr />
+                  <span><i></i>Manage accounts…</span>
+                </div>
+                <div class="mock-accounts">
+                  <div class="mock-account">
+                    <b>Default</b><span class="mock-ok">logged in as you@home.example</span><small>$1.25 today</small>
+                  </div>
+                  <div class="mock-account">
+                    <b>Work</b><span class="mock-ok">logged in as you@company.example · Team</span><small>$4.50 of $20 today</small>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <figcaption>Simulated: a work repo on the work account, a side project on your own.</figcaption>
+        </figure>
+        <div class="remote-copy accounts-copy">
+          <span class="eyebrow">New · Claude accounts</span>
+          <h2 id="accounts-title">Work account for work. <span class="gradient">Yours for the rest.</span></h2>
+          <p>
+            Give each repo its own Claude login, the way an editor profile works. Client repos run on your work
+            subscription and side projects stay on your own. Pick the account in a repo's header, and every agent,
+            check and command in that repo uses it.
+          </p>
+          <ul class="remote-points">
+            <li>
+              <b>Log in once per account.</b> Add a profile, then press Log in on its card: a terminal opens on your PC for
+              <code>claude auth login</code>, and the Accounts page shows who each account is signed in as.
+            </li>
+            <li>
+              <b>Limits that don't spill over.</b> Usage limits, usage caps and daily budgets count per account, so
+              hitting the work limit never holds up your own repos.
+            </li>
+            <li>
+              <b>Separate setups.</b> Each profile keeps its own Claude folder: login, settings, plugins, MCP servers
+              and agents. Agent M's chat can run on either, and a repo group stays on one.
+            </li>
+          </ul>
+        </div>
+      </section>
+
       <section class="wrap content" id="how-it-works" aria-labelledby="how-title">
         <div class="section-heading">
           <span class="eyebrow">A loop, not a one-shot prompt</span>
@@ -1643,7 +1913,8 @@
             <h3>Use it your way</h3>
             <p>
               Run the CLI, manage projects in the browser, or use the desktop app, which brings its own Node.js, and check
-              in from your phone. Queue goals, work across repos, and bring your own Claude Code agents and skills.
+              in from your phone. Queue goals, work across repos, bring your own Claude Code agents and skills, and run
+              each repo on the Claude account it belongs to.
             </p>
           </article>
           <article class="feature">
@@ -1881,7 +2152,7 @@
         // Sections fade up as they enter; siblings follow each other by 90 ms.
         const targets = [
           ...document.querySelectorAll(
-            ".workflow, .shot-intro, .shot-stage, .eval-proof, .trust-item, .remote-copy > *, .remote-phone, .section-heading, .feature, .getting-started > *, .cta > *",
+            ".workflow, .shot-intro, .shot-stage, .eval-proof, .trust-item, .remote-copy > *, .remote-phone, .accounts-mock, .section-heading, .feature, .getting-started > *, .cta > *",
           ),
         ];
         const siblings = new Map();
@@ -1944,6 +2215,7 @@
           ["overview", "Overview"],
           ["inside", "Inside a run"],
           ["remote", "Remote"],
+          ["accounts", "Accounts"],
           ["how-it-works", "How it works"],
           ["get-started", "Get started"],
           ["build", "Build"],

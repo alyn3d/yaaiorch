@@ -33,6 +33,7 @@ The desktop app ships its own Node.js as a Tauri sidecar (`bundle.externalBin: [
     orch status           print the queue
     orch agents           list discovered agents and skills
     orch doctor [--json]  first-run checks: node, claude installed and logged in, git, clean repo, leftover checkpoints, checks
+    orch account [--json] [--login]  who claude is logged in as (CLAUDE_CONFIG_DIR, else ~/.claude); --login opens a terminal running claude auth login
     orch rollback [BRANCH]  reset to the latest (or given) checkpoint; discarded work kept on orchestrator/discarded-*
     orch prune [--older-than DAYS]  delete orchestrator/* branches older than DAYS (14)
     orch group add|list|remove|run|stop|rollback  one goal across a backend and a frontend repo (see Repo groups)
@@ -234,26 +235,32 @@ Task `status` is `COMPLETE`, `PARTIAL`, `FAILED`, `PHANTOM`, `UNKNOWN`, `ERROR`,
 The UI works on several repos at once: one **tab per repo**, each with its own goal form, settings,
 queue, run panel and log. Each repo has a **session** in the backend: its own `orch` process, log and
 events. One run per repo at a time (agents share that repo's working tree); at most `maxParallel`
-repos run at once (default 2, 1-16) and further starts wait for a free slot, oldest first. All repos
-share one Claude usage limit, so the limit is the main brake on parallel runs.
+repos run at once (default 2, 1-16) and further starts wait for a free slot, oldest first. The repos on one
+Claude account share its usage limit, so the limit is the main brake on parallel runs.
 
-Two things are shared by all repos and kept by the backend (the **global** state):
+The backend keeps these limits per Claude account (a profile's id, `""` for the default folder; the **global**
+state carries the default account at the top level and every account under `accounts`). A repo counts against
+its profile's account (`accountKey`; a group's repos share one). A hold on one account never stops another's
+starts: `startNext` passes over a held start and starts the next one whose account is free.
 
-- **Usage-limit hold.** When any repo reports the usage limit (`usage_limit`, or `waiting` with `until`),
-  new starts in every repo wait until the latest reset time. Running goals are not stopped; each waits
-  on its own (`--on-limit`). The UI shows one banner with **Try now**, which lifts the hold early.
-- **Daily budget** (optional, USD, local day). The backend adds up `cost` from every `plan` and
-  `task_end` event in every repo; the total is stored, so it survives a restart the same day. Each new
+- **Usage-limit hold.** When a repo reports the usage limit (`usage_limit`, or `waiting` with `until`),
+  new starts on that account wait until the latest reset time. Running goals are not stopped; each waits
+  on its own (`--on-limit`). The UI shows a banner with **Try now**, which lifts the hold early
+  (`/api/clear-limit`, every account, or one with `profile`).
+- **Daily budget** (optional, USD, local day; **Daily $** for the default account, `dailyBudget` on a profile for
+  its own). The backend adds up `cost` from the cost events of that account's repos (Agent M's chat counts
+  on the default account); the totals are stored, so they survive a restart the same day. Each new
   run gets `--max-cost` capped to what is left (its own `--max-cost` if lower). When it is used up, new
   starts wait for the next day (or a higher budget), and a running loop is stopped at its next
   `queue_item`. Runs that start together each get the whole remainder, so the total can overshoot by
   up to what one run spends.
-- **Usage caps** (optional, percent of the 5-hour and weekly windows). The backend keeps the latest
-  `usage` reading from any repo and passes the caps to every run as `--usage-cap 5h=N,week=M`. In orch,
+- **Usage caps** (optional, percent of the 5-hour and weekly windows; one setting for every account). The
+  backend keeps each account's latest `usage` reading from its repos and passes the caps to every run as
+  `--usage-cap 5h=N,week=M`. In orch,
   before each agent call a reading at or over a cap either pauses the goal in place until that window
   resets (`--on-limit wait`, event `waiting` with reason `usage_cap`) or ends it like a usage limit
-  (`--on-limit stop`). The backend also holds new starts while a reading is over a cap; **Try now**
-  forgets the readings. A call already running can go past a cap.
+  (`--on-limit stop`). The backend also holds new starts on an account while its reading is over a cap;
+  **Try now** forgets the readings. A call already running can go past a cap.
 
 A start that waits is `queued` with a `waitReason`: the usage limit, the budget, a usage cap, or a free slot.
 
@@ -265,6 +272,7 @@ A start that waits is `queued` with a `waitReason`: the usage limit, the budget,
 | `useOrch.ts`       | `useOrch()`: sessions keyed by repo (state, log, run view), tab order, `maxParallel`, `global` (usage-limit hold, daily budget). `useFindings(repo, busy)`: doctor per repo, refreshed when its process ends.                                                                                                                              |
 | `Plugins.tsx`      | The **Plugins** section of a repo's run settings: the repo's Claude Code plugins (`orch plugins --json --details`, loaded when opened) with a switch each, one for all and one for hooks; remembered per repo with the other settings.                                                                                                     |
 | `Limits.tsx`       | Header meters (5-hour and weekly usage, today's spend) and the Limits panel: Daily $, pause at 5h % and week %.                                                                                                                                                                                                                            |
+| `Accounts.tsx`     | The **Accounts** page (PC only): the default Claude folder and each profile with its login (`/api/profile-status`, `account` events), Log in (`/api/profile-login`), name, its own Daily $, today's spend and limits, the repos on it; add and remove (`/api/profiles`). Helpers in `accountText.ts` (unit-tested). A repo picks its profile in `RepoView.tsx`'s header (`/api/repo-profile`), Agent M's chat in `AgentM.tsx`. |
 | `App.tsx`          | Header (running count, Parallel limit, Limits), usage-limit, usage-cap and budget banners, tab bar with a status dot per repo (running, waiting for a slot or the usage limit, failed, done, idle), add/close repo. All tabs stay mounted, so a hidden tab keeps its form and keeps updating.                                              |
 | `Overview.tsx`     | The **Overview** tab (shown from two repos on): one row per repo with its phase (planning, building, verifying, checks, waiting), goal, round, tasks done and running agents, cost against its cap, pending queue, and Open / Stop; also hosts the cross-repo work board.                                                                  |
 | `overviewBoard.ts` | Derives board cards from run and queue state: active tasks, user questions/plan approvals, verification/PR review, and completed queue goals.                                                                                                                                                                                              |
@@ -308,7 +316,8 @@ reconnects the event stream. Vite's dev proxy (`localhost:5173`) passes the chec
 | `GET /api/plugins?repo=[&fresh]`                                                       | `orch plugins --json --details` (cached 10 minutes)                                                  |
 | `POST /api/add-repo` `{ path }`, `/api/remove-repo` `{ repo }`                         | Open or close a repo (closing is refused while it runs)                                              |
 | `POST /api/settings` `{ maxParallel?, dailyBudget?, usageCap?: { fiveHour?, week? } }` | Change the parallel limit, the daily budget and/or the usage caps in percent (`null` or `""` = none) |
-| `POST /api/clear-limit`                                                                | Lift the usage-limit hold ("Try now")                                                                |
+| `POST /api/agent-m/ask` `{ question, session?, profile? }`, `/api/agent-m/warm` `{ profile? }` | Agent M on that Claude account (its folder, a chat folder `agent-m-<id>` of its own, its budget) |
+| `POST /api/clear-limit` `{ profile? }`                                                 | Lift the usage-limit hold and forget the readings ("Try now"): every account, or one (`""` default) |
 | `POST /api/stop-after` `{ repo }`                                                      | Ask the running queue loop to stop before its next goal                                              |
 | `POST /api/run`, `/add`, `/loop`, `/stop`, `/clear-log`, `/rollback`                   | Actions on `{ repo, … }`; `stop` also cancels a start waiting for a slot                             |
 | static                                                                                 | serves `dist/`                                                                                       |
@@ -420,8 +429,9 @@ no-referrer` and `nosniff`.
 | `~/.yaaiorch/groups/<name>/`                                                                      | orch.ts                            | A group's run state: `run.lock`, `stop`, `contract.md`, `context-<role>.md`, `plan-pending.json`, `plan-decision.json`, `last-run.json`                                                                                                                |
 | `<target>/.orchestrator/contract.md`                                                              | orch.ts                            | The API contract of the running or last group goal, in both member repos; never committed                                                                                                                                                              |
 | `<target>` git branches `orchestrator/failed-group-*`, `interrupted-group-*`, `discarded-group-*` | orch.ts                            | Work of a failed, stopped or rolled back group goal                                                                                                                                                                                                    |
-| `<app config>/repos.json`                                                                         | Tauri                              | Open repos, the parallel limit, the daily budget and today's spending                                                                                                                                                                                  |
+| `<app config>/repos.json`                                                                         | Tauri                              | Open repos, the parallel limit, the daily budget, today's spending, Claude profiles and each repo's profile                                                                                                                                                                                  |
 | `~/.yaaiorch/ui.json`                                                                             | server.ts                          | Same, for browser mode                                                                                                                                                                                                                                 |
+| `~/.yaaiorch/profiles/<id>/claude/` | Claude Code (via server.ts) | A Claude profile's folder (`CLAUDE_CONFIG_DIR` for that repo's runs): its own login, settings, plugins, agents and skills |
 
 Run events are appended as they occur even without `ORCH_EVENTS`; a missing `goal_end` marks an unfinished attempt.
 An incomplete final line is ignored and reported, while other malformed recordings are reported as unreadable. The

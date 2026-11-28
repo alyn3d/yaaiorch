@@ -110,6 +110,7 @@ Other commands:
 | `orch status`                                    | show the queue                                                                      |
 | `orch history --json` / `orch history ID --json` | list recorded goal attempts / read one attempt's events                             |
 | `orch doctor`                                    | check node, claude login, git, a clean tree, leftover checkpoints                   |
+| `orch account [--login]`                         | who claude is logged in as (`CLAUDE_CONFIG_DIR` or `~/.claude`); open a login window |
 | `orch rollback`                                  | undo the last unfinished goal (work kept on `orchestrator/discarded-*`)             |
 | `orch prune`                                     | delete old `orchestrator/*` branches                                                |
 | `orch agents`                                    | list the agents and skills the architect can use                                    |
@@ -145,16 +146,16 @@ Both the browser UI and the desktop app work on several repos in parallel: one *
 with its own goal, queue, settings and log, and a status dot (running, waiting, failed, done). The
 **Parallel** field in the header limits how many repos run at the same time (default 2); further starts
 wait for a free slot. With two or more repos open, an **Overview** tab lists them all: what each is doing
-(planning, building, verifying), its goal, round, tasks, cost and queue, with Open and Stop. One run per repo at a time. All repos draw on the same Claude usage limit, so
-more parallel runs reach it sooner.
+(planning, building, verifying), its goal, round, tasks, cost and queue, with Open and Stop. One run per repo at a time. Repos on the same Claude account draw on the same usage limit, so
+more parallel runs reach it sooner; a limit on one account does not hold repos on another.
 
 The Overview also has a **Work board**: active build tasks, requests needing your input, verification/PRs in review,
 and completed goals from each repo's queue. PR cards stay in review and show their CI status; a passing CI run does
 not mean the PR is approved or merged. Select a card to open its repo.
 
-- **Usage limit, shared.** When one repo hits the Claude usage limit, a banner shows the reset time and
-  new runs in every repo wait until then (running ones wait on their own). **Try now** starts them early.
-- **Daily $** sets a spending cap for all repos together, per day. Each run's max cost is capped to what
+- **Usage limit, per account.** When a repo hits the Claude usage limit, a banner shows the reset time and
+  new runs on the same Claude account wait until then (running ones wait on their own). **Try now** starts them early.
+- **Daily $** sets a spending cap per day for all repos on the default account together (a profile has its own). Each run's max cost is capped to what
   is left; when it is used up, new runs wait for the next day and a queue stops before its next goal.
   Today's spend is shown next to it and kept across restarts. Runs that start at the same time can
   overshoot the cap by up to one run's cost.
@@ -164,6 +165,19 @@ not mean the PR is approved or merged. Select a card to open its repo.
   resets (or stop, with the usage-limit setting on **Stop**). This keeps headroom for your own Claude use.
   It needs a Claude subscription login (API keys report no usage), and a call already running can go a
   little past the cap. Daily $ and the % caps can be used together.
+
+### Claude accounts (work and personal)
+
+Each repo can use its own Claude login, for example your work account in work repos and your own everywhere
+else. **Accounts** in the sidebar lists the default account (your usual `~/.claude`) and the profiles you add.
+A profile is a Claude Code folder of its own (`~/.yaaiorch/profiles/<id>/claude`, or a folder you pick): its own
+login, settings, plugins, MCP servers and agents. **Log in** opens a terminal window on this PC running
+`claude auth login` for that folder; the page shows who each account is logged in as once you finish there.
+Pick a repo's account in its header (**Claude**); its runs, checks and Agent M's command approvals then use that
+login. Usage limits, usage caps and daily budgets apply per account, so a limit on the work account does not hold
+your own repos; give a profile its own **Daily $** on the Accounts page. Agent M's chat has an account picker too.
+A group's two repos must use the same account. On the command line the same is `CLAUDE_CONFIG_DIR=<folder> orch …`,
+and `orch account [--login]` shows (or logs in) the account in use.
 
 ### Repo groups (backend and frontend)
 
