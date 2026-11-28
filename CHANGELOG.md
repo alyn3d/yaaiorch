@@ -5,12 +5,14 @@ and the project uses [semantic versioning](https://semver.org/) (0.x: anything m
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-11-28
+
 ### Added
 
-- Claude profiles, groundwork (no UI yet): the server keeps a list of profiles, each a Claude Code account in its own folder (default `~/.yaaiorch/profiles/<id>/claude`), and which profile each repo uses (`/api/profiles`, `/api/repo-profile`, both PC only; remembered with the repos). A repo with a profile runs orch, and every `claude` it starts, with that folder as `CLAUDE_CONFIG_DIR`, so a work repo uses the work login while a personal one keeps the default. A group whose repos use different profiles is refused. orch reads user agents and skills from `CLAUDE_CONFIG_DIR` when it is set, instead of always `~/.claude`.
-- Logging a Claude profile in: `orch account [--json]` says who the Claude folder in use (`CLAUDE_CONFIG_DIR`, else `~/.claude`) is logged in as (email, organisation, plan; nothing else from the CLI's answer is passed on), and `orch account --login` opens a terminal window running `claude auth login` for that folder (Windows: a console window, and orch waits until it closes; macOS: Terminal; Linux: the first terminal emulator found; where none can be opened, the error gives the command to run yourself). The server's `/api/profile-status` lists the default folder and every profile with its login, and `/api/profile-login` opens the window for one and checks every 5 seconds, for up to 10 minutes, until the login lands (an `account` event to the PC's own windows only). Both are PC only.
-- Limits per Claude account: a usage limit, a reading over a usage cap or a used-up daily budget now holds new runs only on the account it belongs to (the default one, or a profile), and a start that waits for its account no longer holds back starts on another. A profile can carry its own daily budget (`dailyBudget`); **Daily $** stays the default account's, and Agent M's chat counts there. **Try now** can clear one account (`/api/clear-limit` with `profile`). The server sends every account's limits (`accounts`), and the UI shows a banner per account.
-- **Accounts** page and pickers for Claude profiles: add a profile (a new Claude folder, or one you pick), log it in (a terminal window opens on the PC), see who each account is logged in as, give it its own Daily $, rename or remove it, and see today's spend and the repos on it. Each repo has a **Claude** account picker in its header and an account tag on its tab; Agent M's chat has one too (switching starts a new conversation, in a chat folder of that account's own, and its cost counts there). A group whose repos use different accounts says so and does not start. All of it stays on the PC; a paired phone sees none of it. When a profile is not logged in, the doctor banner says to log in on the Accounts page instead of giving the plain `claude auth login`, which would log in the default folder.
+- **Claude accounts per repo.** Each repo can run on its own Claude Code login, the way editor profiles work: a work account for work repos and your own for the rest. A profile is a Claude folder of its own (`~/.yaaiorch/profiles/<id>/claude`, or one you pick) with its own login, settings, plugins, MCP servers and agents; a repo on it runs orch, and every `claude` it starts, with that folder as `CLAUDE_CONFIG_DIR`. Repos without one keep the default account. orch now reads user agents and skills from `CLAUDE_CONFIG_DIR` when it is set, instead of always `~/.claude`.
+- **Accounts** page (PC only): add a profile, log it in, see who each account is logged in as (email, organisation, plan), give it its own **Daily $**, rename or remove it, and see today's spend and the repos on it. **Log in** (or **Switch account**) opens a terminal window on the PC running `claude auth login` for that folder, and the page updates when the login lands. Each repo has a **Claude** account menu in its header and an account tag on its tab; Agent M's chat has the same menu (switching starts a new conversation, in a chat folder of that account's own). A group whose repos use different accounts says so and does not start. A paired phone sees which account a repo uses but cannot change it.
+- Limits per Claude account: a usage limit, a reading over a usage cap or a used-up daily budget holds new runs only on the account it belongs to, and a start waiting for its account no longer holds back starts on another. **Daily $** stays the default account's budget; Agent M's chat counts toward the account it runs on. Banners show per account, and **Try now** clears only that account.
+- `orch account [--json] [--login]`: who the Claude folder in use (`CLAUDE_CONFIG_DIR`, else `~/.claude`) is logged in as, and a login window for it (Windows: a console window; macOS: Terminal; Linux: the first terminal emulator found; where none opens, the error gives the command to run yourself). Only the email, organisation, plan and login method are read from the CLI's answer. When a profile is not logged in, the doctor names its folder and points to the Accounts page, since a plain `claude auth login` would log in the default folder.
 
 ### Changed
 
@@ -557,7 +559,8 @@ First public release.
   cost; the loop's advantages today are unattended safety (checks, rollback, budgets, usage-limit
   waiting). See TODO.md for the measurements.
 
-[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.6...HEAD
+[Unreleased]: https://github.com/alyn3d/yaaiorch/compare/v0.6.7...HEAD
+[0.6.7]: https://github.com/alyn3d/yaaiorch/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/alyn3d/yaaiorch/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/alyn3d/yaaiorch/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/alyn3d/yaaiorch/compare/v0.6.3...v0.6.4
